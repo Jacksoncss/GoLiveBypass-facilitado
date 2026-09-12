@@ -4,6 +4,12 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.0.6-beta-11] - 2026-09-12
+
+### Plugin Windows: updater recompila com instalações antigas do pnpm
+
+- Reproduzido em uma VM Windows: alguns `pnpm.cmd` globais apontam para o entrypoint JavaScript sem extensão `node_modules\pnpm\bin\pnpm`; o `cmd.exe` tenta executar esse arquivo como comando e o updater da beta 10 falha antes do build. O updater agora ignora o shim incompatível quando encontra o pacote instalado e chama o entrypoint diretamente com `node.exe`, mantendo `shell: false`; `pnpm.exe` continua sendo executado diretamente e o shim permanece apenas como fallback.
+
 ## [2.0.6-beta-10] - 2026-09-12
 
 ### Plugin: arquivo WireGuard e updater

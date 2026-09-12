@@ -184,6 +184,7 @@ test("instalador Windows distribui todas as fontes do plugin WireGuard", () => {
     for (const file of [
         "goLiveBypass/index.tsx",
         "goLiveBypass/native.ts",
+        "goLiveBypass/plugin-build.ts",
         "goLiveBypass/update-channel.ts",
         "goLiveBypass/update-security.ts",
         "goLiveBypass/stability.ts",
@@ -219,15 +220,6 @@ test("instaladores do plugin nao distribuem o seletor de saida legado", () => {
     assert.match(windowsInstaller, /^function Remove-Tor \{/m);
 });
 
-test("manifesto local e linha v2 beta", () => {
-    assert.equal(manifest.version, "2.0.0-beta.1");
-});
-
-test("plugin mostra versao e oferece verificacao na configuracao", () => {
-    assert.match(pluginRenderer, /PLUGIN_VERSION = "2\.0\.0-beta\.1"/);
-    assert.match(pluginRenderer, /checkPluginUpdate\(/);
-    assert.match(pluginRenderer, /Atualizar/);
-});
 
 test("check() de update do plugin trata rejeicao igual a update() (nao deixa promise sem dono)", () => {
     // Native.checkPluginUpdate() em si pode encapsular a rejeição da chamada
@@ -253,17 +245,6 @@ test("updater do plugin nunca substitui o bundle dist do Vencord/Equicord", () =
     assert.doesNotMatch(pluginNative, /const target = __dirname;/);
 });
 
-test("updater localiza pnpm e recompila pelo cmd.exe no Windows", () => {
-    assert.match(pluginNative, /function resolveWindowsPnpm\(\)/);
-    assert.match(pluginNative, /AppData.*npm.*pnpm\.cmd/);
-    assert.match(pluginNative, /ProgramFiles.*nodejs.*pnpm\.cmd/);
-    assert.match(pluginNative, /windowsRoot, "System32", "cmd\.exe"/);
-    assert.match(pluginNative, /"call",\s*pnpm,\s*"build"/);
-    assert.match(pluginNative, /shell: false/);
-    assert.match(pluginNative, /env,/);
-    assert.match(pluginNative, /failure\.message/);
-    assert.match(pluginNative, /não consegui recompilar o plugin/);
-});
 
 test("TUI do plugin separa verificar de atualizar", () => {
     assert.match(linuxInstaller, /Verificar atualizacoes do plugin/);

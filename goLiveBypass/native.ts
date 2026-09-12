@@ -38,6 +38,7 @@ import {
     type PluginReleaseCandidate,
     type PluginUpdateChannel,
 } from "./update-channel";
+import { resolveWindowsPnpmBuildCommand } from "./plugin-build";
 import { isCompatiblePluginManifest, releaseAssetUrl, securePluginUpdateUrl } from "./update-security";
 import { defaultPluginVpnDataDir, PluginVpnController, type ProtonLoginPayload, type ProtonOptimizationOptions } from "./vpn-controller";
 import {
@@ -50,7 +51,7 @@ import {
 import * as proton from "./vpn-proton";
 import { safeDiagnosticDetail } from "./vpn-types";
 
-const PLUGIN_VERSION = "2.0.6-beta-10";
+const PLUGIN_VERSION = "2.0.6-beta-11";
 const PLUGIN_ASSET = "goLiveBypass-vencord.zip";
 const PLUGIN_CHECKSUM_ASSET = `${PLUGIN_ASSET}.sha256`;
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/bezumiya/GoLiveBypass/releases?per_page=20";
@@ -74,6 +75,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
     const common = [
         "index.tsx",
         "native.ts",
+        "plugin-build.ts",
         "update-channel.ts",
         "update-security.ts",
         "stability.ts",
@@ -2186,10 +2188,10 @@ function userpluginSource(allowMissingTarget = false) {
 function resolveWindowsPnpm(): string {
     const userProfile = process.env.USERPROFILE ?? process.env.HOME;
     const candidates = [
+        process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "pnpm", "pnpm.exe") : undefined,
         process.env.APPDATA ? join(process.env.APPDATA, "npm", "pnpm.cmd") : undefined,
         userProfile ? join(userProfile, "AppData", "Roaming", "npm", "pnpm.cmd") : undefined,
         process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "pnpm", "pnpm.cmd") : undefined,
-        process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "pnpm", "pnpm.exe") : undefined,
         process.env.ProgramW6432 ? join(process.env.ProgramW6432, "nodejs", "pnpm.cmd") : undefined,
         process.env.ProgramFiles ? join(process.env.ProgramFiles, "nodejs", "pnpm.cmd") : undefined,
         process.env["ProgramFiles(x86)"] ? join(process.env["ProgramFiles(x86)"], "nodejs", "pnpm.cmd") : undefined,
@@ -2199,24 +2201,20 @@ function resolveWindowsPnpm(): string {
 
 function rebuildUserplugin(projectRoot: string): void {
     const windows = process.platform === "win32";
-    const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
     const pnpm = windows ? resolveWindowsPnpm() : "pnpm";
-    const command = windows
-        ? (process.env.ComSpec && existsSync(process.env.ComSpec) ? process.env.ComSpec : join(windowsRoot, "System32", "cmd.exe"))
-        : pnpm;
-    const args = windows ? ["/d", "/s", "/c", "call", pnpm, "build"] : ["build"];
+    const build = windows
+        ? resolveWindowsPnpmBuildCommand(pnpm, process.env)
+        : { command: pnpm, args: ["build"], pathEntries: [] };
     const env = { ...process.env };
     if (windows) {
-        const nodeDirs = [
-            dirname(pnpm),
-            process.env.ProgramW6432 ? join(process.env.ProgramW6432, "nodejs") : undefined,
-            process.env.ProgramFiles ? join(process.env.ProgramFiles, "nodejs") : undefined,
-            join(windowsRoot, "System32"),
-        ].filter((value): value is string => typeof value === "string" && value.length > 0);
-        env.Path = [...new Set([...nodeDirs, env.Path ?? env.PATH ?? ""].filter(Boolean))].join(";");
+        const inheritedPath = Object.entries(env).find(([key, value]) => key.toLowerCase() === "path" && value)?.[1] ?? "";
+        for (const key of Object.keys(env)) {
+            if (key.toLowerCase() === "path") delete env[key];
+        }
+        env.Path = [...new Set([...build.pathEntries, inheritedPath].filter(Boolean))].join(";");
     }
     try {
-        execFileSync(command, args, { cwd: projectRoot, env, stdio: "pipe", windowsHide: true, shell: false, timeout: USERPLUGIN_BUILD_TIMEOUT_MS });
+        execFileSync(build.command, build.args, { cwd: projectRoot, env, stdio: "pipe", windowsHide: true, shell: false, timeout: USERPLUGIN_BUILD_TIMEOUT_MS });
     } catch (error) {
         const failure = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
         const detail = [failure.message, failure.stderr, failure.stdout].filter(Boolean).map(value => String(value).trim()).join("\n").slice(-1200);

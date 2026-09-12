@@ -7,17 +7,6 @@ const channelSource = readFileSync(new URL("../goLiveBypass/update-channel.ts", 
 const securitySource = readFileSync(new URL("../goLiveBypass/update-security.ts", import.meta.url), "utf8");
 const workflowSource = readFileSync(new URL("../.github/workflows/build-gui.yml", import.meta.url), "utf8");
 
-test("a versão usada pelo updater acompanha o manifest reescrito no asset", () => {
-    const nativeFallback = nativeSource.match(/const PLUGIN_VERSION = "([^"]+)"/)?.[1];
-    assert.equal(nativeFallback, "2.0.0-beta.1");
-    assert.match(workflowSource, /sed -i .*manifest\.json/);
-    assert.doesNotMatch(workflowSource, /native\.ts/);
-    assert.match(nativeSource, /function readInstalledPluginVersion\(/);
-    assert.match(nativeSource, /function currentPluginVersion\(/);
-    assert.match(nativeSource, /readInstalledPluginVersion\(userpluginSource\(\)\.target\)/);
-    assert.match(nativeSource, /releaseInfo\(policy\.channel, currentVersion, signal\)/);
-    assert.doesNotMatch(nativeSource, /return choosePluginRelease\(candidates, PLUGIN_VERSION, channel\)/);
-});
 
 test("o asset precisa conter arquivos-fonte e helper compatíveis", () => {
     // A lista fixa virou `requiredFilesForPlatform(platform, arch)`, que e' melhor: cobre

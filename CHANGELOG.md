@@ -10,6 +10,13 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.
 
+### Instalador Linux: pergunta de qual cliente vem antes de mexer no checkout
+
+- Relato: com vários clientes e TUI, a pergunta "Quais Discords recebem o plugin?" só aparecia depois de instalar dependências, baixar/compilar o plugin — ou seja, depois de `ensure_toolchain`, `install_plugin_source` e `build_mod`. Quem queria apenas escolher o cliente esperava a build inteira, e um **Esc** no menu chegava tarde demais.
+- **Correção:** `do_install` agora chama `selecionar_alvos_inject` logo após `select_target` definir o checkout e **antes** de `ensure_toolchain`, `install_plugin_source` e `build_mod`. A lista escolhida é reaproveitada em `alvos_ja_injetados`/`injetar_alvos`, então o seletor roda uma única vez. Com vários clientes e TTY, a pergunta aparece primeiro e **Esc cancela sem instalar dependências, sem compilar o plugin e sem tocar em nenhum Discord**. Um único alvo e `--yes`/não-interativo continuam idênticos (sem pergunta).
+- `tests/test-installer-client-selector-full-flow.sh` ganhou duas verificações de comportamento: a ordem real (`seletor` antes de `ensure_toolchain`/`install_plugin_source`/`build_mod`, chamado exatamente uma vez) e o cancelamento (`Esc` derruba o `do_install` sem executar nenhuma etapa de mutação). O contador de vereditos do teste foi corrigido — o `ok` do próprio instalador sombreava o do teste, então o resumo sempre dizia "0 OK".
+- Evidência: `sh tests/test-installer-client-selector-full-flow.sh` → 14 OK, 0 falhas; `tests/test-inject-selector.sh` 18/18 e `tests/test-selector.sh` 19/19 sem regressão; smoke PTY real (TUI de verdade, HOME falso, nenhuma etapa toca Discord) mostrou o menu antes das mutações e o `Esc` cancelando sem efeitos.
+
 ### Teste: regressão end-to-end do seletor de clientes do instalador Linux
 
 - `tests/test-installer-client-selector-full-flow.sh` dirige o fluxo completo (`main_menu` → `do_install` → `select_target` → `selecionar_alvos_inject` → `escolher_alvos_inject` → `tui_menu_multi`) com HOME/XDG temporários e clientes falsos (oficial + Vesktop + Legcord + Canary + flatpak), sem PTY e sem tocar Discord real. Garante que o seletor aparece com todos os clientes detectados, que o caminho pós-criação do checkout também oferece o menu, e que `--yes`/`ASSUME_YES` mantém o comportamento não-interativo (sem seletor, oficiais vão direto para injeção).

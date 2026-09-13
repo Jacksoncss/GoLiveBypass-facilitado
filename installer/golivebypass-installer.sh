@@ -2462,6 +2462,20 @@ do_install() {
     local root="${1:-}"
     root="$(select_target "$root")"
 
+    # A escolha de alvos vem PRIMEIRO, assim que o checkout esta definido, e antes de mexer
+    # em qualquer coisa do ambiente ou do checkout. Com varios clientes e TUI, a pergunta
+    # aparece antes de ensure_toolchain/install_plugin_source/build_mod e antes de qualquer
+    # injecao: Esc cancela na hora, sem instalar dependencias, sem compilar o plugin e sem
+    # tocar no Discord. Um unico alvo ou --yes continuam sem perguntar (escolher_alvos_inject
+    # decide). A lista e reaproveitada la embaixo, entao o seletor nunca roda duas vezes.
+    #
+    # Isto tambem e o que garante o seletor em quem ja tem um cliente injetado: a decisao de
+    # pular so olha os alvos ESCOLHIDOS aqui (alvos_ja_injetados), e nao mais "o checkout ja
+    # esta injetado em algum lugar?" -- pergunta que, sozinha, escondia o menu de quem tinha
+    # o Equibop injetado mesmo com Vesktop, Legcord e flatpaks intocados.
+    local escolhidos
+    escolhidos="$(selecionar_alvos_inject "$root")"
+
     # select_persistence responde 0 para permanente e 1 para temporario. Guardamos na forma
     # positiva: a variavel invertida ("permanent=1 quando temporario") funciona por dupla
     # negacao, mas e exatamente a armadilha que deixou o temporario preso no instalador
@@ -2473,15 +2487,9 @@ do_install() {
     install_plugin_source "$root"
     build_mod "$root"
 
-    # A escolha de alvos vem ANTES de decidir se ha o que injetar. Antes disto o instalador
-    # olhava so "o checkout ja esta injetado em algum lugar?" e, com um unico cliente ja
-    # apontando para ele (era o caso de quem tinha o Equibop injetado), pulava a injecao
-    # inteira -- o seletor nunca aparecia, mesmo com Vesktop, Legcord e flatpaks intocados.
-    # Agora so pula quando TODOS os alvos escolhidos ja estao prontos; espelha o
+    # So pula a injecao quando TODOS os alvos escolhidos ja estao prontos; espelha o
     # $oficialPendente/Select-InjectionTargets do instalador PowerShell.
-    local flatpak_id="" escolhidos
-    escolhidos="$(selecionar_alvos_inject "$root")"
-
+    local flatpak_id=""
     if alvos_ja_injetados "$root" "$escolhidos"; then
         step "O Discord ja carrega deste checkout, so reiniciando"
         stop_discord

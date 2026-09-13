@@ -29,19 +29,18 @@ describe("documentação das atualizações do plugin", () => {
     expect(installGuide).toContain("não altera o `app.asar`");
   });
 
-  it("registra a capacidade na seção mais recente do changelog", () => {
-    // [Unreleased] enquanto não sai release; depois do corte, o conteúdo passa
-    // para a seção da versão publicada. A seção que importa é a primeira com
-    // conteúdo, não um título fixo.
-    const newest = changelog
+  it("registra a capacidade na seção do changelog que documenta o updater do plugin", () => {
+    // A cada entrada nova o changelog ganha uma seção no topo, então "a mais recente"
+    // deixava de ser a do updater e o teste quebrava sem nada ter regredido. A seção que
+    // importa é a que documenta a capacidade (hoje na versão em que ela entrou).
+    const section = changelog
       .split(/\n(?=## \[)/)
-      .filter(section => section.startsWith("## ["))
-      .find(section => section.replace(/^## \[[^\]]+\][^\n]*\n/, "").trim().length > 0) ?? "";
-    expect(newest).toContain("### Atualizações do plugin Vencord/Equicord");
-    expect(newest).toContain("canal estável padrão");
-    expect(newest).toContain("beta opt-in");
-    expect(newest).toContain("validação SHA-256");
-    expect(newest).toContain("reload manual");
-    expect(newest).toMatch(/separada da GUI e\s+do standalone/);
+      .find(candidate => candidate.includes("### Atualizações do plugin Vencord/Equicord")) ?? "";
+    expect(section).not.toBe("");
+    expect(section).toContain("canal estável padrão");
+    expect(section).toContain("beta opt-in");
+    expect(section).toContain("validação SHA-256");
+    expect(section).toContain("reload manual");
+    expect(section).toMatch(/separada da GUI e\s+do standalone/);
   });
 });

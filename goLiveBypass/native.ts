@@ -60,6 +60,7 @@ import {
 } from "./update-channel";
 import { isCompatiblePluginManifest, releaseAssetUrl, securePluginUpdateUrl } from "./update-security";
 import { defaultPluginVpnDataDir, PluginVpnController, type ProtonLoginPayload, type ProtonOptimizationOptions } from "./vpn-controller";
+import { disposeWireSockSnapshotWorker } from "./vpn-snapshot-worker";
 import {
     findSystemBinary,
     GOLIVE_PLUGIN_LINUX_NAMESPACE,
@@ -102,6 +103,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
         "vpn-proton.ts",
         "vpn-types.ts",
         "vpn-snapshot.ts",
+        "vpn-snapshot-worker.ts",
         "vpn-windows.ts",
         "vpn-linux.ts",
         "manifest.json",
@@ -875,6 +877,7 @@ export function shutdown(_: IpcMainInvokeEvent) {
     // chamadas em andamento. No Linux, contudo, um processo dentro de netns não consegue
     // voltar à rede host sem relaunch; portanto pedimos relaunch externo apenas no Linux.
     controller.cancelProtonLogin();
+    disposeWireSockSnapshotWorker();
     return controller.shutdown(process.platform === "linux");
 }
 
@@ -2452,8 +2455,17 @@ app.on("before-quit", event => {
             log("error", "falha ao restaurar a rede antes do fechamento", { erro: safeDiagnosticDetail(error, 500) });
         })
         .finally(() => {
+            // `app.exit()` não emite `will-quit`: encerra a worker aqui também, para nenhuma
+            // sessão do PowerShell ficar pendurada quando o app sai por este caminho.
+            disposeWireSockSnapshotWorker();
             app.exit(0);
         });
+});
+
+// A worker da inspeção não pode sobreviver ao processo: o `unref` já não a segura, mas
+// encerrar aqui garante que nenhuma sessão do PowerShell fique órfã quando o app sai.
+app.on("will-quit", () => {
+    disposeWireSockSnapshotWorker();
 });
 
 app.whenReady().then(async () => {

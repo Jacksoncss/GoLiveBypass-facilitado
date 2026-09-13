@@ -87,8 +87,9 @@ test("o fechamento do Discord sempre conclui, mesmo sem confirmar a restauraçã
     // Nenhuma saída de emergência pode reverter o quit: era isso que deixava o processo vivo.
     assert.doesNotMatch(beforeQuit, /quitting = false/);
 
-    // E a saída precisa acontecer nos dois caminhos (sucesso e falha).
-    assert.match(beforeQuit, /\.finally\(\(\) => \{\s*app\.exit\(0\);\s*\}\)/);
+    // E a saída precisa acontecer nos dois caminhos (sucesso e falha). O que importa é o
+    // `app.exit(0)` no finally do shutdown -- o corpo pode ganhar outras liberações.
+    assert.match(beforeQuit, /\.finally\(\(\) => \{[\s\S]*?app\.exit\(0\);/);
 });
 
 test("lock assumido por outra instância não vira falha de restauração", () => {

@@ -21,6 +21,11 @@ import {
     type WireGuardConfigValidation,
 } from "./vpn-types";
 import { parseWireSockSnapshot, type WireSockSnapshot } from "./vpn-snapshot";
+import { runWireSockSnapshotOutsideMainThread } from "./vpn-snapshot-worker";
+
+// Um valor para a leitura síncrona (caminhos que decidem) e para a worker: as duas rodam
+// exatamente o mesmo script, com as mesmas opções.
+const WIRESOCK_SNAPSHOT_TIMEOUT_MS = 8000;
 
 export const WIRESOCK_VERSION = "3.4.8.1";
 const WIRESOCK_DOWNLOAD = "https://wiresock.net/_api/download-release.php?product=wiresock-secure-connect-sdk&platform=x64&version=3.4.8.1&channel=winget";
@@ -164,7 +169,7 @@ function serviceCommand(name: string): string | null {
 function readWireSockSnapshot(names: readonly string[]): WireSockSnapshot | null {
     try {
         const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", wireSockSnapshotScript(names)], {
-            encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, timeout: 8000,
+            encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, timeout: WIRESOCK_SNAPSHOT_TIMEOUT_MS,
         }).trim();
         if (!output) return null;
         return parseWireSockSnapshot(output, names);
@@ -186,15 +191,28 @@ $procs=@(Get-CimInstance Win32_Process -Filter "Name='wiresock-client.exe'" -Err
 [PSCustomObject]@{ services=$svc; processes=$procs } | ConvertTo-Json -Compress -Depth 4`;
 }
 
-// Mesma consulta, mas fora da thread principal: o PowerShell leva ~285ms medidos na VM por
-// ciclo e quem chamava isso periodicamente congelava a janela do Discord por esse tempo
-// (watchdog a cada 15s e cada leitura de status do painel). Aqui a espera é do processo
-// filho; a thread que desenha a interface continua livre.
-function readWireSockSnapshotAsync(names: readonly string[]): Promise<WireSockSnapshot | null> {
+// Caminho dos leitores periódicos (watchdog e status do painel): a criação do PowerShell
+// acontece fora do processo principal, numa worker persistente. Medido na VM (win11, 6 vCPU)
+// com o painel aberto: a criação do processo bloqueia a janela do Discord por ~0,55s a cada
+// leitura, e apenas tornar a espera assíncrona (como a versão anterior deste caminho fazia)
+// não muda isso — a criação é síncrona em quem chama. Mesmo script, mesmas opções e mesmo
+// parser da leitura síncrona, então o veredito é idêntico.
+async function readWireSockSnapshotAsync(names: readonly string[]): Promise<WireSockSnapshot | null> {
+    const script = wireSockSnapshotScript(names);
+    const run = await runWireSockSnapshotOutsideMainThread(script, WIRESOCK_SNAPSHOT_TIMEOUT_MS);
+    if (!run.ran) return readWireSockSnapshotInProcessAsync(script, names);
+    const output = String(run.stdout ?? "").trim();
+    return output ? parseWireSockSnapshot(output, names) : null;
+}
+
+// Sem worker disponível (ou morta no meio da consulta), a leitura volta para o processo, que
+// é o comportamento anterior: melhor pagar a criação dentro do processo do que devolver
+// estado desconhecido para o painel e para o watchdog.
+function readWireSockSnapshotInProcessAsync(script: string, names: readonly string[]): Promise<WireSockSnapshot | null> {
     const { promise, resolve } = Promise.withResolvers<WireSockSnapshot | null>();
     try {
-        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", wireSockSnapshotScript(names)], {
-            encoding: "utf8", windowsHide: true, timeout: 8000,
+        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+            encoding: "utf8", windowsHide: true, timeout: WIRESOCK_SNAPSHOT_TIMEOUT_MS,
         }, (_error, stdout) => {
             const output = String(stdout ?? "").trim();
             resolve(output ? parseWireSockSnapshot(output, names) : null);

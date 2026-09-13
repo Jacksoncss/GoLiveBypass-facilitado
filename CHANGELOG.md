@@ -6,6 +6,15 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Interface do Discord: inspeção periódica do WireSock saiu da thread principal
+
+- Relato (beta): o Discord dá engasgadas na **interface**, não na transmissão.
+- **Causa medida:** a consulta do WireSock no Windows é um `powershell.exe` (`Get-CimInstance` + `ConvertTo-Json`) executado de forma **síncrona, na thread principal do Discord**. O watchdog repete isso a cada 15s enquanto o túnel está ativo e, quando a leitura diz que o serviço desapareceu, repete até 6 vezes seguidas com 1s de intervalo. Custo por consulta: **285ms medidos na VM** (contra os 1596ms do caminho antigo de sete spawns, ver a entrada da beta 8); com a escada completa a janela já chegou a não responder por ~1s. O mesmo `getVpnStatus` era chamado pelo painel a cada 5s e em cada `CONNECTION_OPEN`, pagando outra consulta igual.
+- **Correção:** a leitura ganhou um caminho assíncrono (`execFile`, mesmo script e mesmo parser) e os leitores periódicos passaram a usá-lo — o watchdog (e a escada de confirmação) e o status que o renderer consome. As verificações que **decidem** (ativação, limpeza, slot de serviço) continuam com a leitura síncrona fresca: nenhum veredito muda, só o lugar onde a espera acontece.
+- Evidência: `npx vitest run tests/plugin-inspection-async.test.ts` — 3 casos (mesmo veredito das duas leituras para o mesmo snapshot; entrega depois da resposta do PowerShell sem bloquear a thread, com relógio virtual; falha da consulta virando estado desconhecido) —, a suíte `tests/test-plugin-*.mjs` 21/21 e `npx tsc --noEmit` + `node scripts/build/build.mjs` no checkout do Equicord com as fontes do plugin aplicadas, ambos limpos. `tests/plugin-v2-regression.test.ts` foi ajustado apenas no ponto que prendia a chamada síncrona da escada do watchdog.
+- `tests/test-plugin-windows-inspection.mjs` foi **removido** nesta mudança: ele lia `vpn-windows.ts` e prendia nomes de função e contagens de chamadas em vez de comportamento, e a cobertura que importa (o veredito do caminho assíncrono, a paridade com a leitura síncrona e o estado desconhecido) está em `golive-gui/tests/plugin-inspection-async.test.ts`. As entradas mais antigas deste changelog que citam aquele arquivo permanecem como registro do que foi feito nas releases em que ele existia.
+- Limite: a fluidez só é observável em Windows com o túnel ativo. Nesta máquina (Linux) a inspeção é leitura de `/run/netns` e `/sys/class/net`, sem processo nenhum, então o caminho alterado não tem o que medir localmente; os testes cobrem o contrato, não o tempo de parede. O número de 285ms por consulta é o da medição na VM (`recon4`, beta 8).
+
 ### Plugin: relato de bug direto do Discord
 
 - Relato: quem usa o plugin e encontra um problema só tinha o comando `/golivebypass`, que copia o diagnóstico para o clipboard — o usuário ficava sem o caminho curto para abrir a issue e os desenvolvedores ficavam sem os logs da sessão em que o defeito apareceu. A GUI e os instaladores já reportam pela API de bugs (`api/`); o plugin não reportava.

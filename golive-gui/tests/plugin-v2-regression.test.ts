@@ -111,8 +111,13 @@ describe("plugin v2 WireSock ownership regression", () => {
     });
 
     it("confirma uma leitura inativa sem transformar o watchdog em bloqueio", () => {
+        // A escada de confirmação continua idêntica; a leitura do WireSock é que passou a ser
+        // a assíncrona (fora da thread principal), senão a própria escada congelava a janela.
         expect(controllerSource).toMatch(
-            /if \(!inspection\.reliable\) \{[\s\S]*?if \(!inspection\.active\) \{[\s\S]*?for \(let attempt = 0; attempt < 5 && confirmation\.reliable && !confirmation\.active; attempt\+\+\) \{[\s\S]*?setTimeout\(resolve, 1_000\)[\s\S]*?confirmation = windows\.inspectWireSock\(this\.serviceConfigPath\);[\s\S]*?if \(!confirmation\.reliable\)[\s\S]*?if \(!confirmation\.active\)/,
+            /if \(!inspection\.reliable\) \{[\s\S]*?if \(!inspection\.active\) \{[\s\S]*?for \(let attempt = 0; attempt < 5 && confirmation\.reliable && !confirmation\.active; attempt\+\+\) \{[\s\S]*?setTimeout\(resolve, 1_000\)[\s\S]*?confirmation = await windows\.inspectWireSockAsync\(this\.serviceConfigPath\);[\s\S]*?if \(!confirmation\.reliable\)[\s\S]*?if \(!confirmation\.active\)/,
+        );
+        expect(controllerSource).toMatch(
+            /const inspection = await windows\.inspectWireSockAsync\(this\.serviceConfigPath\);/,
         );
         expect(controllerSource).toContain("watchdog não confirmou o WireSock próprio");
         expect(controllerSource).toMatch(

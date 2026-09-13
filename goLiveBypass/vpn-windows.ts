@@ -162,8 +162,20 @@ function serviceCommand(name: string): string | null {
 // (estado, PathName e ProcessId dos serviços do WireSock + a lista de processos próprios).
 // A checagem de slot e a limpeza seguem com os helpers baratos (sc.exe).
 function readWireSockSnapshot(names: readonly string[]): WireSockSnapshot | null {
+    try {
+        const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", wireSockSnapshotScript(names)], {
+            encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, timeout: 8000,
+        }).trim();
+        if (!output) return null;
+        return parseWireSockSnapshot(output, names);
+    } catch {
+        return null;
+    }
+}
+
+function wireSockSnapshotScript(names: readonly string[]): string {
     const list = names.map(name => quotePowerShell(name)).join(",");
-    const script = `$names=@(${list})
+    return `$names=@(${list})
 $svc=@()
 foreach($n in $names){
   $s=Get-CimInstance Win32_Service -Filter "Name='$n'" -ErrorAction SilentlyContinue
@@ -172,15 +184,25 @@ foreach($n in $names){
 }
 $procs=@(Get-CimInstance Win32_Process -Filter "Name='wiresock-client.exe'" -ErrorAction SilentlyContinue | ForEach-Object { [PSCustomObject]@{ pid=[int]$_.ProcessId; commandLine=$_.CommandLine } })
 [PSCustomObject]@{ services=$svc; processes=$procs } | ConvertTo-Json -Compress -Depth 4`;
+}
+
+// Mesma consulta, mas fora da thread principal: o PowerShell leva ~285ms medidos na VM por
+// ciclo e quem chamava isso periodicamente congelava a janela do Discord por esse tempo
+// (watchdog a cada 15s e cada leitura de status do painel). Aqui a espera é do processo
+// filho; a thread que desenha a interface continua livre.
+function readWireSockSnapshotAsync(names: readonly string[]): Promise<WireSockSnapshot | null> {
+    const { promise, resolve } = Promise.withResolvers<WireSockSnapshot | null>();
     try {
-        const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-            encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, timeout: 8000,
-        }).trim();
-        if (!output) return null;
-        return parseWireSockSnapshot(output, names);
+        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", wireSockSnapshotScript(names)], {
+            encoding: "utf8", windowsHide: true, timeout: 8000,
+        }, (_error, stdout) => {
+            const output = String(stdout ?? "").trim();
+            resolve(output ? parseWireSockSnapshot(output, names) : null);
+        });
     } catch {
-        return null;
+        resolve(null);
     }
+    return promise;
 }
 
 function assertPluginServiceSlot(configPath: string): void {
@@ -197,9 +219,9 @@ function assertPluginServiceSlot(configPath: string): void {
         throw new Error("O serviço WireSock já está registrado com outro perfil (possivelmente pela GUI ou por outro plugin). Desative-o antes de usar a VPN do plugin.");
 }
 
-export function inspectWireSock(configPath?: string): WireSockInspection {
+export function inspectWireSock(configPath?: string, snapshotOverride?: WireSockSnapshot | null): WireSockInspection {
     if (!isWindows()) return { active: false, owned: false, reliable: true, services: [], processIds: [], reason: null };
-    const snapshot = readWireSockSnapshot(VPN_SERVICE_NAMES);
+    const snapshot = snapshotOverride === undefined ? readWireSockSnapshot(VPN_SERVICE_NAMES) : snapshotOverride;
     if (!snapshot) {
         // Sem o snapshot a leitura já é desconhecida de qualquer forma: os processos não têm
         // fonte barata. O sc.exe (~9ms, sem PowerShell) ainda diz quais serviços estão de pé,
@@ -283,6 +305,14 @@ export function inspectWireSock(configPath?: string): WireSockInspection {
             ? "WireSock próprio e externo foram detectados ao mesmo tempo; a operação foi bloqueada."
             : "WireSock já está ativo por outro perfil, pela GUI ou por outro plugin.",
     };
+}
+
+// Mesmo veredito de `inspectWireSock`, sem bloquear a thread principal: é o caminho dos
+// leitores periódicos (watchdog e status do painel). Os caminhos de decisão (ativação,
+// limpeza, slot de serviço) continuam com a leitura síncrona fresca.
+export async function inspectWireSockAsync(configPath?: string): Promise<WireSockInspection> {
+    if (!isWindows()) return inspectWireSock(configPath);
+    return inspectWireSock(configPath, await readWireSockSnapshotAsync(VPN_SERVICE_NAMES));
 }
 
 export function wireSockSearchRoots(env: NodeJS.ProcessEnv = process.env): string[] {

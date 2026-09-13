@@ -889,7 +889,14 @@ export function restartDiscord(_: IpcMainInvokeEvent) {
 export function getVpnStatus(_: IpcMainInvokeEvent) {
     // O modo de armazenamento da sessão é uma propriedade da máquina, não do
     // tunel: a UI avisa antes do login quando a sessão não poderá ser guardada.
-    return { ...controller.getStatus(), sessionStorage: proton.protonSessionStorageMode() };
+    //
+    // A ponte IPC já devolve promessa ao renderer; usar o caminho assíncrono aqui tira a
+    // consulta do WireSock (PowerShell, ~285ms medidos na VM) da thread principal, que é o
+    // que engasgava a interface do Discord no watchdog e no polling do painel.
+    return controller.getStatusAsync().then(status => ({
+        ...status,
+        sessionStorage: proton.protonSessionStorageMode(),
+    }));
 }
 
 export function getProtonOptimizationStatus(_: IpcMainInvokeEvent): PluginOptimizationStatus {
@@ -1061,7 +1068,7 @@ export async function submitBugReport(_: IpcMainInvokeEvent, value: unknown): Pr
     const blocoDeLog = pedido.includeLogs
         ? montarLog({ ring: history.join("\n"), caudaArquivo: lerCaudaDoLog(), sessao: pedido.session, segredos, token: BUG_API_TOKEN })
         : "";
-    const status = controller.getStatus();
+    const status = await controller.getStatusAsync();
     const meta = montarMeta({
         versao: currentPluginVersion(),
         plataforma: `${process.platform}-${process.arch}`,

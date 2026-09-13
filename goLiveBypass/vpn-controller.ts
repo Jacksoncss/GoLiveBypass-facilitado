@@ -463,7 +463,9 @@ export class PluginVpnController {
         };
     }
 
-    public getStatus(): VpnStatus {
+    // `providedInspection` existe para o leitor periódico: a leitura do WireSock pode ser
+    // feita fora da thread principal e só o veredito entra aqui.
+    public getStatus(providedInspection?: windows.WireSockInspection): VpnStatus {
         if (isLinux()) return this.getLinuxStatus();
         if (!isSupportedWindowsArchitecture(process.platform, process.arch)) {
             return {
@@ -481,7 +483,7 @@ export class PluginVpnController {
                 message: "Windows x64 necessário",
             };
         }
-        const inspection = windows.inspectWireSock(this.serviceConfigPath);
+        const inspection = providedInspection ?? windows.inspectWireSock(this.serviceConfigPath);
         if (isUnknownWireSockInspection(inspection)) {
             const message = this.state === "active" || this.state === "restart_pending"
                 ? unknownWireSockMessage(inspection)
@@ -526,6 +528,14 @@ export class PluginVpnController {
     public enable(): Promise<VpnOperationResult> {
         this.automaticBootSuppressed = false;
         return this.serial(() => this.startInternal(true));
+    }
+
+    // Mesmo veredito de `getStatus`, mas a leitura do WireSock no Windows sai da thread
+    // principal. O renderer já consome promessa pela ponte IPC; o watchdog e o painel deixam
+    // de congelar a janela do Discord pelos ~285ms medidos por consulta.
+    public async getStatusAsync(): Promise<VpnStatus> {
+        if (isLinux() || !isSupportedWindowsArchitecture(process.platform, process.arch)) return this.getStatus();
+        return this.getStatus(await windows.inspectWireSockAsync(this.serviceConfigPath));
     }
 
     // Ativação automática do boot (processo principal e renderer). Não é a ativação do usuário:
@@ -1538,7 +1548,7 @@ export class PluginVpnController {
             && this.generation === vpnGeneration
             && this.state === "active";
         try {
-            const inspection = windows.inspectWireSock(this.serviceConfigPath);
+            const inspection = await windows.inspectWireSockAsync(this.serviceConfigPath);
             if (!inspection.reliable) {
                 if (isCurrent()) this.setDiagnostic("wireguard", false, inspection.reason || "Estado do WireSock desconhecido.");
                 this.options.log("warn", "watchdog não conseguiu confirmar o estado do WireSock", { mode: "diagnostic-only" });
@@ -1552,7 +1562,7 @@ export class PluginVpnController {
                 for (let attempt = 0; attempt < 5 && confirmation.reliable && !confirmation.active; attempt++) {
                     await new Promise<void>(resolve => setTimeout(resolve, 1_000));
                     if (!isCurrent()) return;
-                    confirmation = windows.inspectWireSock(this.serviceConfigPath);
+                    confirmation = await windows.inspectWireSockAsync(this.serviceConfigPath);
                 }
                 if (!confirmation.reliable) {
                     if (isCurrent()) this.setDiagnostic("wireguard", false, confirmation.reason || "Estado do WireSock desconhecido.");

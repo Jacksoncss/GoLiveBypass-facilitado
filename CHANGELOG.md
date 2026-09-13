@@ -10,6 +10,11 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.
 
+### Teste: regressão end-to-end do seletor de clientes do instalador Linux
+
+- `tests/test-installer-client-selector-full-flow.sh` dirige o fluxo completo (`main_menu` → `do_install` → `select_target` → `selecionar_alvos_inject` → `escolher_alvos_inject` → `tui_menu_multi`) com HOME/XDG temporários e clientes falsos (oficial + Vesktop + Legcord + Canary + flatpak), sem PTY e sem tocar Discord real. Garante que o seletor aparece com todos os clientes detectados, que o caminho pós-criação do checkout também oferece o menu, e que `--yes`/`ASSUME_YES` mantém o comportamento não-interativo (sem seletor, oficiais vão direto para injeção).
+
+
 ## [2.0.6-beta-8] - 2026-09-11
 
 ### Plugin: login Proton parava em máquinas sem armazenamento seguro

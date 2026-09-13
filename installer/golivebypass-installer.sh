@@ -450,11 +450,11 @@ tui_menu() {
 
 # tui_menu_multi <title> <items...> → imprime os indices marcados (1..N) separados
 # por espaco, ou "0" para cancelar. Multi-selecao para escolher QUAL Discord
-# patchear: Espaco marca/desmarca, 'a' marca/desmarca todos, Enter confirma
-# (exige >= 1), Esc cancela.
+# patchear: Espaco marca/desmarca, 'a' marca/desmarca todos. Enter confirma as
+# marcas existentes ou, sem marcas, escolhe o item destacado. Esc cancela.
 tui_menu_multi() {
     local title="$1"; shift
-    local n sel key i txt j pad marks marca_txt dim aviso_marca aviso_txt
+    local n sel key i txt j pad marks marca_txt dim
     n=$#
     sel=0
     marks=""
@@ -525,14 +525,14 @@ tui_menu_multi() {
                 done
                 ;;
             enter)
-                # Enter sem nada marcado nao confirma -- mas antes disso ele nao fazia NADA e
-                # nao dizia nada, com o rodape prometendo "[Enter] confirmar". Quem apertava
-                # Enter via a tela parada e concluia que o instalador nao deixava escolher.
-                # Agora o rodape troca o aviso ate a pessoa marcar algo.
                 case "$marks" in
-                    *1*) break ;;
-                    *) aviso_marca=1 ;;
+                    *1*) ;;
+                    *)
+                        if [ "$sel" -gt 0 ]; then antes="$(printf '%s' "$marks" | cut -c 1-$sel)"; else antes=""; fi
+                        marks="${antes}1$(printf '%s' "$marks" | cut -c $((sel+2))-"")"
+                        ;;
                 esac
+                break
                 ;;
             esc) sel=-1; break ;;
         esac

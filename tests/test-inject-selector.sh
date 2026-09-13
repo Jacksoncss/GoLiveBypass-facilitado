@@ -115,13 +115,17 @@ saida="$(selecionar 'a enter')"
 n="$(printf '%s\n' "$saida" | grep -c .)"
 [ "$n" = "5" ] && ok "'a' marca todos e devolve os 5" || bad "'a' devolveu $n alvos: [$saida]"
 
-printf '\n== 3. Confirmar sem marcar nao injeta nada ==\n'
+printf '\n== 3. Enter escolhe o item destacado quando nao ha marcas ==\n'
 
-if selecionar 'enter esc' >/dev/null 2>&1; then
-    bad "Enter sem marcar confirmou uma escolha vazia"
+saida="$(selecionar 'down down enter')"
+[ "$saida" = "P|$BASE/Legcord/resources" ] && ok "setas + Enter devolvem somente o cliente destacado" \
+                                              || bad "Enter no Legcord devolveu: [$saida]"
+
+if selecionar 'esc' >/dev/null 2>&1; then
+    bad "Esc confirmou uma escolha"
 else
     case "$(cat "$TMP/err.txt")" in
-        *Cancelado*) ok "Enter sem marcar nao confirma; Esc cancela" ;;
+        *Cancelado*) ok "Esc continua cancelando sem instalar" ;;
         *)           bad "cancelou sem avisar: [$(cat "$TMP/err.txt" | tr -d '\033' | tail -3)]" ;;
     esac
 fi
@@ -150,7 +154,7 @@ n_larg="$(printf '%s\n' $larguras | grep -c .)"
 [ "$n_larg" = "1" ] && ok "todas as linhas do menu tem a mesma largura ($larguras)" \
                    || bad "menu desalinhado, larguras: $larguras"
 
-printf '\n== 3. Bloqueador: escolha vem ANTES de decidir se injeta ==\n'
+printf '\n== 5. Bloqueador: escolha vem ANTES de decidir se injeta ==\n'
 
 # Defeito relatado: com QUALQUER cliente ja apontando para o checkout (o caso de quem tinha o
 # Equibop injetado a partir de ~/Equicord), o do_install pulava a injecao inteira e o seletor

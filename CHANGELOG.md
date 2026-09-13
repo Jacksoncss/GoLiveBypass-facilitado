@@ -6,6 +6,10 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Instalador Linux: seleção direta do cliente Discord
+
+- No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.
+
 ## [2.0.6-beta-8] - 2026-09-11
 
 ### Plugin: login Proton parava em máquinas sem armazenamento seguro

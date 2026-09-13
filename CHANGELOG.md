@@ -4,31 +4,21 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.0.6-beta-15] - 2026-09-13
+
+### Plugin: relato manual de bug pelo Discord
+
+- O painel VPN agora oferece **Reportar bug**, com resumo, detalhes, logs sanitizados e cópia do diagnóstico; o envio só ocorre após o clique do usuário.
+- A distribuição inclui `bug-report.ts` nos arquivos obrigatórios e nos dois instaladores.
+- Evidência: `node tests/test-plugin-bug-report.mjs` 14/14, `tests/test-redaction-parity.mjs` 2/2 e `tests/test-distribution-parity.cjs` sem regressão.
+
+### Plugin: correção real das engasgadas da interface
+
+- A primeira tentativa com `execFile` foi neutra na VM (8,4 s contra 8,6 s de janela bloqueada); a correção real moveu a criação do PowerShell para uma worker thread persistente, preservando script, parser e vereditos.
+- Na mesma VM Windows 11, a janela bloqueada caiu para 2,35 s em 75 s, contra 8,4–8,6 s antes; picos acima de 300 ms caíram de 16–17 para 4.
+- Evidência: `golive-gui/tests/plugin-inspection-async.test.ts` cobre delegação, reuso e fallback; a medição de fluidez é específica da VM Windows com o painel aberto.
+
 ## [Unreleased]
-
-### Interface do Discord: a criação do PowerShell da inspeção saiu do processo principal
-
-- Relato (beta): o Discord dá engasgadas na **interface**, não na transmissão.
-- **Causa:** a consulta do WireSock no Windows é um `powershell.exe` (`Get-CimInstance` + `ConvertTo-Json`) que roda no **processo principal do Discord**. O painel consulta o status a cada 5s e o watchdog repete a leitura enquanto o túnel está ativo; em cada consulta a janela deixava de responder enquanto o processo era criado. Medido na VM (win11, 6 vCPU) com o painel aberto: **~0,55s de janela parada a cada 5s** — janela bloqueada somada 8,4–8,6s em 75s, com 16–17 amostras acima de 300ms em 508.
-- **A primeira tentativa não resolveu.** Trocar a espera para `execFile` (assíncrono) mediu **neutra** no mesmo laboratório: 8,4s contra 8,6s de janela bloqueada, 16 timeouts contra 17, os mesmos picos de ~0,55s. A criação do processo (`CreateProcessW`) acontece na thread que chama, e `execFile` também a paga — o que era assíncrono era a espera do filho, que é a menor parte do custo.
-- **Correção real:** a criação saiu do processo principal. `vpn-snapshot-worker.ts` mantém uma worker thread persistente que roda **o mesmo script**, com as mesmas opções, e devolve o stdout; o processo principal parseia a resposta com o mesmo parser, então veredito e limiares não mudam. Uma worker para todas as leituras (o handler é síncrono, então watchdog, escada de confirmação e painel são atendidos em série), sem worker por consulta e sem timer periódico — o único limite de espera é um vigia armado enquanto existe consulta em voo e desarmado quando a resposta chega. Worker indisponível ou morta no meio da consulta: a leitura volta para dentro do processo, que é o comportamento anterior, em vez de devolver estado desconhecido para o painel. A worker é encerrada no desligamento do plugin (`shutdown`) e na saída do app (`will-quit`), e só strings cruzam a fronteira — nenhum objeto do Electron entra nela.
-- **Os caminhos que decidem continuam síncronos:** ativação, limpeza e checagem de slot de serviço seguem com a leitura fresca dentro do processo; o que saiu foi só o custo das leituras periódicas.
-- **Medição na VM depois da correção** (mesmo laboratório, painel aberto, 75s): janela bloqueada **2,35s contra 8,4–8,6s**, picos acima de 300ms **4 contra 16–17** e o p95 da latência da janela **0ms contra 233–248ms**. Controle com o painel desmontado: **0 consultas e 0 picos** (65ms somados em 60s), ou seja, o resíduo é do próprio painel.
-- `tests/test-plugin-windows-inspection.mjs` foi **removido** nesta mudança: ele lia `vpn-windows.ts` e prendia nomes de função e contagens de chamadas em vez de comportamento. A cobertura que importa está em `golive-gui/tests/plugin-inspection-async.test.ts`, que agora prova **por contrato observável** que o status e o watchdog delegam a criação à worker: a worker recebe o mesmo script da leitura síncrona, o processo principal não cria processo nenhum, o veredito é igual ao da leitura síncrona, uma única worker é reaproveitada entre leituras, e falha, morte da worker e consulta pendurada caem para a leitura dentro do processo sem perder o status.
-- Arquivo novo no pacote: `vpn-snapshot-worker.ts` entrou na validação da árvore instalada (`requiredFilesForPlatform`), nos dois instaladores e nas verificações de distribuição.
-- Limite: a medição é da latência da janela (mensagem síncrona com limite de 300ms por amostra), não de frames; e a fluidez deste caminho só é observável no Windows do laboratório, com o painel aberto ou o túnel ativo.
-
-### Plugin: relato de bug direto do Discord
-
-- Relato: quem usa o plugin e encontra um problema só tinha o comando `/golivebypass`, que copia o diagnóstico para o clipboard — o usuário ficava sem o caminho curto para abrir a issue e os desenvolvedores ficavam sem os logs da sessão em que o defeito apareceu. A GUI e os instaladores já reportam pela API de bugs (`api/`); o plugin não reportava.
-- **Novo:** botão **"Reportar bug"** na linha de ações do painel VPN e entrada `"Reportar bug no GoLiveBypass"` em `toolboxActions`. O modal pede resumo (até 200 caracteres) e detalhes (até 8 KB), com o switch "Incluir logs da sessão (recomendado)" ligado por padrão. Sucesso mostra o link da issue; falha preserva o que foi digitado e oferece "Copiar diagnóstico" (o `buildReport()` que já existia); bloqueio por excesso de relatos mostra a contagem regressiva vinda do servidor (`Retry-After`/`retry_after`, consultados em `GET /v1/block-status` antes de enviar). Nada é disparado automaticamente: só o submit do modal chama o envio.
-- **Envio no processo nativo:** `goLiveBypass/native.ts` ganhou `submitBugReport` e `getBugReportStatus`, com endpoint, URL de status e token **iguais aos da GUI** (`golive-gui/electron/bugreport.ts`) e **não exportados ao renderer**. O token embutido é extraível do pacote nativo por design (não é segredo forte; o freio é o rate limit por IP da API) — o renderer, o modal, o log e o corpo do relato nunca o veem. Prazo de 15 s no envio e 5 s no status.
-- **Redação em três camadas** no módulo puro `goLiveBypass/bug-report.ts`: L1 mascara credenciais em URL, cabeçalhos de autenticação, tokens do Discord, query do gateway, e-mail, diretórios home, `PrivateKey` e `Endpoint` WireGuard; L2 remove por ocorrência literal os termos conhecidos da máquina (home, usuário Proton, chave do perfil e o próprio token da API); L3 bloqueia o envio se algum termo conhecido sobreviver em campo não redigido, sem devolver o payload bloqueado. O log enviado é a sessão do renderer + o ring buffer do processo + o complemento da cauda do `plugin-vpn.log` (sem repetir a sessão), cortado em 240 KB preservando o fim.
-- **Meta por lista branca** (11 chaves: app, versão, plataforma, electron, node, estado/ativa/própria/geração da VPN, modo e onboarding) — sem caminho de perfil, endpoint, usuário Proton, `AllowedApps` ou caminho do log.
-- **Dedup de 48 h** por assinatura SHA-256 do título+descrição (o log não entra, ele muda a cada segundo), com estado em `<pasta privada>/bug-report-state.json` gravado **somente depois de um 201** — uma tentativa que falhou não esconde o mesmo relato por 48 h.
-- Distribuição: `bug-report.ts` entrou em `requiredFilesForPlatform` (validação do zip e da árvore instalada) e nos dois instaladores (`.sh` e `.ps1`), que copiam a fonte arquivo por arquivo — sem a entrada, o `native.ts` instalado importaria um módulo ausente.
-- Evidência: `node tests/test-plugin-bug-report.mjs` 14/14 (marcadores de vazamento em L1 — incluindo `PrivateKey`/`Endpoint` —, L2, bloqueio L3 sem devolver o payload, título vazio, corte de 240 KB sem linha partida, dedup ring-vs-cauda, assinatura, janela de 48 h, lista branca do meta, respostas 201/400/401/413/429/502/5xx, token só no header `Authorization` e limites da entrada do renderer); `tests/test-redaction-parity.mjs` 2/2 (L1 igual à da GUI, mais as regras exclusivas do plugin); suíte `tests/test-plugin-*.mjs` 22/22 sem regressão (inclui UI e ciclo de vida); `tests/test-distribution-parity.cjs` sem regressão. `npx tsc --noEmit` e `node scripts/build/build.mjs` no checkout do Equicord com as fontes do plugin aplicadas passaram limpos, e o bundle do renderer não contém o módulo puro — só o lado nativo. O envio foi conferido uma vez contra um servidor HTTP em loopback com token de teste (201 → issue, dedup de 48 h e nenhum marcador de segredo no corpo), sem tocar a API de produção.
-
 ### Instalador Linux: seleção direta do cliente Discord
 
 - No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.

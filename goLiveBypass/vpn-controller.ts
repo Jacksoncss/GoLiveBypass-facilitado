@@ -58,6 +58,77 @@ export interface ProtonOptimizationOptions {
     onProgress?: (progress: proton.ProtonOptimizationProgress & { requestId: string }) => void;
 }
 
+export interface ProtonRouteDiscoveryOptions {
+    requestId?: string;
+    country?: string;
+    freeOnly?: boolean;
+    autoPing?: boolean;
+    onProgress?: (progress: proton.ProtonOptimizationProgress & { requestId: string; measurementId: string }) => void;
+}
+
+/**
+ * Projeção pública de uma rota catalogada. `status` descreve apenas a medição
+ * de ping: "testing" aguarda a sonda, "success" tem ping válido e "failed"
+ * ficou sem ping utilizável.
+ */
+export interface ProtonRouteCatalogView {
+    server: string;
+    country: string;
+    city: string;
+    tier: string;
+    load: number;
+    score: number;
+    pingMs?: number;
+    status: "testing" | "success" | "failed";
+}
+
+export interface ProtonRouteDiscoveryResult {
+    success: boolean;
+    measurementId?: string;
+    routes?: ProtonRouteCatalogView[];
+    error?: string;
+    cancelled?: boolean;
+}
+
+export interface ProtonRouteSelectionOptions {
+    measurementId: string;
+    server: string;
+}
+
+export interface ProtonRouteSelectionResult {
+    success: boolean;
+    server?: string;
+    country?: string;
+    city?: string;
+    tier?: string;
+    load?: number;
+    score?: number;
+    pingMs?: number;
+    state?: VpnState;
+    deferred?: boolean;
+    cancelled?: boolean;
+    message?: string;
+    error?: string;
+}
+
+export interface ProtonRouteDiscoveryStatus {
+    active: boolean;
+    requestId: string | null;
+    measurementId: string | null;
+    phase: proton.ProtonOptimizationProgress["phase"] | null;
+    routes: ProtonRouteCatalogView[];
+    total: number;
+    measured: number;
+    error?: string;
+    updatedAt: number | null;
+    expiresAt: number | null;
+}
+
+/** Detalhe preservado da ponte de CAPTCHA: recusa e cancelamento não são a mesma coisa. */
+export type ProtonCaptchaSolution =
+    | { ok: true; token: string }
+    | { ok: false; code: "CAPTCHA_INVALID" | "CAPTCHA_CANCELLED"; message?: string };
+
 const OWNER_FILE = "owner.lock";
 const MIGRATION_FILE = "migration-v1.json";
 const PROFILE_FILE = "wireguard.conf";
@@ -69,6 +140,16 @@ const OWNER_MUTEX_HOLDER_FILE = "holder.json";
 const OWNER_MUTEX_RETRY_MS = 25;
 const OWNER_MUTEX_MAX_ATTEMPTS = 80;
 const OWNER_MUTEX_STALE_MS = 15_000;
+// A medição de rotas é efêmera: vale enquanto a descoberta emite eventos e por
+// esta janela depois do último evento (mesmo TTL da GUI).
+const PROTON_ROUTE_MEASUREMENT_TTL_MS = 10 * 60_000;
+const PROTON_PING_MAX_MS = 999;
+const MAX_PROTON_ROUTE_SERVER_LENGTH = 200;
+const MAX_PROTON_ROUTE_COUNTRY_LENGTH = 32;
+const MAX_PROTON_ROUTE_CITY_LENGTH = 200;
+const MAX_PROTON_ROUTE_TIER_LENGTH = 80;
+/** Nome de servidor Proton: texto visível, sem espaços nem controles. */
+const CATALOG_SERVER_RE = /^[^\s\u0000-\u001f\u007f]+$/;
 
 function errorMessage(error: unknown): string {
     return safeDiagnosticDetail(error, 600);
@@ -142,6 +223,98 @@ function normalizeCountry(value: string): string {
         .join(",");
 }
 
+function isValidProtonPing(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 && value < PROTON_PING_MAX_MS;
+}
+
+type RawProtonRouteMetadata = {
+    server?: unknown;
+    country?: unknown;
+    city?: unknown;
+    tier?: unknown;
+    load?: unknown;
+    score?: unknown;
+    pingMs?: unknown;
+};
+
+interface ProtonRouteMetadata {
+    server: string;
+    country?: string;
+    city?: string;
+    tier?: string;
+    load?: number;
+    score?: number;
+}
+
+/**
+ * Metadados públicos normalizados de um evento de catálogo. Campo ausente fica
+ * de fora do resultado: o evento progressivo pode trazer só o ping e a
+ * candidata preserva o que já foi catalogado. Valor presente e inválido
+ * descarta o evento inteiro. Endpoint, arquivo de configuração, chave e sessão
+ * nunca atravessam esta fronteira.
+ */
+function protonRouteMetadata(raw: RawProtonRouteMetadata): ProtonRouteMetadata | null {
+    const server = typeof raw.server === "string" ? raw.server.trim() : "";
+    if (!server || server.length > MAX_PROTON_ROUTE_SERVER_LENGTH || !CATALOG_SERVER_RE.test(server)) return null;
+    const metadata: ProtonRouteMetadata = { server };
+    if (raw.country !== undefined) {
+        const country = typeof raw.country === "string" ? raw.country.trim() : "";
+        if (!country || country.length > MAX_PROTON_ROUTE_COUNTRY_LENGTH) return null;
+        metadata.country = country;
+    }
+    if (raw.city !== undefined) {
+        const city = typeof raw.city === "string" ? raw.city.trim() : "";
+        if (city.length > MAX_PROTON_ROUTE_CITY_LENGTH) return null;
+        metadata.city = city;
+    }
+    if (raw.tier !== undefined) {
+        const tier = typeof raw.tier === "string" ? raw.tier.trim() : "";
+        if (!tier || tier.length > MAX_PROTON_ROUTE_TIER_LENGTH) return null;
+        metadata.tier = tier;
+    }
+    if (raw.load !== undefined) {
+        const load = Number(raw.load);
+        if (!Number.isFinite(load) || load < 0 || load > 100) return null;
+        metadata.load = load;
+    }
+    if (raw.score !== undefined) {
+        const score = Number(raw.score);
+        if (!Number.isFinite(score) || score < 0) return null;
+        metadata.score = score;
+    }
+    return metadata;
+}
+
+interface ProtonRouteCandidate {
+    entry: proton.ProtonRouteCatalogEntry;
+    status: ProtonRouteCatalogView["status"];
+}
+
+interface ProtonRouteMeasurement {
+    measurementId: string;
+    requestId: string;
+    /** Identidade da operação que criou a medição; geração sozinha não distingue donos. */
+    owner: symbol;
+    generation: number;
+    username: string;
+    country: string;
+    freeOnly: boolean;
+    autoPing: boolean;
+    controller: AbortController;
+    active: boolean;
+    phase: proton.ProtonOptimizationProgress["phase"];
+    error?: string;
+    routes: Map<string, ProtonRouteCandidate>;
+    updatedAt: number;
+    expiresAt: number;
+}
+
+/** Cópia em memória do perfil Proton anterior: nunca vai para log nem para disco paralelo. */
+interface ProtonProfileBackup {
+    profile: string;
+    account: string | null;
+}
+
 export class PluginVpnController {
     private readonly options: PluginVpnControllerOptions;
     private readonly dataDir: string;
@@ -163,6 +336,9 @@ export class PluginVpnController {
     private automaticBootSuppressed = false;
     private optimization: { id: string; controller: AbortController } | null = null;
     private protonLogin: { id: string; controller: AbortController } | null = null;
+    private routeMeasurement: ProtonRouteMeasurement | null = null;
+    private routeMeasurementGeneration = 0;
+    private routeSelection: { id: string; controller: AbortController } | null = null;
     private routeProbeFlights = new Set<Promise<void>>();
     private ownershipToken: OwnershipToken | null = null;
     private diagnosticGeneration = 0;
@@ -573,35 +749,43 @@ export class PluginVpnController {
     public shutdown(relaunch = true): Promise<VpnOperationResult> {
         this.cancelProtonLogin();
         this.optimization?.controller.abort();
+        this.cancelProtonRouteDiscovery();
+        this.cancelProtonRouteSelection();
         return this.serial(() => this.stopInternal(relaunch));
     }
 
     public restoreNetwork(): Promise<VpnOperationResult> {
         this.cancelProtonLogin();
         this.optimization?.controller.abort();
+        this.cancelProtonRouteDiscovery();
+        this.cancelProtonRouteSelection();
         return this.serial(() => this.stopInternal(isLinux()));
     }
 
     public restartDiscord(): Promise<VpnOperationResult> {
         this.cancelProtonLogin();
         this.optimization?.controller.abort();
+        this.cancelProtonRouteDiscovery();
+        this.cancelProtonRouteSelection();
         return this.serial(() => this.restartInternal());
     }
 
-    public async importCustomConfig(sourcePath: string): Promise<{ success: boolean; error?: string; path?: string }> {
-        try {
-            if (!isWindows() && !isLinux()) throw new Error("O transporte VPN do plugin exige Windows x64 ou Linux x64.");
-            const source = path.resolve(sourcePath.trim());
-            if (!source || !fs.existsSync(source) || !fs.statSync(source).isFile()) throw new Error("Arquivo WireGuard não encontrado.");
-            const raw = fs.readFileSync(source, "utf8");
-            const validation = validateWireGuardConfig(raw);
-            if (!validation.valid) throw new Error(validation.error);
-            this.clearProtonProfileAccount();
-            this.writeProfileAtomically(raw);
-            return { success: true, path: this.profilePath };
-        } catch (error) {
-            return { success: false, error: errorMessage(error) };
-        }
+    public importCustomConfig(sourcePath: string): Promise<{ success: boolean; error?: string; path?: string }> {
+        return this.serial(async () => {
+            try {
+                if (!isWindows() && !isLinux()) throw new Error("O transporte VPN do plugin exige Windows x64 ou Linux x64.");
+                const source = path.resolve(sourcePath.trim());
+                if (!source || !fs.existsSync(source) || !fs.statSync(source).isFile()) throw new Error("Arquivo WireGuard não encontrado.");
+                const raw = fs.readFileSync(source, "utf8");
+                const validation = validateWireGuardConfig(raw);
+                if (!validation.valid) throw new Error(validation.error);
+                this.clearProtonProfileAccount();
+                this.writeProfileAtomically(raw);
+                return { success: true, path: this.profilePath };
+            } catch (error) {
+                return { success: false, error: errorMessage(error) };
+            }
+        });
     }
 
     public testConfig(sourcePath?: string): { success: boolean; error?: string; path?: string } {
@@ -616,7 +800,7 @@ export class PluginVpnController {
         }
     }
 
-    public loginProton(payload: ProtonLoginPayload, solveCaptcha: (url: string, signal: AbortSignal) => Promise<string | null>): Promise<proton.ProtonLoginResult> {
+    public loginProton(payload: ProtonLoginPayload, solveCaptcha: (url: string, signal: AbortSignal) => Promise<ProtonCaptchaSolution>): Promise<proton.ProtonLoginResult> {
         if (this.protonLogin) {
             const message = "Já existe um login Proton em andamento.";
             return Promise.resolve({ success: false, code: "CONFIGURATION_ERROR", message, error: message, retryable: true });
@@ -641,10 +825,17 @@ export class PluginVpnController {
                 if (!isCurrent()) return cancelledLoginResult();
                 for (let attempt = 0; attempt < 3 && (result.code === "CAPTCHA_REQUIRED" || result.code === "CAPTCHA_INVALID"); attempt++) {
                     if (!result.captchaUrl) break;
-                    const token = await solveCaptcha(result.captchaUrl, operation.controller.signal);
+                    const captcha = await solveCaptcha(result.captchaUrl, operation.controller.signal);
                     if (!isCurrent()) return cancelledLoginResult();
-                    if (!token) return { success: false, code: "CAPTCHA_CANCELLED", message: "A verificação Proton foi cancelada.", retryable: true };
-                    result = await proton.loginProton(this.dataDir, username, payload.password, payload.twoFactorCode, token, this.options.log);
+                    // Recusa e cancelamento da verificação são causas diferentes: a
+                    // primeira pede nova tentativa, a segunda é decisão do usuário.
+                    if (!captcha.ok) {
+                        const message = captcha.message || (captcha.code === "CAPTCHA_CANCELLED"
+                            ? "A verificação Proton foi cancelada."
+                            : "A verificação expirou ou foi recusada. Tente novamente.");
+                        return { success: false, code: captcha.code, message, error: message, retryable: true };
+                    }
+                    result = await proton.loginProton(this.dataDir, username, payload.password, payload.twoFactorCode, captcha.token, this.options.log);
                     if (!isCurrent()) return cancelledLoginResult();
                 }
                 if (result.success && switchingAccount) {
@@ -657,6 +848,10 @@ export class PluginVpnController {
                         this.options.log("warn", "não consegui limpar o marcador do perfil Proton", { erro: errorMessage(error) });
                     }
                 }
+                // A medição de rotas pertence a uma conta: outra conta a invalida.
+                if (result.success && result.username && this.routeMeasurement
+                    && !protonUsernamesMatch(this.routeMeasurement.username, result.username))
+                    this.invalidateRouteMeasurement();
                 return result;
             } finally {
                 if (this.protonLogin === operation) this.protonLogin = null;
@@ -684,6 +879,7 @@ export class PluginVpnController {
     }
 
     public logoutProton(): Promise<{ success: boolean; error?: string }> {
+        this.cancelProtonRouteSelection();
         return this.serial(async () => {
             const owner = this.readOwner();
             if (isLinux()) {
@@ -708,6 +904,8 @@ export class PluginVpnController {
                 if (!proton.removeProtonSession(this.dataDir))
                     return { success: false, error: "Não foi possível remover a sessão Proton do armazenamento local." };
                 if (settings.mode === "proton") this.clearProtonArtifacts();
+                // Sem conta não há catálogo válido: medição e seleção pendente somem juntas.
+                this.invalidateRouteMeasurement();
                 return { success: true };
             } catch (error) {
                 this.options.log("warn", "não consegui concluir o logout Proton", { erro: errorMessage(error) });
@@ -719,6 +917,8 @@ export class PluginVpnController {
     public async optimizeProton(options: ProtonOptimizationOptions): Promise<proton.ProtonOptimizationResult & { cancelled?: boolean; deferred?: boolean }> {
         if (!isSupportedVpnArchitecture(process.platform, process.arch)) return { success: false, error: "A VPN do plugin exige Windows x64 ou Linux x64." };
         if (this.optimization) return { success: false, error: "Já existe uma otimização Proton em andamento." };
+        if (this.routeSelection) return { success: false, error: "Já existe uma seleção de rota Proton em andamento." };
+        if (this.routeMeasurement?.active) return { success: false, error: "Cancele a descoberta de rotas Proton antes de otimizar." };
 
         const id = options.requestId || `proton-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const operationController = new AbortController();
@@ -809,6 +1009,496 @@ export class PluginVpnController {
         if (!this.optimization || this.optimization.id !== requestId) return false;
         this.optimization.controller.abort();
         return true;
+    }
+
+    // ------------------------------------------------------------------ catálogo manual de rotas
+
+    /**
+     * Catálogo efêmero de rotas para a conta e os filtros atuais. Não pede
+     * certificado, não cria chave nem perfil, não abre túnel e não altera a rota
+     * selecionada: só mede e devolve metadados públicos.
+     */
+    public discoverProtonRoutes(options: ProtonRouteDiscoveryOptions = {}): Promise<ProtonRouteDiscoveryResult> {
+        if (!isSupportedVpnArchitecture(process.platform, process.arch))
+            return Promise.resolve({ success: false, error: "A VPN do plugin exige Windows x64 ou Linux x64." });
+        if (this.optimization)
+            return Promise.resolve({ success: false, error: "Já existe uma otimização Proton em andamento." });
+        if (this.routeSelection)
+            return Promise.resolve({ success: false, error: "Já existe uma seleção de rota Proton em andamento." });
+        if (this.protonLogin)
+            return Promise.resolve({ success: false, error: "Termine o login Proton antes de escolher uma rota." });
+        if (this.routeMeasurement?.active)
+            return Promise.resolve({ success: false, error: "Já existe uma descoberta de rotas Proton em andamento." });
+
+        const requestId = normalizeLoginRequestId(options.requestId);
+        const controller = new AbortController();
+        const now = Date.now();
+        const measurement: ProtonRouteMeasurement = {
+            measurementId: randomUUID().replaceAll("-", ""),
+            requestId,
+            // Dono da medição: a identidade do objeto em `this.routeMeasurement`
+            // mais a geração decidem se um evento ou seleção ainda vale.
+            owner: Symbol("proton-route-measurement"),
+            generation: ++this.routeMeasurementGeneration,
+            username: "",
+            country: "",
+            freeOnly: true,
+            autoPing: true,
+            controller,
+            active: true,
+            phase: "preparing",
+            routes: new Map(),
+            updatedAt: now,
+            expiresAt: now + PROTON_ROUTE_MEASUREMENT_TTL_MS,
+        };
+        // Uma descoberta nova invalida a anterior: eventos e seleções do
+        // identificador antigo são ignorados ou recusados daqui em diante.
+        this.routeMeasurement?.controller.abort();
+        this.routeMeasurement = measurement;
+
+        return this.serial(async () => {
+            const isCurrent = () => this.routeMeasurement?.owner === measurement.owner && !controller.signal.aborted;
+            try {
+                const settings = this.settings();
+                const username = normalizeUsername(settings.protonUsername);
+                if (!username) {
+                    const error = "Faça login com sua conta Proton antes de escolher uma rota.";
+                    this.finishRouteMeasurement(measurement, "failed", error);
+                    return { success: false, measurementId: measurement.measurementId, error };
+                }
+                measurement.username = username;
+                measurement.country = normalizeCountry(options.country ?? settings.protonCountry);
+                measurement.freeOnly = options.freeOnly ?? settings.protonFreeOnly;
+                measurement.autoPing = options.autoPing ?? settings.protonAutoPing;
+                if (!isCurrent()) return this.cancelledRouteDiscovery(measurement);
+
+                const catalog = await proton.generateProtonRouteCatalog(this.dataDir, {
+                    username,
+                    country: measurement.country,
+                    freeOnly: measurement.freeOnly,
+                    autoPing: measurement.autoPing,
+                    signal: controller.signal,
+                    onProgress: progress => {
+                        this.recordRouteProgress(measurement, progress);
+                        options.onProgress?.({ ...progress, requestId, measurementId: measurement.measurementId });
+                    },
+                    log: this.options.log,
+                });
+                for (const route of catalog.routes ?? []) this.recordRouteMetadata(measurement, route);
+                if (!isCurrent()) return this.cancelledRouteDiscovery(measurement);
+
+                if (!catalog.success || measurement.routes.size === 0) {
+                    const error = catalog.error || "Nenhuma rota Proton compatível foi encontrada para esta conta e os filtros atuais.";
+                    this.finishRouteMeasurement(measurement, "failed", error);
+                    return {
+                        success: false,
+                        measurementId: measurement.measurementId,
+                        routes: this.routeCatalogViews(measurement),
+                        error,
+                    };
+                }
+                this.finishRouteMeasurement(measurement, "completed");
+                return {
+                    success: true,
+                    measurementId: measurement.measurementId,
+                    routes: this.routeCatalogViews(measurement),
+                };
+            } catch (error) {
+                if (!isCurrent()) return this.cancelledRouteDiscovery(measurement);
+                const detail = errorMessage(error);
+                this.finishRouteMeasurement(measurement, "failed", detail);
+                this.options.log("error", "descoberta de rotas Proton falhou", { erro: detail });
+                return { success: false, measurementId: measurement.measurementId, routes: this.routeCatalogViews(measurement), error: detail };
+            }
+        });
+    }
+
+    /**
+     * Cancela apenas a descoberta correspondente. Fica fora da fila serial pelo
+     * mesmo motivo do login: o helper pode estar bloqueado medindo pings e a
+     * fila não teria como interrompê-lo.
+     */
+    public cancelProtonRouteDiscovery(requestId?: string): boolean {
+        const measurement = this.routeMeasurement;
+        if (!measurement || !measurement.active) return false;
+        if (typeof requestId === "string" && requestId.trim() && measurement.requestId !== requestId.trim()) return false;
+        measurement.controller.abort();
+        return true;
+    }
+
+    public getRouteDiscoveryStatus(): ProtonRouteDiscoveryStatus {
+        this.sweepRouteMeasurement();
+        const measurement = this.routeMeasurement;
+        if (!measurement) {
+            return {
+                active: false,
+                requestId: null,
+                measurementId: null,
+                phase: null,
+                routes: [],
+                total: 0,
+                measured: 0,
+                updatedAt: null,
+                expiresAt: null,
+            };
+        }
+        const routes = this.routeCatalogViews(measurement);
+        return {
+            active: measurement.active,
+            requestId: measurement.requestId,
+            measurementId: measurement.measurementId,
+            phase: measurement.phase,
+            routes,
+            total: routes.length,
+            measured: routes.filter(route => route.pingMs !== undefined).length,
+            error: measurement.error,
+            updatedAt: measurement.updatedAt,
+            expiresAt: measurement.expiresAt,
+        };
+    }
+
+    /**
+     * Aplica uma rota escolhida manualmente. A medição precisa pertencer a esta
+     * conta e aos filtros atuais; o helper só promove o perfil após o
+     * `-manual-probe` completo, e o perfil anterior é restaurado se a aplicação
+     * falhar.
+     */
+    public selectProtonRoute(options: ProtonRouteSelectionOptions): Promise<ProtonRouteSelectionResult> {
+        if (!isSupportedVpnArchitecture(process.platform, process.arch))
+            return Promise.resolve({ success: false, error: "A VPN do plugin exige Windows x64 ou Linux x64." });
+        if (this.optimization) return Promise.resolve({ success: false, error: "Já existe uma otimização Proton em andamento." });
+        if (this.routeSelection) return Promise.resolve({ success: false, error: "Já existe uma seleção de rota Proton em andamento." });
+        if (this.protonLogin) return Promise.resolve({ success: false, error: "Termine o login Proton antes de aplicar uma rota." });
+
+        const measurementId = typeof options.measurementId === "string" ? options.measurementId.trim() : "";
+        const server = typeof options.server === "string" ? options.server.trim() : "";
+        if (!measurementId || measurementId.length > 128 || !server || !CATALOG_SERVER_RE.test(server)
+            || server.length > MAX_PROTON_ROUTE_SERVER_LENGTH)
+            return Promise.resolve({ success: false, error: "A identificação da medição ou da rota é inválida." });
+
+        this.sweepRouteMeasurement();
+        const measurement = this.routeMeasurement;
+        if (!measurement || measurement.generation !== this.routeMeasurementGeneration)
+            return Promise.resolve({ success: false, error: "A medição de rotas expirou. Faça uma nova descoberta." });
+        if (measurement.measurementId !== measurementId)
+            return Promise.resolve({ success: false, error: "Esta medição de rotas não é mais a atual. Faça uma nova descoberta." });
+        if (measurement.expiresAt <= Date.now())
+            return Promise.resolve({ success: false, error: "A medição de rotas expirou. Faça uma nova descoberta." });
+        if (measurement.active)
+            return Promise.resolve({ success: false, error: "A descoberta de rotas ainda está em andamento. Aguarde para escolher uma rota." });
+
+        const candidate = measurement.routes.get(server);
+        if (!candidate)
+            return Promise.resolve({ success: false, error: "A rota escolhida não pertence à medição atual. Faça uma nova descoberta." });
+        if (!isValidProtonPing(candidate.entry.pingMs))
+            return Promise.resolve({ success: false, error: "A rota escolhida está sem ping válido e não pode ser aplicada. Faça uma nova descoberta." });
+
+        const settings = this.settings();
+        const username = normalizeUsername(settings.protonUsername);
+        if (!username || !protonUsernamesMatch(measurement.username, username))
+            return Promise.resolve({ success: false, error: "A conta Proton mudou desde a medição. Faça uma nova descoberta." });
+        const selection = this.protonProfileSelection(settings);
+        if (selection.country !== measurement.country || selection.freeOnly !== measurement.freeOnly || selection.autoPing !== measurement.autoPing)
+            return Promise.resolve({ success: false, error: "As preferências Proton mudaram desde a medição. Faça uma nova descoberta." });
+
+        const operation = { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, controller: new AbortController() };
+        this.routeSelection = operation;
+        return this.serial(async () => {
+            const isCurrent = () => this.routeSelection === operation && !operation.controller.signal.aborted;
+            const status = this.getStatus();
+            const wasActive = status.active;
+            let backup: ProtonProfileBackup | null = null;
+            let profilePromoted = false;
+            try {
+                if (!isCurrent()) return { success: false, cancelled: true, error: "A seleção de rota Proton foi cancelada." };
+                if (status.state === "blocked_external" || this.state === "blocked_external")
+                    return { success: false, error: status.externalReason || this.externalReason || "Túnel externo está ativo." };
+                if (isLinux() && wasActive)
+                    return { success: false, error: "Restaure a rede antes de validar outra rota Proton no Linux." };
+                if (isLinux() && status.requiresRelaunch)
+                    return { success: false, error: "Reinicie o Discord para entrar no namespace Linux antes de escolher a rota." };
+
+                // O probe manual do helper não pode disputar o serviço WireSock com a
+                // rota ativa; no Linux este processo não volta ao namespace original,
+                // então a rota atual é mantida até a troca.
+                if (wasActive && !isLinux()) {
+                    const stopped = await this.stopInternal(false);
+                    if (!stopped.success)
+                        return { success: false, error: stopped.error || "Não foi possível pausar a VPN para aplicar a rota escolhida." };
+                }
+                if (!isCurrent()) {
+                    const restoreError = await this.rollbackRouteSelection(backup, wasActive, profilePromoted);
+                    return { success: false, cancelled: true, error: restoreError || "A seleção de rota Proton foi cancelada." };
+                }
+
+                backup = this.readProtonProfileBackup();
+                const generated = await proton.generateManualProtonConfig(this.dataDir, {
+                    username,
+                    server,
+                    country: measurement.country,
+                    freeOnly: measurement.freeOnly,
+                    signal: operation.controller.signal,
+                    log: this.options.log,
+                });
+                profilePromoted = generated.success;
+                if (!isCurrent()) {
+                    const restoreError = await this.rollbackRouteSelection(backup, wasActive, profilePromoted);
+                    return { success: false, cancelled: true, error: restoreError || "A seleção de rota Proton foi cancelada." };
+                }
+                if (!generated.success) {
+                    const error = generated.error || "Não foi possível validar a rota Proton escolhida.";
+                    const restoreError = await this.rollbackRouteSelection(backup, wasActive, profilePromoted);
+                    return { success: false, error: restoreError ? `${error} ${restoreError}` : error };
+                }
+                // O helper já promoveu o perfil por staging; confirmamos que o servidor
+                // promovido é exatamente o escolhido e que o perfil final é válido.
+                if (generated.server !== server || !isValidProtonPing(generated.pingMs))
+                    throw new Error("A validação retornou uma rota diferente da escolhida.");
+                const promoted = fs.existsSync(this.profilePath) ? fs.readFileSync(this.profilePath, "utf8") : "";
+                const validation = validateWireGuardConfig(promoted);
+                if (!validation.valid) throw new Error(validation.error);
+
+                this.writeProtonProfileAccount(username, {
+                    country: measurement.country,
+                    freeOnly: measurement.freeOnly,
+                    autoPing: measurement.autoPing,
+                });
+                const applied = this.publicRouteSelection(generated, server);
+                if (!wasActive) {
+                    return { ...applied, state: this.state, message: "Rota Proton preparada; ela será usada na próxima ativação." };
+                }
+                if (isLinux()) {
+                    const stopped = await this.stopInternal(true);
+                    if (!stopped.success) {
+                        const error = stopped.error || "A rota foi validada, mas não consegui relançar o Discord fora do namespace Linux.";
+                        const restoreError = await this.rollbackRouteSelection(backup, wasActive, profilePromoted);
+                        return { success: false, error: restoreError ? `${error} ${restoreError}` : error };
+                    }
+                    return { ...applied, deferred: true, state: this.state, message: "Rota Proton preparada; o Discord será relançado para aplicar a nova configuração." };
+                }
+                const restarted = await this.startInternal(true);
+                if (!restarted.success) {
+                    const error = restarted.error || "A rota foi validada, mas não consegui reiniciar o Discord para aplicar a nova configuração.";
+                    const restoreError = await this.rollbackRouteSelection(backup, wasActive, profilePromoted);
+                    return { success: false, error: restoreError ? `${error} ${restoreError}` : error };
+                }
+                return {
+                    ...applied,
+                    deferred: restarted.state === "restart_pending",
+                    state: restarted.state,
+                    message: restarted.message || "Rota Proton aplicada.",
+                };
+            } catch (error) {
+                const cancelled = error instanceof Error && error.name === "AbortError";
+                const detail = cancelled ? "A seleção de rota Proton foi cancelada." : errorMessage(error);
+                const restoreError = await this.rollbackRouteSelection(backup, wasActive, profilePromoted);
+                if (!cancelled) this.options.log("error", "seleção manual de rota Proton falhou", { erro: detail });
+                return { success: false, ...(cancelled ? { cancelled: true } : {}), error: restoreError ? `${detail} ${restoreError}` : detail };
+            } finally {
+                if (this.routeSelection === operation) this.routeSelection = null;
+            }
+        });
+    }
+
+    /** Interrompe o helper de seleção fora da fila serial, como login e descoberta. */
+    public cancelProtonRouteSelection(): boolean {
+        const operation = this.routeSelection;
+        if (!operation) return false;
+        operation.controller.abort();
+        return true;
+    }
+
+    private cancelledRouteDiscovery(measurement: ProtonRouteMeasurement): ProtonRouteDiscoveryResult {
+        this.finishRouteMeasurement(measurement, "cancelled", "A descoberta de rotas Proton foi cancelada.");
+        return {
+            success: false,
+            cancelled: true,
+            measurementId: measurement.measurementId,
+            routes: this.routeCatalogViews(measurement),
+            error: measurement.error,
+        };
+    }
+
+    private finishRouteMeasurement(
+        measurement: ProtonRouteMeasurement,
+        phase: "completed" | "failed" | "cancelled",
+        error?: string,
+    ): void {
+        measurement.active = false;
+        measurement.phase = phase;
+        measurement.error = error;
+        measurement.updatedAt = Date.now();
+        measurement.expiresAt = measurement.updatedAt + PROTON_ROUTE_MEASUREMENT_TTL_MS;
+        // Nada mais será medido: candidata sem ping válido fica indisponível.
+        for (const candidate of measurement.routes.values())
+            if (candidate.status === "testing") candidate.status = "failed";
+    }
+
+    private recordRouteProgress(measurement: ProtonRouteMeasurement, progress: proton.ProtonOptimizationProgress): void {
+        if (this.routeMeasurement?.owner !== measurement.owner || measurement.generation !== this.routeMeasurementGeneration) return;
+        const now = Date.now();
+        measurement.updatedAt = now;
+        measurement.expiresAt = now + PROTON_ROUTE_MEASUREMENT_TTL_MS;
+        measurement.phase = progress.phase;
+        if (progress.phase === "catalog") {
+            this.recordRouteMetadata(measurement, progress, progress.status);
+            return;
+        }
+        const server = typeof progress.server === "string" ? progress.server.trim() : "";
+        const candidate = server ? measurement.routes.get(server) : undefined;
+        if (!candidate) return;
+        if (isValidProtonPing(progress.pingMs)) {
+            candidate.entry.pingMs = progress.pingMs;
+            candidate.status = "success";
+            return;
+        }
+        // Ping aprovado sem valor utilizável é contraditório, e uma sonda com falha
+        // explícita tira a candidata da lista de selecionáveis.
+        if (progress.status === "failed" || (progress.phase === "ping" && progress.status === "success")) {
+            candidate.status = "failed";
+            delete candidate.entry.pingMs;
+        }
+    }
+
+    private recordRouteMetadata(
+        measurement: ProtonRouteMeasurement,
+        raw: RawProtonRouteMetadata,
+        statusHint?: proton.ProtonOptimizationProgress["status"],
+    ): void {
+        if (this.routeMeasurement?.owner !== measurement.owner || measurement.generation !== this.routeMeasurementGeneration) return;
+        const metadata = protonRouteMetadata(raw);
+        if (!metadata) return;
+        const pingMs = isValidProtonPing(raw.pingMs) ? raw.pingMs : undefined;
+        const pingDiscarded = raw.pingMs !== undefined && pingMs === undefined;
+        const current = measurement.routes.get(metadata.server);
+        if (!current) {
+            // Sem país, tier, carga e score não há o que catalogar: um evento de
+            // ping para servidor ainda desconhecido não cria candidata.
+            if (metadata.country === undefined || metadata.tier === undefined
+                || metadata.load === undefined || metadata.score === undefined) return;
+            measurement.routes.set(metadata.server, {
+                entry: {
+                    server: metadata.server,
+                    country: metadata.country,
+                    city: metadata.city ?? "",
+                    tier: metadata.tier,
+                    load: metadata.load,
+                    score: metadata.score,
+                    ...(pingMs === undefined ? {} : { pingMs }),
+                },
+                status: pingMs !== undefined ? "success" : statusHint === "failed" ? "failed" : "testing",
+            });
+            return;
+        }
+        // Metadados já catalogados nunca são apagados por um evento parcial.
+        const previousPing = pingMs ?? current.entry.pingMs;
+        current.entry = {
+            server: metadata.server,
+            country: metadata.country ?? current.entry.country,
+            city: metadata.city ?? current.entry.city,
+            tier: metadata.tier ?? current.entry.tier,
+            load: metadata.load ?? current.entry.load,
+            score: metadata.score ?? current.entry.score,
+            ...(previousPing === undefined ? {} : { pingMs: previousPing }),
+        };
+        if (pingMs !== undefined) {
+            current.status = "success";
+            return;
+        }
+        if (statusHint === "failed" || pingDiscarded) {
+            current.status = "failed";
+            delete current.entry.pingMs;
+        }
+    }
+
+    private routeCatalogViews(measurement: ProtonRouteMeasurement): ProtonRouteCatalogView[] {
+        return [...measurement.routes.values()].map(candidate => ({
+            ...candidate.entry,
+            status: candidate.status,
+        }));
+    }
+
+    private publicRouteSelection(generated: proton.ProtonManualRouteResult, server: string): ProtonRouteSelectionResult {
+        const metadata = protonRouteMetadata(generated);
+        return {
+            success: true,
+            server,
+            country: metadata?.country,
+            city: metadata?.city,
+            tier: metadata?.tier,
+            load: metadata?.load,
+            score: metadata?.score,
+            pingMs: isValidProtonPing(generated.pingMs) ? generated.pingMs : undefined,
+        };
+    }
+
+    private readProtonProfileBackup(): ProtonProfileBackup | null {
+        if (!fs.existsSync(this.profilePath)) return null;
+        const profile = fs.readFileSync(this.profilePath, "utf8");
+        const account = fs.existsSync(this.profileAccountPath)
+            ? fs.readFileSync(this.profileAccountPath, "utf8")
+            : null;
+        return { profile, account };
+    }
+
+    private restoreProtonProfileBackup(backup: ProtonProfileBackup): void {
+        this.writeProfileAtomically(backup.profile);
+        if (backup.account === null) {
+            this.clearProtonProfileAccount();
+            return;
+        }
+        fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+        const temporary = `${this.profileAccountPath}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(temporary, backup.account, { encoding: "utf8", mode: 0o600 });
+        fs.renameSync(temporary, this.profileAccountPath);
+    }
+
+    /** Devolve o erro de rollback, se houver; nunca lança por cima da falha original. */
+    private async rollbackRouteSelection(
+        backup: ProtonProfileBackup | null,
+        wasActive: boolean,
+        profilePromoted: boolean,
+    ): Promise<string | null> {
+        let failure: string | null = null;
+        if (backup) {
+            try {
+                this.restoreProtonProfileBackup(backup);
+            } catch (error) {
+                failure = `O perfil anterior não foi restaurado: ${errorMessage(error)}`;
+                this.options.log("error", "não consegui restaurar o perfil Proton anterior", { erro: errorMessage(error) });
+            }
+        } else if (profilePromoted) {
+            try {
+                fs.rmSync(this.profilePath, { force: true });
+                this.clearProtonProfileAccount();
+            } catch (error) {
+                failure = `O perfil novo não foi removido: ${errorMessage(error)}`;
+                this.options.log("error", "não consegui remover o perfil Proton novo após falha", { erro: errorMessage(error) });
+            }
+        }
+        if (wasActive && !isLinux()) {
+            const restored = await this.startInternal(false);
+            if (!restored.success) {
+                const detail = restored.error || "não foi possível reativar a rota WireGuard anterior";
+                failure = failure ? `${failure} ${detail}` : detail;
+                this.options.log("error", "rota anterior não voltou após falha da seleção manual", { erro: detail });
+            }
+        }
+        return failure;
+    }
+
+    private sweepRouteMeasurement(): void {
+        const measurement = this.routeMeasurement;
+        if (!measurement || measurement.active) return;
+        if (measurement.expiresAt > Date.now()) return;
+        this.routeMeasurement = null;
+    }
+
+    private invalidateRouteMeasurement(): void {
+        const measurement = this.routeMeasurement;
+        this.routeMeasurement = null;
+        this.routeMeasurementGeneration++;
+        measurement?.controller.abort();
     }
 
     private settings(): VpnSettings {

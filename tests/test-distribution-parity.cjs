@@ -188,6 +188,7 @@ test("instalador Windows distribui todas as fontes do plugin WireGuard", () => {
         "goLiveBypass/update-channel.ts",
         "goLiveBypass/update-security.ts",
         "goLiveBypass/stability.ts",
+        "goLiveBypass/proton-manual-selection.ts",
         "goLiveBypass/vpn-controller.ts",
         "goLiveBypass/vpn-proton.ts",
         "goLiveBypass/vpn-types.ts",

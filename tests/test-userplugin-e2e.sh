@@ -108,7 +108,7 @@ fi
 
 # --------------------------------------------------------------------------- 2. Conteudo do zip
 step "2. Conteudo do zip"
-expected_files="goLiveBypass/index.tsx goLiveBypass/native.ts goLiveBypass/plugin-build.ts goLiveBypass/update-channel.ts goLiveBypass/update-security.ts goLiveBypass/stability.ts goLiveBypass/vpn-controller.ts goLiveBypass/vpn-proton.ts goLiveBypass/vpn-types.ts goLiveBypass/vpn-windows.ts goLiveBypass/manifest.json goLiveBypass/bin/win32-x64/proton-confgen.exe"
+expected_files="goLiveBypass/index.tsx goLiveBypass/native.ts goLiveBypass/plugin-build.ts goLiveBypass/update-channel.ts goLiveBypass/update-security.ts goLiveBypass/stability.ts goLiveBypass/proton-manual-selection.ts goLiveBypass/vpn-controller.ts goLiveBypass/vpn-proton.ts goLiveBypass/vpn-types.ts goLiveBypass/vpn-windows.ts goLiveBypass/manifest.json goLiveBypass/bin/win32-x64/proton-confgen.exe"
 content=$(list_zip_py "$ASSET" | sort)
 for f in $expected_files; do
     if printf '%s\n' "$content" | grep -qF "$f"; then
@@ -157,7 +157,7 @@ else
     bad "pasta $target NAO foi criada"
 fi
 # Validar arquivos extraidos
-for f in index.tsx native.ts plugin-build.ts update-channel.ts update-security.ts stability.ts vpn-controller.ts vpn-proton.ts vpn-types.ts vpn-snapshot.ts vpn-windows.ts manifest.json bin/win32-x64/proton-confgen.exe; do
+for f in index.tsx native.ts plugin-build.ts update-channel.ts update-security.ts stability.ts proton-manual-selection.ts vpn-controller.ts vpn-proton.ts vpn-types.ts vpn-snapshot.ts vpn-windows.ts manifest.json bin/win32-x64/proton-confgen.exe; do
     if [ -f "$target/$f" ]; then
         ok "extraido $f ($(stat -c%s "$target/$f" 2>/dev/null || stat -f%z "$target/$f") bytes)"
     else
@@ -254,7 +254,7 @@ step "7. Hash dos arquivos extraidos confere com o repo"
 # Re-extrair para ter o estado novo
 rm -rf "$target"
 extract_zip_py "$ASSET" "$USERPLUGINS" >/dev/null
-for f in index.tsx native.ts plugin-build.ts update-channel.ts update-security.ts stability.ts vpn-controller.ts vpn-proton.ts vpn-types.ts vpn-snapshot.ts vpn-windows.ts manifest.json bin/win32-x64/proton-confgen.exe; do
+for f in index.tsx native.ts plugin-build.ts update-channel.ts update-security.ts stability.ts proton-manual-selection.ts vpn-controller.ts vpn-proton.ts vpn-types.ts vpn-snapshot.ts vpn-windows.ts manifest.json bin/win32-x64/proton-confgen.exe; do
     source_file="$REPO/goLiveBypass/$f"
     [ -f "$source_file" ] || source_file="$PLUGIN_SOURCE/$f"
     if [ -f "$target/$f" ] && [ -f "$source_file" ]; then

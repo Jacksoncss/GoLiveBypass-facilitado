@@ -4,6 +4,19 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.0.6-beta-12] - 2026-09-12
+
+### Plugin: seleção manual de rota Proton e diagnóstico do login
+
+- O assistente e o painel agora mantêm a lista manual de rotas Proton sempre visível, carregam catálogo e ping progressivamente e destacam a melhor candidata medida. Se a otimização automática não aprovar nenhuma rota, as candidatas com ping válido continuam disponíveis para escolha manual.
+- A aplicação manual aceita somente um servidor da medição efêmera atual, repete ping e preflight no helper antes de promover o perfil e restaura a configuração anterior em falha ou cancelamento. Importações WireGuard são serializadas com a troca; no Linux, uma VPN ativa precisa ser restaurada antes da sonda para evitar medir a nova rota através do túnel antigo.
+- Erros de login agora preservam os códigos estruturados do Proton: credencial rejeitada, 2FA, CAPTCHA, rede, timeout, armazenamento e falha do helper têm mensagens distintas. O prefixo genérico `authentication failed` não é mais apresentado como senha incorreta sem rejeição explícita da API.
+- O `proton-confgen` Linux embutido foi recompilado com o catálogo progressivo; instaladores, updater e artefato do userplugin incluem o novo módulo compartilhado de seleção manual.
+
+### Instalador Windows: build ignora o shim PowerShell quebrado do pnpm
+
+- Reproduzido na VM durante a instalação local desta beta: o PowerShell escolhia `pnpm.ps1` antes de `pnpm.cmd`/`pnpm.exe`, e o shim encerrava com código 1 antes de compilar o Equicord. O instalador agora resolve um executável absoluto, chama o entrypoint do pacote diretamente com `node.exe` quando necessário e usa o mesmo caminho seguro para instalar, compilar, injetar e desfazer a injeção.
+
 ## [2.0.6-beta-11] - 2026-09-12
 
 ### Plugin Windows: updater recompila com instalações antigas do pnpm

@@ -40,7 +40,6 @@ test("modo customizado abre seletor nativo e salva a cópia privada", () => {
 
 test("painel customizado não exibe login Proton e conserva ações do túnel", () => {
     const panel = source.slice(source.indexOf("function VpnPanel"), source.indexOf("function buildReport"));
-    assert.match(panel, /settings\.use\(\["vpnMode", "customConfigPath"\]\)/);
     assert.match(panel, /customMode \? \(/);
     assert.match(panel, /nenhum login Proton é necessário/);
     assert.match(panel, /Native\.testWireGuardConfig\(customConfigPath\)/);

@@ -59,6 +59,7 @@ $PluginFiles = @(
     'goLiveBypass/update-channel.ts',
     'goLiveBypass/update-security.ts',
     'goLiveBypass/stability.ts',
+    'goLiveBypass/proton-manual-selection.ts',
     'goLiveBypass/vpn-controller.ts',
     'goLiveBypass/vpn-proton.ts',
     'goLiveBypass/vpn-types.ts',
@@ -109,6 +110,91 @@ function Remove-CaminhoSilencioso($caminho) {
         if ([System.IO.File]::Exists($cheio)) { [System.IO.File]::Delete($cheio); return }
         if ([System.IO.Directory]::Exists($cheio)) { [System.IO.Directory]::Delete($cheio, $true) }
     } catch { }
+}
+
+# O npm instala pnpm.ps1, pnpm.cmd e, em algumas variantes, pnpm.exe lado a lado. O
+# command discovery do PowerShell prefere o .ps1, mas esse shim pode apontar para um
+# entrypoint antigo e falhar mesmo depois de `pnpm --version` responder. Resolva somente
+# Application (.exe/.cmd) e, para .cmd, execute o entrypoint do pacote diretamente com Node.
+$script:PnpmEntrypoints = @('pnpm.cjs', 'pnpm.mjs', 'pnpm')
+$script:PnpmExitCode = 0
+
+function Find-PnpmApplications {
+    $candidates = @()
+    $found = Get-Command 'pnpm' -CommandType Application -ErrorAction SilentlyContinue
+    if ($found) { $candidates += @($found | ForEach-Object { $_.Source }) }
+    $candidates += @(
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'pnpm\pnpm.exe' }),
+        $(if ($env:APPDATA) { Join-Path $env:APPDATA 'npm\pnpm.cmd' }),
+        $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE 'AppData\Roaming\npm\pnpm.cmd' }),
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'pnpm\pnpm.cmd' }),
+        $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 'nodejs\pnpm.cmd' }),
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'nodejs\pnpm.cmd' }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'nodejs\pnpm.cmd' })
+    )
+
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $key = $candidate.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $candidate
+    }
+}
+
+function Resolve-PnpmInvocation([string[]]$Arguments) {
+    $fallbackShim = $null
+    foreach ($shim in @(Find-PnpmApplications)) {
+        if ([IO.Path]::GetExtension($shim) -ieq '.exe') {
+            return [pscustomobject]@{ Command = $shim; Arguments = $Arguments }
+        }
+        if (-not $fallbackShim) { $fallbackShim = $shim }
+
+        $shimDir = Split-Path -Parent $shim
+        $packageRoots = @(
+            (Join-Path $shimDir 'node_modules\pnpm'),
+            (Join-Path (Split-Path -Parent $shimDir) 'pnpm')
+        )
+        foreach ($root in $packageRoots) {
+            foreach ($name in $script:PnpmEntrypoints) {
+                $entrypoint = Join-Path $root "bin\$name"
+                if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) { continue }
+
+                $nodeCandidates = @(
+                    (Join-Path $shimDir 'node.exe'),
+                    $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 'nodejs\node.exe' }),
+                    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'nodejs\node.exe' }),
+                    $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'nodejs\node.exe' })
+                )
+                $node = $nodeCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+                if (-not $node) { $node = 'node.exe' }
+                return [pscustomobject]@{ Command = $node; Arguments = @($entrypoint) + $Arguments }
+            }
+        }
+    }
+
+    if (-not $fallbackShim) { return $null }
+    $windowsRoot = if ($env:SystemRoot) { $env:SystemRoot } elseif ($env:WINDIR) { $env:WINDIR } else { 'C:\Windows' }
+    $cmd = if ($env:ComSpec -and (Test-Path -LiteralPath $env:ComSpec -PathType Leaf)) {
+        $env:ComSpec
+    } else {
+        Join-Path $windowsRoot 'System32\cmd.exe'
+    }
+    return [pscustomobject]@{ Command = $cmd; Arguments = @('/d', '/s', '/c', 'call', $fallbackShim) + $Arguments }
+}
+
+function Invoke-Pnpm([string[]]$Arguments) {
+    $invocation = Resolve-PnpmInvocation $Arguments
+    if (-not $invocation) {
+        $script:PnpmExitCode = 127
+        return
+    }
+
+    $command = $invocation.Command
+    $commandArguments = @($invocation.Arguments)
+    & $command @commandArguments
+    $script:PnpmExitCode = $LASTEXITCODE
 }
 
 function Show-Banner {
@@ -574,7 +660,6 @@ function Test-Tool($name) {
 $script:PnpmVersion = ''
 
 function Test-Pnpm {
-    if (-not (Test-Tool 'pnpm')) { return $false }
 
     # Um atalho do corepack existe mesmo quando nao funciona, entao a unica prova que vale e
     # executar. O 2>$null evita assustar quem so vai ver a instalacao seguir depois.
@@ -585,8 +670,8 @@ function Test-Pnpm {
     # download" sem resposta vira erro terminante por causa do ErrorActionPreference=Stop daqui.
     # Sem o try/catch a excecao escapava do probe e derrubava o instalador inteiro, em vez de
     # cair no npm install -g. Relato real: o instalador morria apontando a linha 16 do shim.
-    try { $found = & pnpm --version 2>$null } catch { return $false }
-    if ($LASTEXITCODE -ne 0) { return $false }
+    try { $found = Invoke-Pnpm @('--version') 2>$null } catch { return $false }
+    if ($script:PnpmExitCode -ne 0) { return $false }
 
     $script:PnpmVersion = ($found | Select-Object -First 1)
     return $true
@@ -1259,13 +1344,13 @@ function Build-Mod($root) {
     try {
         if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules'))) {
             Write-Step 'Instalando dependencias (na primeira vez demora alguns minutos)'
-            & pnpm install
-            if ($LASTEXITCODE -ne 0) { throw 'pnpm install falhou' }
+            Invoke-Pnpm @('install') | Out-Host
+            if ($script:PnpmExitCode -ne 0) { throw 'pnpm install falhou' }
         }
 
         Write-Step 'Compilando'
-        & pnpm build
-        if ($LASTEXITCODE -ne 0) { throw 'pnpm build falhou' }
+        Invoke-Pnpm @('build') | Out-Host
+        if ($script:PnpmExitCode -ne 0) { throw 'pnpm build falhou' }
     } finally {
         Pop-Location
     }
@@ -1299,14 +1384,14 @@ function Invoke-Injection($root, $targets) {
             # injector nao achar a instalacao e toda instalacao nova pela linha de
             # comando falhar (relato 1.1.11-beta.1).
             $loc = Split-Path -Parent (Split-Path -Parent $t.Resources)
-            & pnpm run inject -- --location $loc
-            if ($LASTEXITCODE -ne 0) {
+            Invoke-Pnpm @('run', 'inject', '--', '--location', $loc) | Out-Host
+            if ($script:PnpmExitCode -ne 0) {
                 # Nem todo pnpm come o -- : cai no caminho de sempre (o instalador
                 # do mod pergunta) — espelho do run_inject do .sh.
-                & pnpm inject
-                if ($LASTEXITCODE -ne 0) {
+                Invoke-Pnpm @('inject') | Out-Host
+                if ($script:PnpmExitCode -ne 0) {
                     $falha = $true
-                    $detalhes.Add("$($t.Flavour): pnpm inject saiu com codigo $LASTEXITCODE ($($t.Resources))")
+                    $detalhes.Add("$($t.Flavour): pnpm inject saiu com codigo $script:PnpmExitCode ($($t.Resources))")
                 }
             }
         }
@@ -1632,8 +1717,8 @@ function Wait-DiscordExit($root) {
         # finally para que Ctrl+C tambem desfaca, em vez de deixar o Discord injetado.
         Push-Location -LiteralPath $root
         try {
-            & pnpm uninject
-            if ($LASTEXITCODE -ne 0) { Write-Warn 'O pnpm uninject falhou. Rode "pnpm uninject" na pasta do mod.' }
+            Invoke-Pnpm @('uninject') | Out-Host
+            if ($script:PnpmExitCode -ne 0) { Write-Warn 'O pnpm uninject falhou. Rode "pnpm uninject" na pasta do mod.' }
             else { Write-Ok 'Discord restaurado.' }
         } finally { Pop-Location }
     }
@@ -1652,7 +1737,7 @@ function Invoke-RestoreEverything {
         Push-Location -LiteralPath $root
         try {
             Write-Step 'Desfazendo a injecao'
-            & pnpm uninject
+            Invoke-Pnpm @('uninject') | Out-Host
         } finally { Pop-Location }
     } else {
         Write-Warn 'Nao achei o fonte do mod, entao so posso parar por aqui.'

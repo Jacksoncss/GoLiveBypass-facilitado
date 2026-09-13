@@ -40,7 +40,15 @@ import {
 } from "./update-channel";
 import { resolveWindowsPnpmBuildCommand } from "./plugin-build";
 import { isCompatiblePluginManifest, releaseAssetUrl, securePluginUpdateUrl } from "./update-security";
-import { defaultPluginVpnDataDir, PluginVpnController, type ProtonLoginPayload, type ProtonOptimizationOptions } from "./vpn-controller";
+import {
+    defaultPluginVpnDataDir,
+    PluginVpnController,
+    type ProtonLoginPayload,
+    type ProtonOptimizationOptions,
+    type ProtonRouteDiscoveryOptions,
+    type ProtonRouteSelectionOptions,
+    type ProtonRouteSelectionResult,
+} from "./vpn-controller";
 import {
     findSystemBinary,
     GOLIVE_PLUGIN_LINUX_NAMESPACE,
@@ -51,7 +59,7 @@ import {
 import * as proton from "./vpn-proton";
 import { safeDiagnosticDetail } from "./vpn-types";
 
-const PLUGIN_VERSION = "2.0.6-beta-11";
+const PLUGIN_VERSION = "2.0.6-beta-12";
 const PLUGIN_ASSET = "goLiveBypass-vencord.zip";
 const PLUGIN_CHECKSUM_ASSET = `${PLUGIN_ASSET}.sha256`;
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/bezumiya/GoLiveBypass/releases?per_page=20";
@@ -79,6 +87,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
         "update-channel.ts",
         "update-security.ts",
         "stability.ts",
+        "proton-manual-selection.ts",
         "vpn-controller.ts",
         "vpn-proton.ts",
         "vpn-types.ts",
@@ -171,6 +180,7 @@ const SAFE_DISPLACED_NAME = /^goLiveBypass-pending-[0-9]{10,}$/;
 const MAX_LOG_LINES = 400;
 const MAX_LOG_BYTES = 256 * 1024;
 const CAPTCHA_IPC_CHANNEL = "golive-plugin-proton-captcha-response";
+const PROTON_PROGRESS_CHANNEL = "golive-vpn-proton-progress";
 const CAPTCHA_TIMEOUT_MS = 120_000;
 const SOURCE_DIGEST_PATTERN = /^[a-f0-9]{64}$/i;
 
@@ -720,6 +730,26 @@ function cleanOptimizationOptions(value: unknown): ProtonOptimizationOptions {
     };
 }
 
+function cleanRouteDiscoveryOptions(value: unknown): ProtonRouteDiscoveryOptions {
+    const raw = value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+    return {
+        country: typeof raw.country === "string" ? raw.country.trim().slice(0, 128) : undefined,
+        freeOnly: typeof raw.freeOnly === "boolean" ? raw.freeOnly : undefined,
+        autoPing: typeof raw.autoPing === "boolean" ? raw.autoPing : undefined,
+        requestId: typeof raw.requestId === "string" ? raw.requestId.trim().slice(0, 120) : undefined,
+    };
+}
+
+function cleanRouteSelectionRequest(value: unknown): ProtonRouteSelectionOptions {
+    if (value === null || typeof value !== "object") throw new Error("Informe a medição e a rota Proton escolhida.");
+    const raw = value as Record<string, unknown>;
+    const measurementId = typeof raw.measurementId === "string" ? raw.measurementId.trim().slice(0, 128) : "";
+    const server = typeof raw.server === "string" ? raw.server.trim().slice(0, 200) : "";
+    if (!measurementId) throw new Error("A identificação da medição de rotas é obrigatória.");
+    if (!server) throw new Error("Informe o servidor Proton escolhido.");
+    return { measurementId, server };
+}
+
 function writeCaptchaPreload(): string {
     const target = join(VPN_DATA_DIR, "captcha-preload.cjs");
     const source = `"use strict";\nconst { ipcRenderer } = require("electron");\nconst accepted = new Set(["pm_captcha", "proton_captcha"]);\nwindow.addEventListener("message", event => {\n  const data = event.data;\n  if (!data || !accepted.has(data.type) || typeof data.token !== "string" || data.token.length > 16384) return;\n  ipcRenderer.send(${JSON.stringify(CAPTCHA_IPC_CHANNEL)}, { type: data.type, token: data.token });\n});\n`;
@@ -934,7 +964,9 @@ export async function loginProton(event: IpcMainInvokeEvent, value: unknown) {
     try {
         const payload = cleanLoginPayload(value);
         const parent = BrowserWindow.fromWebContents(event.sender);
-        const result = await controller.loginProton(payload, (url, signal) => solveCaptcha(url, parent, signal).then(captcha => captcha.ok ? captcha.token : null));
+        // O resultado detalhado (recusado x cancelado) sobe inteiro: a tela precisa
+        // distinguir "expirou/foi recusado" de "o usuário cancelou".
+        const result = await controller.loginProton(payload, (url, signal) => solveCaptcha(url, parent, signal));
         if (result.success && result.username) setStoredUsername(result.username);
         return result;
     } catch (error) {
@@ -998,7 +1030,7 @@ export function optimizeProtonRoute(event: IpcMainInvokeEvent, value: unknown) {
             error: undefined,
             updatedAt: Date.now(),
         };
-        if (!event.sender.isDestroyed()) event.sender.send("golive-vpn-proton-progress", progress);
+        if (!event.sender.isDestroyed()) event.sender.send(PROTON_PROGRESS_CHANNEL, progress);
     };
     return controller.optimizeProton(options).then(result => {
         pluginOptimizationStatus = {
@@ -1029,6 +1061,51 @@ export function optimizeProtonRoute(event: IpcMainInvokeEvent, value: unknown) {
 
 export function cancelProtonOptimization(_: IpcMainInvokeEvent, requestId: unknown) {
     return { cancelled: typeof requestId === "string" && controller.cancelOptimization(requestId) };
+}
+
+export function discoverProtonRoutes(event: IpcMainInvokeEvent, value: unknown) {
+    let options: ProtonRouteDiscoveryOptions;
+    try {
+        options = cleanRouteDiscoveryOptions(value);
+    } catch (error) {
+        return Promise.resolve({ success: false as const, error: safeDiagnosticDetail(error, 500) });
+    }
+    const requestId = options.requestId || `route-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    options.requestId = requestId;
+    options.onProgress = progress => {
+        // O snapshot consultável vive no controlador; aqui só o evento incremental
+        // vai para o renderer, com identificador da medição e sem metadados privados.
+        if (!event.sender.isDestroyed()) event.sender.send(PROTON_PROGRESS_CHANNEL, progress);
+    };
+    return controller.discoverProtonRoutes(options).then(
+        result => result,
+        error => ({ success: false as const, error: safeDiagnosticDetail(error, 500) }),
+    );
+}
+
+export function cancelProtonRouteDiscovery(_: IpcMainInvokeEvent, requestId?: unknown) {
+    return { cancelled: controller.cancelProtonRouteDiscovery(typeof requestId === "string" ? requestId : undefined) };
+}
+
+export function getProtonRouteDiscoveryStatus(_: IpcMainInvokeEvent) {
+    return controller.getRouteDiscoveryStatus();
+}
+
+export function selectProtonRoute(_: IpcMainInvokeEvent, value: unknown): Promise<ProtonRouteSelectionResult> {
+    let request: ProtonRouteSelectionOptions;
+    try {
+        request = cleanRouteSelectionRequest(value);
+    } catch (error) {
+        return Promise.resolve({ success: false as const, error: safeDiagnosticDetail(error, 500) });
+    }
+    return controller.selectProtonRoute(request).then(
+        result => result,
+        error => ({ success: false, error: safeDiagnosticDetail(error, 500) }) as const,
+    );
+}
+
+export function cancelProtonRouteSelection() {
+    return { cancelled: controller.cancelProtonRouteSelection() };
 }
 
 // ------------------------------------------------------------------ atualização do userplugin

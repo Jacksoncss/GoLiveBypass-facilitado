@@ -7,6 +7,7 @@
 import { sendBotMessage } from "@api/Commands";
 import { definePluginSettings } from "@api/Settings";
 import { Card } from "@components/Card";
+import { FormSwitch } from "@components/FormSwitch";
 import { Paragraph } from "@components/Paragraph";
 import { copyWithToast } from "@utils/discord";
 import { Logger } from "@utils/Logger";
@@ -14,7 +15,7 @@ import { useAwaiter } from "@utils/react";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import type { RenderModalProps } from "@vencord/discord-types";
 import { findStoreLazy } from "@webpack";
-import { Button, closeModal as closeDiscordModal, Constants, MaskedLink, Modal, openModal, React, RestAPI, SearchableSelect, showToast, TextInput, Toasts, useEffect, UserStore, useState } from "@webpack/common";
+import { Button, closeModal as closeDiscordModal, Constants, MaskedLink, Modal, openModal, React, RestAPI, SearchableSelect, showToast, TextArea, TextInput, Toasts, useEffect, UserStore, useState } from "@webpack/common";
 
 import {
     evaluateStreamClaim,
@@ -1740,7 +1741,8 @@ function VpnPanel() {
                         </Button>
                     )}{" "}
                     <Button onClick={() => void call(() => Native.restoreNetwork(), "Rede restaurada.")} disabled={busy || optimizing}>Restaurar rede</Button>{" "}
-                    <Button onClick={() => void call(() => Native.testWireGuardConfig(customConfigPath))} disabled={busy || optimizing}>Testar .conf</Button>
+                    <Button onClick={() => void call(() => Native.testWireGuardConfig(customConfigPath))} disabled={busy || optimizing}>Testar .conf</Button>{" "}
+                    <Button onClick={openBugReport}>Reportar bug</Button>
                 </div>
             </div>
             <Paragraph>
@@ -2021,7 +2023,9 @@ function stopStreamClaimWatch() {
     lastSelectedStreamRegion = null;
 }
 
-async function buildReport() {
+// Diagnóstico que só o renderer enxerga: alimenta o relato de bug (campo `session`) e,
+// junto do processo principal, o texto copiado pelo comando `/golivebypass`.
+function buildRendererDiagnostics() {
     const user = UserStore.getCurrentUser();
     const lines: string[] = ["GoLiveBypass, diagnostico"];
 
@@ -2051,6 +2055,12 @@ async function buildReport() {
     const { vpnMode, customConfigPath, protonUsername, protonCountry, protonFreeOnly, protonAutoPing, voiceRegion, streamRegion } = settings.store;
     lines.push(`VPN "${vpnMode}" | conf personalizada "${customConfigPath ? "definida" : "vazia"}" | usuário Proton "${protonUsername ? "definido" : "vazio"}" | países "${protonCountry}" | somente grátis ${protonFreeOnly} | auto-ping ${protonAutoPing} | região de call "${voiceRegion}" | região de stream "${streamRegion}"`);
 
+    return lines.join("\n");
+}
+
+async function buildReport() {
+    const lines: string[] = [buildRendererDiagnostics()];
+
     lines.push("", "== processo principal ==");
     if (!Native) {
         lines.push("indisponivel, o plugin esta rodando sem a parte desktop");
@@ -2069,6 +2079,165 @@ async function buildReport() {
     return lines.join("\n");
 }
 
+type BugReportPhase = "idle" | "sending" | "success" | "deduped" | "blocked" | "error";
+
+let bugReportOpen = false;
+let bugReportModalKey: string | null = null;
+let bugReportModalToken = 0;
+
+function openBugReport() {
+    if (bugReportOpen) return;
+    bugReportOpen = true;
+    const modalToken = ++bugReportModalToken;
+    try {
+        const modalKey = openModal(props => <BugReportModal modalProps={props} onClosed={() => {
+            if (modalToken !== bugReportModalToken) return;
+            bugReportOpen = false;
+            bugReportModalKey = null;
+        }} />);
+        if (modalToken === bugReportModalToken && bugReportOpen) bugReportModalKey = modalKey;
+    } catch (error) {
+        bugReportOpen = false;
+        bugReportModalKey = null;
+        logger.error("Falha ao abrir o relato de bug do GoLiveBypass", error);
+    }
+}
+
+// Relato manual: nada aqui é disparado por falha, boot ou atualização. O envio é feito
+// pela parte nativa, que é a única que conhece o endpoint e o token; o renderer manda
+// apenas título, descrição e o diagnóstico que ele mesmo enxerga.
+function BugReportModal({ modalProps, onClosed }: { modalProps: RenderModalProps; onClosed: () => void }) {
+    const [phase, setPhase] = useState<BugReportPhase>("idle");
+    const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
+    const [includeLogs, setIncludeLogs] = useState(true);
+    const [feedback, setFeedback] = useState<string | null>(null);
+    const [issueUrl, setIssueUrl] = useState<string | null>(null);
+    const [blockedSeconds, setBlockedSeconds] = useState(0);
+    const disposedRef = React.useRef(false);
+    const closedRef = React.useRef(false);
+    const headingRef = React.useRef<HTMLHeadingElement | null>(null);
+
+    const closeModal = () => {
+        if (closedRef.current) return;
+        closedRef.current = true;
+        disposedRef.current = true;
+        onClosed();
+        modalProps.onClose();
+    };
+
+    useEffect(() => {
+        disposedRef.current = false;
+        headingRef.current?.focus({ preventScroll: true });
+        return () => { disposedRef.current = true; };
+    }, []);
+
+    // Consulta inicial: o carimbo do bloqueio é do servidor, nunca um valor fixo daqui.
+    useEffect(() => {
+        if (!Native || typeof Native.getBugReportStatus !== "function") return;
+        void Promise.resolve(Native.getBugReportStatus()).then(status => {
+            if (disposedRef.current || !status?.blocked) return;
+            setBlockedSeconds(status.retryAfter);
+            setPhase("blocked");
+        }).catch(error => logger.error("Falha ao consultar o bloqueio de relatos", error));
+    }, []);
+
+    useEffect(() => {
+        if (phase !== "blocked") return;
+        const timer = setInterval(() => setBlockedSeconds(seconds => Math.max(0, seconds - 1)), 1_000);
+        return () => clearInterval(timer);
+    }, [phase]);
+
+    useEffect(() => {
+        if (phase === "blocked" && blockedSeconds === 0) setPhase("idle");
+    }, [phase, blockedSeconds]);
+
+    const enviar = async () => {
+        if (phase === "sending" || !title.trim()) return;
+        if (!Native || typeof Native.submitBugReport !== "function") {
+            setFeedback("A parte nativa do plugin não oferece o envio de relato. Atualize ou reinstale o plugin.");
+            setPhase("error");
+            return;
+        }
+
+        setPhase("sending");
+        setFeedback(null);
+        try {
+            const resultado = await Native.submitBugReport({ title, description, includeLogs, session: buildRendererDiagnostics() });
+            if (disposedRef.current) return;
+            if (resultado?.ok) {
+                // Sucesso limpa os campos; falha preserva o que o usuário escreveu.
+                setTitle("");
+                setDescription("");
+                setIncludeLogs(true);
+                setIssueUrl(resultado.issueUrl ?? null);
+                setPhase(resultado.deduped ? "deduped" : "success");
+                return;
+            }
+            if (resultado?.code === "BLOQUEADO") {
+                setBlockedSeconds(resultado.retryAfter ?? 0);
+                setPhase("blocked");
+                return;
+            }
+            setFeedback(resultado?.error || "Não consegui enviar o relato. Tente novamente.");
+            setPhase("error");
+        } catch (error) {
+            if (disposedRef.current) return;
+            logger.error("Falha ao enviar o relato de bug", error);
+            setFeedback("Não consegui falar com a parte nativa do plugin. Copie o diagnóstico e tente novamente.");
+            setPhase("error");
+        }
+    };
+
+    const copiarDiagnostico = () => {
+        void buildReport()
+            .then(report => copyWithToast(report, "Diagnóstico copiado."))
+            .catch(error => logger.error("Falha ao montar o diagnóstico do relato", error));
+    };
+
+    const enviando = phase === "sending";
+    const bloqueado = phase === "blocked" && blockedSeconds > 0;
+    const espera = blockedSeconds >= 60 ? `${Math.floor(blockedSeconds / 60)}min ${blockedSeconds % 60}s` : `${blockedSeconds}s`;
+    const concluido = phase === "success" || phase === "deduped";
+    const actions = [
+        { text: "Fechar", variant: "secondary" as const, onClick: closeModal, disabled: enviando },
+        { text: "Copiar diagnóstico", variant: "secondary" as const, onClick: copiarDiagnostico, disabled: enviando },
+        { text: enviando ? "Enviando…" : "Enviar", variant: "primary" as const, onClick: () => void enviar(), disabled: enviando || bloqueado || !title.trim() },
+    ];
+
+    return (
+        <Modal {...modalProps} onClose={closeModal} title="Reportar bug" size="md" actions={actions}>
+            <div style={{ maxHeight: "min(60vh, 560px)", overflowY: "auto", overflowX: "hidden", paddingRight: "4px", minWidth: 0, display: "flex", flexDirection: "column", gap: "12px" }}>
+                <h2 ref={headingRef} tabIndex={-1} style={{ margin: 0, color: "var(--header-primary)" }}>Reportar um problema do GoLiveBypass</h2>
+                {concluido ? (
+                    <div style={onboardingBoxStyle} role="status" aria-live="polite">
+                        <Paragraph><strong>{phase === "deduped" ? "Esse mesmo relato já foi enviado há pouco." : "Relato enviado. Obrigado por ajudar!"}</strong></Paragraph>
+                        <Paragraph>Os logs da sessão foram anexados já redigidos: sem senha, sem chave WireGuard e sem a sua rota de saída.</Paragraph>
+                        {issueUrl && <Paragraph><MaskedLink href={issueUrl}>Abrir a issue no GitHub</MaskedLink></Paragraph>}
+                    </div>
+                ) : (
+                    <>
+                        <Paragraph>Descreva o problema. O resumo, os detalhes e os logs da sessão do plugin são enviados para a API de relatos, que abre a issue no GitHub. A redação acontece antes de qualquer dado sair da máquina.</Paragraph>
+                        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            <span>Resumo</span>
+                            <TextInput value={title} onChange={setTitle} maxLength={200} disabled={enviando} placeholder="Ex: Go Live ainda bloqueado com a VPN ativa" aria-label="Resumo do problema" />
+                        </label>
+                        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                            <span>Detalhes</span>
+                            <TextArea value={description} onChange={setDescription} maxLength={8192} rows={5} disabled={enviando} placeholder="O que aconteceu? O que esperava? Passos para reproduzir..." aria-label="Detalhes do problema" />
+                        </label>
+                        <FormSwitch title="Incluir logs da sessão (recomendado)" description="Log do plugin e diagnóstico do renderer, redigidos antes do envio." value={includeLogs} onChange={setIncludeLogs} disabled={enviando} />
+                    </>
+                )}
+                {bloqueado && (
+                    <Paragraph role="status" aria-live="polite"><strong>Você está bloqueado por enviar relatos em excesso.</strong> Tente novamente em {espera}.</Paragraph>
+                )}
+                {feedback && <Paragraph role="alert" aria-live="assertive"><strong>{feedback}</strong></Paragraph>}
+            </div>
+        </Modal>
+    );
+}
+
 export default definePlugin({
     name: "GoLiveBypass",
     description: "Turns Go Live and camera back on for Brazilian accounts, and provides an isolated WireGuard VPN for this Discord only.",
@@ -2078,6 +2247,7 @@ export default definePlugin({
     settingsAboutComponent: AboutPlugin,
     toolboxActions: {
         "Abrir assistente do GoLiveBypass": openPluginOnboarding,
+        "Reportar bug no GoLiveBypass": openBugReport,
     },
 
     patches: [
@@ -2198,6 +2368,16 @@ export default definePlugin({
         } else {
             onboardingModalToken++;
             onboardingOpen = false;
+        }
+        if (bugReportModalKey !== null) {
+            const modalKey = bugReportModalKey;
+            bugReportModalToken++;
+            bugReportModalKey = null;
+            bugReportOpen = false;
+            closeDiscordModal(modalKey);
+        } else {
+            bugReportModalToken++;
+            bugReportOpen = false;
         }
         stopStreamClaimWatch();
         restoreRegion();

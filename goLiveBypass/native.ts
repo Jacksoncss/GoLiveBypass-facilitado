@@ -28,9 +28,29 @@ import {
 } from "fs";
 import type { ClientRequest } from "http";
 import { request } from "https";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
 
+import {
+    assinaturaDoRelato,
+    type BugReportHttpSpec,
+    type BugReportResult,
+    type BugReportState,
+    decidirEnvio,
+    estadoDeEnvioValido,
+    interpretarResposta,
+    interpretarStatusDeBloqueio,
+    limparEntradaDoRenderer,
+    montarLog,
+    montarMeta,
+    montarPayload,
+    montarPedido,
+    montarPedidoDeStatus,
+    resultadoDeduplicado,
+    resultadoDeRede,
+    resultadoSegredoRemanescente,
+    resultadoTituloObrigatorio,
+} from "./bug-report";
 import {
     choosePluginRelease,
     comparePluginVersions,
@@ -74,6 +94,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
     const common = [
         "index.tsx",
         "native.ts",
+        "bug-report.ts",
         "update-channel.ts",
         "update-security.ts",
         "stability.ts",
@@ -881,6 +902,204 @@ export function getLog(_: IpcMainInvokeEvent): string {
 
 export function getPluginVpnPaths(_: IpcMainInvokeEvent) {
     return { ...controller.paths, logPath: LOG_FILE };
+}
+
+// ------------------------------------------------------------------ reporte de bug
+// Endpoint, URL de status e token são os MESMOS da GUI (golive-gui/electron/bugreport.ts).
+// O token é extraível do pacote nativo por design — o escopo dele é abrir issue em
+// repositório público, com rate limit por IP — e por isso nunca é exportado ao renderer
+// nem escrito no log. O envio só acontece por ação do usuário: nada aqui é chamado em
+// boot, falha, ativação ou updater.
+const BUG_API_URL = "https://api.skyplaceia.com/bugs/v1/reports";
+const BUG_STATUS_URL = "https://api.skyplaceia.com/bugs/v1/block-status";
+const BUG_API_TOKEN = "c3d0bff691ecc3ddc6f6ca10037b9ac967c62547e681d3749204e50800504511";
+const BUG_REPORT_STATE_FILE = "bug-report-state.json";
+const BUG_STATUS_TIMEOUT_MS = 5_000;
+const BUG_POST_TIMEOUT_MS = 15_000;
+const BUG_RESPONSE_MAX_BYTES = 16 * 1024;
+const BUG_LOG_TAIL_BYTES = 96 * 1024;
+
+function bugReportStatePath(): string {
+    return join(VPN_DATA_DIR, BUG_REPORT_STATE_FILE);
+}
+
+// Termos usados SÓ na varredura local do relato. A chave do perfil é lida apenas para
+// virar termo de busca: nenhuma linha do arquivo entra no payload.
+function coletarSegredosLocais(): string[] {
+    const config = controllerSettings();
+    const candidatos = [
+        homedir(),
+        VPN_DATA_DIR,
+        typeof config.protonUsername === "string" ? config.protonUsername : "",
+        typeof config.customConfigPath === "string" ? config.customConfigPath : "",
+    ];
+
+    const perfil = controller.paths.serviceConfigPath;
+    if (existsSync(perfil)) {
+        try {
+            const chave = /PrivateKey\s*=\s*(\S+)/i.exec(readFileSync(perfil, "utf8"));
+            if (chave) candidatos.push(chave[1]);
+        } catch (error) {
+            log("warn", "não consegui ler a chave do perfil WireGuard para a varredura do relato", { erro: error });
+        }
+    }
+
+    return candidatos.filter(candidato => candidato.length >= 3);
+}
+
+function lerCaudaDoLog(maxBytes = BUG_LOG_TAIL_BYTES): string {
+    try {
+        if (!existsSync(LOG_FILE)) return "";
+        const buffer = readFileSync(LOG_FILE);
+        const pedaco = buffer.length > maxBytes ? buffer.subarray(buffer.length - maxBytes) : buffer;
+        const texto = pedaco.toString("utf8");
+        // O corte pode cair no meio de uma linha: descarta a primeira, parcial.
+        return pedaco.length < buffer.length ? texto.slice(texto.indexOf("\n") + 1) : texto;
+    } catch (error) {
+        log("warn", "não consegui ler o log do plugin para o relato", { erro: error });
+        return "";
+    }
+}
+
+function lerEstadoDeEnvio(): BugReportState | null {
+    try {
+        if (!existsSync(bugReportStatePath())) return null;
+        return estadoDeEnvioValido(JSON.parse(readFileSync(bugReportStatePath(), "utf8")));
+    } catch {
+        return null;
+    }
+}
+
+// Só é chamada depois de um 201 com issue_url: uma tentativa que falhou não pode
+// esconder o mesmo erro por 48h.
+function gravarEstadoDeEnvio(signature: string, issueUrl: string): void {
+    const destino = bugReportStatePath();
+    const temporario = `${destino}.${process.pid}.tmp`;
+    try {
+        mkdirSync(VPN_DATA_DIR, { recursive: true });
+        writeFileSync(temporario, JSON.stringify({ signature, issueUrl, at: Math.floor(Date.now() / 1000) }), "utf8");
+        renameSync(temporario, destino);
+    } catch (error) {
+        log("warn", "não consegui gravar o estado do último relato", { erro: error });
+        try {
+            rmSync(temporario, { force: true });
+        } catch {
+            // Sem estado o pior caso é repetir o relato; nada a fazer aqui.
+        }
+    }
+}
+
+function bugRequest(spec: BugReportHttpSpec, timeoutMs: number): Promise<{ status: number; retryAfter: number; texto: string }> {
+    const { promise, resolve, reject } = Promise.withResolvers<{ status: number; retryAfter: number; texto: string }>();
+    let settled = false;
+    let req: ClientRequest | undefined;
+
+    const resolver = (valor: { status: number; retryAfter: number; texto: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        resolve(valor);
+    };
+    const rejeitar = (erro: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        reject(erro);
+    };
+    const deadline = setTimeout(() => {
+        req?.destroy(new Error("prazo do relato excedido"));
+        rejeitar(new Error("prazo do relato excedido"));
+    }, timeoutMs);
+    deadline.unref?.();
+
+    const headers = { ...spec.headers };
+    if (spec.body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(spec.body, "utf8"));
+
+    try {
+        req = request(spec.url, { method: spec.method, headers }, response => {
+            const partes: Buffer[] = [];
+            let total = 0;
+            response.on("data", (pedaco: Buffer) => {
+                if (total >= BUG_RESPONSE_MAX_BYTES) return;
+                total += pedaco.length;
+                partes.push(pedaco);
+            });
+            response.on("error", rejeitar);
+            response.on("end", () => resolver({
+                status: response.statusCode ?? 0,
+                retryAfter: Number(response.headers["retry-after"] ?? 0),
+                texto: Buffer.concat(partes).subarray(0, BUG_RESPONSE_MAX_BYTES).toString("utf8"),
+            }));
+        });
+    } catch (error) {
+        rejeitar(error);
+        return promise;
+    }
+
+    req.on("error", rejeitar);
+    if (spec.body !== undefined) req.write(spec.body);
+    req.end();
+
+    return promise;
+}
+
+export async function getBugReportStatus(_: IpcMainInvokeEvent) {
+    try {
+        const resposta = await bugRequest(montarPedidoDeStatus({ url: BUG_STATUS_URL, token: BUG_API_TOKEN }), BUG_STATUS_TIMEOUT_MS);
+        return interpretarStatusDeBloqueio(resposta.status, resposta.texto);
+    } catch (error) {
+        log("warn", "não consegui consultar o bloqueio de relatos", { erro: error });
+        return { blocked: false, retryAfter: 0, remaining: 0 };
+    }
+}
+
+export async function submitBugReport(_: IpcMainInvokeEvent, value: unknown): Promise<BugReportResult> {
+    const pedido = limparEntradaDoRenderer(value);
+    if (!pedido.title.trim()) return resultadoTituloObrigatorio();
+
+    const segredos = coletarSegredosLocais();
+    const blocoDeLog = pedido.includeLogs
+        ? montarLog({ ring: history.join("\n"), caudaArquivo: lerCaudaDoLog(), sessao: pedido.session, segredos, token: BUG_API_TOKEN })
+        : "";
+    const status = controller.getStatus();
+    const meta = montarMeta({
+        versao: currentPluginVersion(),
+        plataforma: `${process.platform}-${process.arch}`,
+        electron: process.versions.electron ?? "?",
+        node: process.versions.node ?? "?",
+        estadoVpn: { state: status.state, active: status.active, owned: status.owned, generation: status.generation },
+        modo: pluginSettings().vpnMode === "custom" ? "custom" : "proton",
+        onboarding: pluginSettings().onboardingCompleted === true,
+    });
+
+    const montado = montarPayload({ titulo: pedido.title, descricao: pedido.description, log: blocoDeLog, meta, segredos, token: BUG_API_TOKEN });
+    if (montado.bloqueado) {
+        // O motivo fica no log local; o segredo que causou o bloqueio, nunca.
+        log("warn", "envio de relato bloqueado antes de sair da máquina", { code: montado.code });
+        return montado.code === "TITULO_OBRIGATORIO" ? resultadoTituloObrigatorio() : resultadoSegredoRemanescente();
+    }
+
+    const assinatura = assinaturaDoRelato(montado.payload.title, montado.payload.description);
+    const decisao = decidirEnvio(lerEstadoDeEnvio(), assinatura, Math.floor(Date.now() / 1000));
+    if (!decisao.enviar && decisao.issueUrl) {
+        log("info", "relato igual aos das últimas 48h não foi reenviado");
+        return resultadoDeduplicado(decisao.issueUrl);
+    }
+
+    try {
+        const resposta = await bugRequest(montarPedido(montado.payload, { url: BUG_API_URL, token: BUG_API_TOKEN }), BUG_POST_TIMEOUT_MS);
+        const resultado = interpretarResposta(resposta.status, resposta.retryAfter, resposta.texto);
+        if (resultado.ok && resultado.issueUrl) {
+            gravarEstadoDeEnvio(assinatura, resultado.issueUrl);
+            log("info", "relato enviado", { issue: resultado.issueNumber ?? 0 });
+        } else {
+            log("warn", "envio de relato recusado pela API", { status: resposta.status, code: resultado.code });
+        }
+        return resultado.error ? { ...resultado, error: safeDiagnosticDetail(resultado.error) } : resultado;
+    } catch (error) {
+        log("warn", "envio de relato sem resposta", { erro: error });
+        return resultadoDeRede();
+    }
 }
 
 export function importWireGuardConfig(_: IpcMainInvokeEvent, sourcePath: unknown) {

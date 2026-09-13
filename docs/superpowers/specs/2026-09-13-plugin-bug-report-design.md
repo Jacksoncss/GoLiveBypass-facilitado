@@ -494,8 +494,7 @@ estados `success` e `deduped`.
 Convenção do repositório: os testes do plugin ficam em `tests/test-plugin-*.mjs`
 e rodam direto com `node <arquivo>` (o Node 26 importa `.ts` do próprio
 repositório, como faz `tests/test-plugin-build-command.mjs`). Este desenho
-adiciona `tests/test-plugin-bug-report.mjs` e
-`tests/test-plugin-bug-report-boundary.mjs`.
+adiciona `tests/test-plugin-bug-report.mjs` e `tests/test-redaction-parity.mjs`.
 
 ### `tests/test-plugin-bug-report.mjs` (novo, importa `goLiveBypass/bug-report.ts`)
 
@@ -532,25 +531,19 @@ adiciona `tests/test-plugin-bug-report.mjs` e
     entrada, o `JSON.stringify` do payload montado não contém esse token (o L2/L3
     cobre o próprio `BUG_API_TOKEN`).
 
-### `tests/test-plugin-bug-report-boundary.mjs` (novo)
+### Fronteira do renderer (sem teste automatizado)
 
-Invariantes que não têm superfície de runtime em Node porque `native.ts` importa
-Electron:
+`index.tsx` não é carregável por Node (depende do runtime do Discord), então a
+fronteira do renderer — sem host, sem token e sem `Bearer` no arquivo, e um único
+ponto de chamada do envio — **não tem teste automatizado**. Esses invariantes
+seguem valendo como contrato de implementação: o renderer só chama
+`Native.submitBugReport`/`Native.getBugReportStatus`, não importa valor de
+`./bug-report` (apenas tipos, que o build apaga) e o envio só existe no submit do
+modal. Um teste estático que lesse a fonte para prender nomes e contagens foi
+considerado e descartado: prenderia a implementação em vez do contrato e não
+sobreviveria a uma reorganização do arquivo.
 
-1. `index.tsx` não contém o host da API, `Bearer`, `bugReportToken`,
-   `bugReportApiUrl` nem literal hexadecimal de 64 caracteres (o token) — o
-   renderer nunca vê rota nem token.
-2. `native.ts` declara `BUG_API_URL`, `BUG_STATUS_URL` e `BUG_API_TOKEN` com os
-   mesmos valores da GUI (`golive-gui/electron/bugreport.ts:22-26`) e **não** lê
-   `GOLIVE_BUG_API_URL`, `GOLIVE_BUG_API_TOKEN`, `bugReportApiUrl` nem
-   `bugReportToken` — paridade de backend com a GUI e ausência de configuração em
-   runtime.
-3. `submitBugReport` aparece uma única vez no renderer (guarda contra telemetria
-   automática acidental).
-4. Os objetos devolvidos por `submitBugReport`/`getBugReportStatus` não declaram
-   `token`, `authorization`, `endpoint`, `log`, `profilePath` ou `configPath`.
-
-### `tests/test-redaction-parity.mjs` (recomendado, não bloqueante)
+### `tests/test-redaction-parity.mjs` (novo)
 
 Compara as listas de padrões de `goLiveBypass/bug-report.ts` e
 `golive-gui/electron/redact.ts` para impedir divergência entre os dois clientes.
@@ -589,12 +582,10 @@ desenho.
 
 ## Critério de conclusão
 
-A rodada termina quando, com o recurso implementado: os dois arquivos de teste
-novos passam (`node tests/test-plugin-bug-report.mjs` e
-`node tests/test-plugin-bug-report-boundary.mjs`); a suíte
-`tests/test-plugin-*.mjs` continua passando; `index.tsx` não contém token nem
-endereço da API; o plugin usa o mesmo endpoint e token da GUI (paridade
-verificada no teste de fronteira); um relato real pelo modal abre issue com log
-redigido; um segundo envio idêntico em menos de 48 h não cria issue; e um `429`
-mostra a contagem regressiva vinda do servidor, sem vazar endpoint ou token no
-renderer, no log ou no payload.
+A rodada termina quando, com o recurso implementado: `tests/test-plugin-bug-report.mjs`
+e `tests/test-redaction-parity.mjs` passam; a suíte `tests/test-plugin-*.mjs`
+continua passando; o plugin usa o mesmo endpoint e token da GUI (constantes
+conferidas na revisão, sem teste automatizado); um relato real pelo modal abre
+issue com log redigido; um segundo envio idêntico em menos de 48 h não cria issue;
+e um `429` mostra a contagem regressiva vinda do servidor, sem vazar endpoint ou
+token no renderer, no log ou no payload.

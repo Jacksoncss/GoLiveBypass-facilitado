@@ -19,6 +19,12 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Não há telemetria nem envio automático de bug report. Downloads normais do GitHub para instalar/atualizar o plugin continuam no fluxo existente; nenhuma decisão de roteamento, WireGuard/WireSock, ownership, relaunch ou rollback foi alterada.
 - Cobertura segura: `test-installer-log.sh` valida redaction, timestamp, rotação, falha de escrita, ausência de POST e #293; os testes de logger/helper do plugin cobrem JSONL, correlação, dedupe, restore, limites e dados sintéticos sem credenciais reais.
 
+### Updater beta-16 → beta-17: compatibilidade do archive
+
+- O asset público beta-17 foi empacotado a partir de uma tag do GUI que omitia `bug-report.ts` e `vpn-snapshot-worker.ts`. A validação fail-closed detecta a árvore incompleta e preserva a instalação existente, sem substituir o plugin por um asset incompatível.
+- O workflow `release-assets` agora executa uma guarda com ZIP sintético antes do upload, exigindo os arquivos obrigatórios e rejeitando cada ausência conhecida. O asset público beta-17 existente **não foi corrigido** por esta mudança; ele só será substituído por uma release posterior explicitamente autorizada.
+
+
 ## [2.0.6-beta-15] - 2026-09-13
 
 ### Plugin: relato manual de bug pelo Discord

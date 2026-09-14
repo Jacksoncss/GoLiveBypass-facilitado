@@ -74,6 +74,11 @@ func jsonErrorResponse(err error) map[string]any {
 		response["retryable"] = false
 		return response
 	}
+	if auth.IsSessionPersistenceError(err) {
+		response["code"] = "SESSION_PERSISTENCE"
+		response["retryable"] = true
+		return response
+	}
 	if auth.IsTemporarySessionError(err) {
 		response["code"] = "NETWORK_ERROR"
 		response["retryable"] = true

@@ -18,6 +18,7 @@ func TestJSONErrorResponseClassifiesAuthenticationFailures(t *testing.T) {
 		{name: "two factor invalid", err: &auth.TwoFactorError{Code: 9100}, code: "TWO_FACTOR_INVALID"},
 		{name: "invalid credentials", err: &auth.InvalidCredentialsError{Code: 8002}, code: "INVALID_CREDENTIALS"},
 		{name: "temporary", err: &auth.TemporarySessionError{Operation: "authentication"}, code: "NETWORK_ERROR"},
+		{name: "session persistence", err: &auth.SessionPersistenceError{Err: errors.New("Access denied")}, code: "SESSION_PERSISTENCE"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -52,14 +52,14 @@ describe("ProtonVPN Integration & Sidecar", () => {
     expect(sessionFile).toBe(path.join(tmpDir, "proton-session.json"));
   });
 
-  it("recupera somente o usuario da sessao persistida", () => {
+  it("recupera somente o usuario da sessao pelo contrato do helper", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "proton-test-"));
     try {
       fs.writeFileSync(path.join(tmpDir, "proton-session.json"), JSON.stringify({
         username: "conta@example.com",
-        session: { AccessToken: "nao deve ser retornado" },
+        session: { AccessToken: "nao deve ser retornado", UID: "synthetic-uid" },
       }));
-      expect(getSavedSessionUsername(tmpDir)).toBe("conta@example.com");
+      await expect(getSavedSessionUsername(tmpDir)).resolves.toBe("conta@example.com");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -115,6 +115,9 @@ describe("ProtonVPN Integration & Sidecar", () => {
     expect(missing.code).toBe("MISSING_EXECUTABLE");
     expect(missing.retryable).toBe(true);
     expect(missing.message).not.toContain("Reinstale o GoLiveBypass");
+    const persistence = classifyProtonError("failed to migrate session file: failed to commit session file: access denied");
+    expect(persistence).toMatchObject({ code: "SESSION_PERSISTENCE", retryable: true });
+    expect(persistence.message).toContain("senha não foi verificada");
   });
 
   it("classifica o plano somente quando MaxTier e valido", () => {

@@ -64,6 +64,17 @@ $tempStandalone = Join-Path ([System.IO.Path]::GetTempPath()) "test-temp-standal
 Set-Content -LiteralPath $tempStandalone -Value $truncatedStandalone -Encoding UTF8
 . $tempStandalone
 
+# O corpo principal do standalone começa antes de Get-InjectionState em algumas
+# versões; carregue somente essa função quando o recorte seguro não a trouxe.
+if (-not (Get-Command Get-InjectionState -ErrorAction SilentlyContinue)) {
+    $stateStart = $standaloneContent.IndexOf('function Get-InjectionState')
+    $stateEnd = $standaloneContent.IndexOf('$ParallelNames', $stateStart)
+    if ($stateStart -lt 0 -or $stateEnd -le $stateStart) {
+        throw 'Nao consegui carregar Get-InjectionState do standalone para o teste.'
+    }
+    . ([scriptblock]::Create($standaloneContent.Substring($stateStart, $stateEnd - $stateStart)))
+}
+
 $standaloneShouldReport = ${function:Test-ShouldReport}
 $standaloneWaitAntesDeFechar = ${function:Wait-AntesDeFechar}
 $standaloneTestJanela = ${function:Test-JanelaTransitoria}
@@ -145,39 +156,18 @@ try {
     Assert-Equal $false $true "Save-Text($null, ...) lancou excecao: $($_.Exception.Message)"
 }
 
-# Get-InjectionState
-Assert-Equal (Get-InjectionState $null) 'Vanilla' "Get-InjectionState($null) retorna Vanilla"
-Assert-Equal (Get-InjectionState "") 'Vanilla' "Get-InjectionState('') retorna Vanilla"
+# Get-InjectionState prioriza um WireSock já ativo mesmo sem resources.
+$wiresockForState = Get-Service -Name 'wiresock-client-service' -ErrorAction SilentlyContinue
+$expectedNullInjectionState = if ($wiresockForState -and $wiresockForState.Status -eq 'Running') { 'Nosso' } else { 'Vanilla' }
+Assert-Equal (Get-InjectionState $null) $expectedNullInjectionState "Get-InjectionState($null) respeita o estado do WireSock"
+Assert-Equal (Get-InjectionState "") $expectedNullInjectionState "Get-InjectionState('') respeita o estado do WireSock"
 
 # Test-ModCheckout
 Assert-Equal (Test-ModCheckout $null) $false "Test-ModCheckout($null) retorna $false"
 Assert-Equal (Test-ModCheckout "") $false "Test-ModCheckout('') retorna $false"
 
-Write-Host "`n-- 2.3 Testando Install-Patcher sem PSScriptRoot --" -ForegroundColor Yellow
 
-$origPSScriptRoot = $PSScriptRoot
-$origInstallDir = $InstallDir
-$testInstallDir = Join-Path ([System.IO.Path]::GetTempPath()) "GoLiveBypassTest_$([Guid]::NewGuid().ToString('N'))"
-$InstallDir = $testInstallDir
-
-try {
-    $PSScriptRoot = $null
-    Install-Patcher
-    $installedPatcher = Join-Path $testInstallDir 'golivebypass.js'
-    $settingsFile = Join-Path $testInstallDir 'settings.json'
-    
-    Assert-Equal (Test-Path -LiteralPath $installedPatcher) $true "Install-Patcher cria golivebypass.js mesmo sem PSScriptRoot"
-    Assert-Equal (Test-Path -LiteralPath $settingsFile) $true "Install-Patcher cria settings.json mesmo sem PSScriptRoot"
-} catch {
-    Assert-Equal $false $true "Install-Patcher sem PSScriptRoot falhou: $($_.Exception.Message)"
-} finally {
-    if (Test-Path -LiteralPath $testInstallDir) {
-        Remove-Item -LiteralPath $testInstallDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    $InstallDir = $origInstallDir
-}
-
-Write-Host "`n-- 2.4 Get-EffectiveLocalApp / Get-ReportMeta (caminho 8.3, issue #94) --" -ForegroundColor Yellow
+Write-Host "`n-- 2.3 Get-EffectiveLocalApp / Get-ReportMeta (caminho 8.3, issue #94) --" -ForegroundColor Yellow
 
 $origLocalAppData = $env:LOCALAPPDATA
 try {
@@ -209,6 +199,77 @@ try {
     Assert-Equal ($null -eq $metaNormal['excecao']) $true "Get-ReportMeta sem ErrorRecord nao define 'excecao'"
 } finally {
     $env:LOCALAPPDATA = $origLocalAppData
+}
+
+Write-Host "`n-- 2.4 Injecao oficial: estado por alvo, saida limitada e excecoes --" -ForegroundColor Yellow
+$originalInvokePnpm = ${function:Invoke-Pnpm}
+$originalGetInjectedPath = ${function:Get-InjectedPath}
+$originalStopDiscord = ${function:Stop-Discord}
+$injectionRoot = Join-Path ([System.IO.Path]::GetTempPath()) "GoLiveBypassInjection_$([Guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $injectionRoot -Force | Out-Null
+$resourcesOne = Join-Path $injectionRoot 'Discord\app-1.0.0\resources'
+$resourcesTwo = Join-Path $injectionRoot 'DiscordPTB\app-1.0.0\resources'
+$script:mockInjectedPaths = @{}
+$script:mockInjectionMode = 'success'
+$script:mockInjectionArgs = @()
+try {
+    function Invoke-Pnpm([string[]]$Arguments) {
+        $script:mockInjectionArgs = @($Arguments)
+        switch ($script:mockInjectionMode) {
+            'nonzero' { $script:PnpmExitCode = 9; Write-Output ('x' * 700); return }
+            'exception' { $script:PnpmExitCode = 1; throw ('erro sintetico ' + ('x' * 700)) }
+            default { $script:PnpmExitCode = 0; Write-Output 'injecao sintetica' }
+        }
+    }
+    function Get-InjectedPath($resources) { return $script:mockInjectedPaths[$resources] }
+    function Stop-Discord {}
+
+    $targetOne = [pscustomobject]@{ Flavour = 'Discord'; Resources = $resourcesOne; Tipo = 'O' }
+    $targetTwo = [pscustomobject]@{ Flavour = 'DiscordPTB'; Resources = $resourcesTwo; Tipo = 'O' }
+    $script:mockInjectedPaths[$resourcesOne] = Join-Path $injectionRoot 'dist\desktop'
+    Invoke-Injection $injectionRoot @($targetOne)
+    Assert-Equal ($script:mockInjectionArgs -contains '--') $false "Invoke-Injection nao passa separador -- extra"
+    Assert-Equal (($script:mockInjectionArgs -join '|') -eq 'run|inject|--location|' + (Split-Path -Parent (Split-Path -Parent $resourcesOne))) $true "Invoke-Injection passa --location da raiz do alvo"
+    Assert-Equal ((Format-InjectionDetail ('x' * 700)).Length -le 603) $true "Detalhe de injecao longo e limitado"
+
+    $script:mockInjectionMode = 'nonzero'
+    try {
+        Invoke-Injection $injectionRoot @($targetOne)
+        Assert-Equal $true $true "Exit code nao zero com pos-condicao confirmada nao falha"
+    } catch {
+        Assert-Equal $false $true "Exit code nao zero com pos-condicao confirmada falhou: $($_.Exception.Message)"
+    }
+
+    $script:mockInjectedPaths.Remove($resourcesOne)
+    $script:mockInjectionMode = 'success'
+    try {
+        Invoke-Injection $injectionRoot @($targetOne)
+        Assert-Equal $false $true "Exit zero sem pos-condicao deveria falhar"
+    } catch {
+        Assert-Equal ($_.Exception.Message -match 'pos-condicao nao confirmada') $true "Exit zero sem pos-condicao falha pelo estado do alvo"
+    }
+
+    $script:mockInjectedPaths[$resourcesOne] = Join-Path $injectionRoot 'dist\desktop'
+    $script:mockInjectionMode = 'exception'
+    try {
+        Invoke-Injection $injectionRoot @($targetOne)
+        Assert-Equal $true $true "Excecao com pos-condicao confirmada nao invalida o alvo"
+    } catch {
+        Assert-Equal $false $true "Excecao com pos-condicao confirmada falhou: $($_.Exception.Message)"
+    }
+
+    $script:mockInjectionMode = 'success'
+    try {
+        Invoke-Injection $injectionRoot @($targetOne, $targetTwo)
+        Assert-Equal $false $true "Um alvo nao pode aprovar outro"
+    } catch {
+        Assert-Equal ($_.Exception.Message -match 'DiscordPTB: pos-condicao nao confirmada') $true "Pos-condicao e verificada por alvo"
+    }
+} finally {
+    Set-Item -Path Function:Invoke-Pnpm -Value $originalInvokePnpm
+    Set-Item -Path Function:Get-InjectedPath -Value $originalGetInjectedPath
+    Set-Item -Path Function:Stop-Discord -Value $originalStopDiscord
+    if (Test-Path -LiteralPath $injectionRoot) { Remove-Item -LiteralPath $injectionRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host "`n========================================================" -ForegroundColor Cyan

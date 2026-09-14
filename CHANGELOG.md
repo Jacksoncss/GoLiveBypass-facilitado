@@ -4,6 +4,26 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### GUI Windows: migração segura da sessão Proton (#288, #290)
+
+- O helper fecha a sessão legada antes de migrá-la para DPAPI e mantém a substituição atômica. Em arquivo readonly ou bloqueio transitório de compartilhamento, remove somente o atributo readonly e tenta novamente por janela limitada; em falha persistente preserva o cache anterior e devolve `SESSION_PERSISTENCE`, sem acusar senha incorreta ou aceitar fallback em texto claro.
+- A GUI passa a obter apenas a identidade pelo contrato bloqueado `-session-username` do helper, compatível com cache DPAPI, e informa que a senha não foi verificada quando a persistência falha.
+- Coberto por sessão sintética no Windows: arquivo readonly, handle sem share-delete, falha persistente que preserva o arquivo e estresse concorrente. Não inclui login Proton nem Discord reais.
+
+### Instalador Windows: injeção verificável por alvo (#289)
+
+- A chamada oficial usa `pnpm run inject --location <raiz>` sem o separador extra; stdout/stderr e exceções são limitados no diagnóstico.
+- O exit code deixou de ser a autoridade: cada `resources` oficial só é aprovado quando seu stub aponta para o checkout selecionado. Código não-zero ou exceção com pós-condição confirmada fica como aviso; código zero sem pós-condição falha.
+- Testes seguros cobrem argumentos, saída limitada, exceção, código não-zero e dois alvos independentes; não executam Discord real.
+
+### Plugin Windows: retomada segura do WireSock da GUI
+
+- Ao clicar em **Ativar agora**, o plugin reconhece pelo argumento `-config` uma instância WireSock pertencente à GUI GoLiveBypass ou ao pool de rotas dela, encerra somente os serviços e PIDs comprovadamente gerenciados e assume o serviço com a configuração privada `plugin-vpn\wiresock-discord.conf`. A ativação automática do boot e o watchdog continuam sem encerrar processos.
+- Perfis WireSock externos, mistos ou com origem desconhecida continuam bloqueados e preservados. A comparação exige o caminho exato do argumento de configuração, aceita caminhos Windows entre aspas e não confunde sufixos como `.bak`.
+- Verificado no Equicord da VM Windows x64: o painel inicialmente identificou a configuração da GUI, manteve **Ativar agora** disponível, registrou a retomada, relançou o Discord e confirmou serviço/PID próprios, HTTPS do Discord e isolamento por `AllowedApps`. Linux, standalone e o transporte legado não foram alterados.
+
 ## [2.0.6-beta-12] - 2026-09-12
 
 ### Plugin: seleção manual de rota Proton e diagnóstico do login

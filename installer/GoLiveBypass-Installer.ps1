@@ -834,11 +834,24 @@ function Find-Checkout {
     return $null
 }
 
+function Test-TargetInjectedFromCheckout($root, $resources) {
+    if (-not $root -or -not $resources) { return $false }
+    $injected = Get-InjectedPath $resources
+    if (-not $injected) { return $false }
+    try {
+        $normalizedRoot = [IO.Path]::GetFullPath($root).TrimEnd('\', '/')
+        $normalizedInjected = [IO.Path]::GetFullPath($injected)
+        return $normalizedInjected.Equals($normalizedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            $normalizedInjected.StartsWith("$normalizedRoot\", [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
 function Test-InjectedFromCheckout($root) {
     if (-not $root) { return $false }
     foreach ($resources in Get-DiscordResources) {
-        $injected = Get-InjectedPath $resources
-        if ($injected -and $injected.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if (Test-TargetInjectedFromCheckout $root $resources) { return $true }
     }
     return $false
 }
@@ -1245,7 +1258,11 @@ function Copy-PluginHelper($target) {
     # o SHA-256 publicado antes de grava-lo no userplugin.
     $asset = Get-LatestBetaHelperAsset
     if (-not $asset) {
-        throw 'Nao encontrei o helper proton-confgen da beta. Use um pacote de release ou -PluginSource com bin\win32-x64\proton-confgen.exe.'
+        # Issue #272: o relato precisa mostrar o que foi consultado e por que
+        # cada candidata caiu. $script:HelperAssetScan so tem tags/nomes de
+        # assets publicos, sem conteudo baixado.
+        $detalhes = if ($script:HelperAssetScan) { ($script:HelperAssetScan -join ' | ') } else { 'nenhuma release examinada' }
+        throw "Nao encontrei o helper proton-confgen da beta. Use um pacote de release ou -PluginSource com bin\win32-x64\proton-confgen.exe. Consulta: $detalhes"
     }
 
     $temporary = Join-Path $env:TEMP ("golivebypass-proton-confgen-{0}.exe" -f ([guid]::NewGuid().ToString('N')))
@@ -1356,6 +1373,13 @@ function Build-Mod($root) {
     }
 }
 
+function Format-InjectionDetail($value) {
+    $text = (@($value) | ForEach-Object { [string]$_ }) -join ' '
+    $text = ($text -replace '\s+', ' ').Trim()
+    if ($text.Length -gt 600) { return $text.Substring(0, 600) + '...' }
+    return $text
+}
+
 function Invoke-Injection($root, $targets) {
     if (-not $root) { throw 'Caminho do checkout invalido para injetar o mod.' }
     Push-Location -LiteralPath $root
@@ -1384,15 +1408,27 @@ function Invoke-Injection($root, $targets) {
             # injector nao achar a instalacao e toda instalacao nova pela linha de
             # comando falhar (relato 1.1.11-beta.1).
             $loc = Split-Path -Parent (Split-Path -Parent $t.Resources)
-            Invoke-Pnpm @('run', 'inject', '--', '--location', $loc) | Out-Host
-            if ($script:PnpmExitCode -ne 0) {
-                # Nem todo pnpm come o -- : cai no caminho de sempre (o instalador
-                # do mod pergunta) — espelho do run_inject do .sh.
-                Invoke-Pnpm @('inject') | Out-Host
-                if ($script:PnpmExitCode -ne 0) {
-                    $falha = $true
-                    $detalhes.Add("$($t.Flavour): pnpm inject saiu com codigo $script:PnpmExitCode ($($t.Resources))")
-                }
+            $script:PnpmExitCode = $null
+            $saida = @()
+            $excecao = $null
+            try {
+                $saida = @(Invoke-Pnpm @('run', 'inject', '--location', $loc) 2>&1)
+            } catch {
+                $excecao = $_.Exception.Message
+            }
+            $confirmado = Test-TargetInjectedFromCheckout $root $t.Resources
+            $detalhe = Format-InjectionDetail @($saida, $excecao)
+            if (-not $confirmado) {
+                $falha = $true
+                $motivo = "pos-condicao nao confirmada (exit=$($script:PnpmExitCode))"
+                if ($detalhe) { $motivo += ": $detalhe" }
+                $detalhes.Add("$($t.Flavour): $motivo")
+                continue
+            }
+            if ($excecao -or ($null -ne $script:PnpmExitCode -and $script:PnpmExitCode -ne 0)) {
+                $motivo = "injecao confirmada pela pos-condicao apesar de exit=$($script:PnpmExitCode)"
+                if ($detalhe) { $motivo += ": $detalhe" }
+                Write-Warn "$($t.Flavour): $motivo"
             }
         }
         if ($falha) {
@@ -1806,10 +1842,18 @@ $GitHubRepo = 'bezumiya/GoLiveBypass'
 $GitHubApi  = "https://api.github.com/repos/$GitHubRepo"
 
 function Get-LatestBetaHelperAsset {
+    # Diagnostico sanitizado (issue #272): sem isto, o relato do throw em
+    # Copy-PluginHelper nao diz qual release foi consultada nem por que cada
+    # candidata foi descartada, e nao da para distinguir "release sem helper"
+    # de "falha de rede/API". So tags e nomes de assets publicos — nada de
+    # conteudo baixado.
+    $script:HelperAssetScan = [System.Collections.Generic.List[string]]::new()
+    $scan = { param($msg) $script:HelperAssetScan.Add($msg); Write-Warn $msg }
     try {
         $headers = @{ 'User-Agent' = 'GoLiveBypass-Installer' }
         $apiHeaders = @{ 'User-Agent' = 'GoLiveBypass-Installer'; 'Accept' = 'application/vnd.github+json' }
         $releases = Invoke-RestMethod -Uri "$GitHubApi/releases?per_page=20" -Headers $apiHeaders -TimeoutSec 15
+        & $scan "Nenhuma candidata descartada ainda; $($releases.Count) release(s) consultadas."
         foreach ($release in @($releases)) {
             if ($release.draft -or -not $release.prerelease) { continue }
 
@@ -1830,10 +1874,18 @@ function Get-LatestBetaHelperAsset {
                             $asset = @($release.assets) | Where-Object { $_.name -eq $expectedName } | Select-Object -First 1
                             if ($asset) {
                                 $sha256 = $expectedSha.ToLowerInvariant()
+                            } else {
+                                & $scan "$($release.tag_name): manifest aponta '$expectedName' mas o asset nao esta na release."
                             }
+                        } else {
+                            & $scan "$($release.tag_name): manifest sem asset/sha256 validos."
                         }
+                    } else {
+                        & $scan "$($release.tag_name): manifest sem entrada win32-x64."
                     }
-                } catch { }
+                } catch {
+                    & $scan "$($release.tag_name): manifest nao pode ser lido."
+                }
             }
 
             # 2. Fallback: procurar executavel por padrao de nome e arquivo companion .sha256
@@ -1842,24 +1894,39 @@ function Get-LatestBetaHelperAsset {
                     Where-Object { $_.name -match '(^|-)proton-confgen.*-win-x64\.exe$' } |
                     Select-Object -First 1
             }
-            if (-not $asset) { continue }
+            if (-not $asset) {
+                $nomes = (@($release.assets) | ForEach-Object { $_.name }) -join ', '
+                & $scan "$($release.tag_name): sem proton-confgen*-win-x64.exe (assets: $(if ($nomes) { $nomes } else { '<vazio>' }))."
+                continue
+            }
 
             if (-not $sha256) {
                 $shaAsset = @($release.assets) |
                     Where-Object { $_.name -eq "$($asset.name).sha256" } |
                     Select-Object -First 1
-                if (-not $shaAsset) { continue }
-
-                $shaResponse = Invoke-WebRequest -Uri $shaAsset.browser_download_url -Headers $headers -UseBasicParsing -TimeoutSec 15
-                $shaContent = if ($shaResponse.Content -is [byte[]]) {
-                    [Text.Encoding]::UTF8.GetString($shaResponse.Content).Trim()
-                } else {
-                    ([string]$shaResponse.Content).Trim()
+                if (-not $shaAsset) {
+                    & $scan "$($release.tag_name): asset $($asset.name) sem companion .sha256."
+                    continue
                 }
-                $sha256 = ($shaContent -split '\s+')[0].ToLowerInvariant()
+
+                try {
+                    $shaResponse = Invoke-WebRequest -Uri $shaAsset.browser_download_url -Headers $headers -UseBasicParsing -TimeoutSec 15
+                    $shaContent = if ($shaResponse.Content -is [byte[]]) {
+                        [Text.Encoding]::UTF8.GetString($shaResponse.Content).Trim()
+                    } else {
+                        ([string]$shaResponse.Content).Trim()
+                    }
+                    $sha256 = ($shaContent -split '\s+')[0].ToLowerInvariant()
+                } catch {
+                    & $scan "$($release.tag_name): companion .sha256 nao pode ser lido."
+                    continue
+                }
             }
 
-            if (-not $sha256 -or $sha256 -notmatch '^[0-9a-f]{64}$') { continue }
+            if (-not $sha256 -or $sha256 -notmatch '^[0-9a-f]{64}$') {
+                & $scan "$($release.tag_name): hash de $($asset.name) invalido ou ausente."
+                continue
+            }
 
             return [PSCustomObject]@{
                 Tag = ($release.tag_name -replace '^v', '')
@@ -1868,6 +1935,7 @@ function Get-LatestBetaHelperAsset {
             }
         }
     } catch {
+        & $scan "Consulta de releases falhou: $($_.Exception.Message)."
         return $null
     }
     return $null

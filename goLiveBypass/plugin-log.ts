@@ -82,6 +82,7 @@ function clip(value: unknown, max = MAX_TEXT): string {
 function redactString(value: string): string {
     return clip(value)
         .replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi, "$1<redacted>@")
+        .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "<email>")
         .replace(/((?:proxy-)?authorization\s*:\s*)(?:bearer\s+)?[^\s,;]+/gi, "$1<redacted>")
         .replace(/\b(?:bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer <redacted>")
         .replace(/(\b(?:password|senha|token|secret|captcha(?:token)?|twoFactorCode|2fa|authorization|privateKey|publicKey|endpoint)\s*[:=]\s*)[^\s,;]+/gi, "$1<redacted>")

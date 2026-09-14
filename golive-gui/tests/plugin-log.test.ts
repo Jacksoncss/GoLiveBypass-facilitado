@@ -34,7 +34,7 @@ describe("núcleo de logs do plugin", () => {
                 endpoint: "10.0.0.1:51820",
                 config: "PrivateKey = chave-falsa",
             },
-            error: "request https://alice:secret@example.test/x Bearer bearer-falso em /home/alice/cache",
+            error: "request https://alice:secret@example.test/x conta@example.com Bearer bearer-falso em /home/alice/cache",
         });
 
         expect(lines).toHaveLength(1);
@@ -52,7 +52,7 @@ describe("núcleo de logs do plugin", () => {
             arch: "x64",
         });
         const serialized = lines[0];
-        for (const secret of ["senha-falsa", "token-falso", "10.0.0.1:51820", "chave-falsa", "alice:secret", "bearer-falso", "/home/alice"]) {
+        for (const secret of ["senha-falsa", "token-falso", "10.0.0.1:51820", "chave-falsa", "alice:secret", "conta@example.com", "bearer-falso", "/home/alice"]) {
             expect(serialized).not.toContain(secret);
         }
         expect(event.data.password).toBe("<redacted>");

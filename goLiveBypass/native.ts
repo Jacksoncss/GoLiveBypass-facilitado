@@ -208,6 +208,8 @@ function persistPluginLogLine(line: string): void {
         if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > 256 * 1024)
             writeFileSync(LOG_FILE, readFileSync(LOG_FILE, "utf8").slice(-128 * 1024), "utf8");
         appendFileSync(LOG_FILE, line, "utf8");
+        if (statSync(LOG_FILE).size > 256 * 1024)
+            writeFileSync(LOG_FILE, readFileSync(LOG_FILE, "utf8").slice(-128 * 1024), "utf8");
     } catch {
         // Diagnóstico nunca pode impedir o Discord de continuar abrindo.
     }

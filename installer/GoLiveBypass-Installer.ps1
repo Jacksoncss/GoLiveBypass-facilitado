@@ -56,6 +56,7 @@ $RepoRaw = 'https://raw.githubusercontent.com/bezumiya/GoLiveBypass/main'
 $PluginFiles = @(
     'goLiveBypass/index.tsx',
     'goLiveBypass/native.ts',
+    'goLiveBypass/plugin-log.ts',
     'goLiveBypass/bug-report.ts',
     'goLiveBypass/update-channel.ts',
     'goLiveBypass/update-security.ts',
@@ -194,8 +195,8 @@ function ConvertTo-InstallerSafeText([string]$value, [int]$max = 300) {
     # Cabecalho de autenticacao consome o resto; token Bearer isolado tambem.
     $text = [regex]::Replace($text, '(?i)((?:proxy-)?authorization\s*:\s*)(?:\S+\s+)?\S+', '$1<redacted>')
     $text = [regex]::Replace($text, '(?i)(bearer\s+)\S+', '$1<redacted>')
-    # Credenciais embutidas em URL: scheme://usuario:senha@host
-    $text = [regex]::Replace($text, '(?i)([a-z][a-z0-9+.-]*://)([^/\s@:]+):([^/\s@]+)@', '$1$2:***@')
+    # URL com credenciais: usuário, senha, host e path são privados.
+    $text = [regex]::Replace($text, '(?i)\b[a-z][a-z0-9+.-]*://[^/\s@]+(?::[^/\s@]*)?@[^\s]+', '<redacted-url>')
     # E-mail.
     $text = [regex]::Replace($text, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>')
     # chave=valor de credencial.
@@ -229,6 +230,18 @@ function ConvertTo-InstallerData($data) {
     return $out
 }
 
+function Trim-InstallerLogFile([string]$file) {
+    if (-not (Test-Path -LiteralPath $file)) { return }
+    $bytes = [IO.File]::ReadAllBytes($file)
+    if ($bytes.Length -le $script:InstallerLogMaxBytes) { return }
+    $keep = [int][Math]::Floor($script:InstallerLogMaxBytes / 2)
+    $start = [Math]::Max(0, $bytes.Length - $keep)
+    $tail = [Text.Encoding]::UTF8.GetString($bytes, $start, $bytes.Length - $start)
+    $nl = $tail.IndexOf("`n")
+    $tail = if ($nl -lt 0) { '' } else { $tail.Substring($nl + 1) }
+    [IO.File]::WriteAllText($file, $tail, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Write-InstallerEvent([string]$level, [string]$event, [string]$phase, $data = $null) {
     try {
         $record = [ordered]@{
@@ -248,22 +261,9 @@ function Write-InstallerEvent([string]$level, [string]$event, [string]$phase, $d
         $dir = Split-Path -Parent $file
         if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $utf8 = New-Object System.Text.UTF8Encoding($false)
-        if (Test-Path -LiteralPath $file) {
-            $info = Get-Item -LiteralPath $file
-            if ($info.Length -gt $script:InstallerLogMaxBytes) {
-                $text = [IO.File]::ReadAllText($file)
-                $keep = [int][Math]::Floor($script:InstallerLogMaxBytes / 2)
-                if ($text.Length -gt $keep) {
-                    $tail = $text.Substring($text.Length - $keep)
-                    $nl = $tail.IndexOf("`n")
-                    # Sem quebra de linha na janela nao ha corte em limite de registro:
-                    # descarta tudo em vez de gravar uma linha parcial.
-                    if ($nl -lt 0) { $tail = '' } else { $tail = $tail.Substring($nl + 1) }
-                    [IO.File]::WriteAllText($file, $tail, $utf8)
-                }
-            }
-        }
+        Trim-InstallerLogFile $file
         [IO.File]::AppendAllText($file, $line + [Environment]::NewLine, $utf8)
+        Trim-InstallerLogFile $file
     } catch {
         # Diagnostico nunca pode derrubar a instalacao.
     }

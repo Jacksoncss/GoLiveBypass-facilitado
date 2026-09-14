@@ -161,7 +161,7 @@ esac
     installer_log warn installer.probe probe reason 'Authorization: Bearer eyJhbGciOi.abc.def em https://alice:s3cr3t@example.test/x contato alice@example.com'
 )
 last="$(tail -1 "$LOG_FILE")"
-for leak in 'eyJhbGciOi' 's3cr3t' 'alice@example.com'; do
+for leak in 'eyJhbGciOi' 's3cr3t' 'alice@example.com' 'example.test/x'; do
     case "$last" in
         *"$leak"*) bad "vazou '$leak': $last" ;;
         *) ok "nao vaza '$leak'" ;;
@@ -172,7 +172,7 @@ case "$last" in
     *) bad "cabecalho Authorization nao foi redigido: $last" ;;
 esac
 case "$last" in
-    *'***@example.test'*) ok "URL com credencial vira usuario:***@host" ;;
+    *'<redacted-url>'*) ok "URL com credencial vira <redacted-url>" ;;
     *) bad "URL credenciada nao redigida: $last" ;;
 esac
 case "$last" in
@@ -216,10 +216,10 @@ seeded_size="$(wc -c < "$LOG_DIR2/installer.log" | tr -d ' ')"
 )
 LOG_FILE2="$LOG_DIR2/installer.log"
 size="$(wc -c < "$LOG_FILE2" | tr -d ' ')"
-if [ "$seeded_size" -gt 262144 ] && [ "$size" -le 266240 ]; then
-    ok "rotacao trima acima do teto (semeado=$seeded_size, final=$size)"
+if [ "$seeded_size" -gt 262144 ] && [ "$size" -le 262144 ]; then
+    ok "rotacao trima para <=256 KiB (semeado=$seeded_size, final=$size)"
 else
-    bad "rotacao nao respeitou o teto (semeado=$seeded_size, final=$size)"
+    bad "rotacao nao respeitou <=256 KiB (semeado=$seeded_size, final=$size)"
 fi
 if grep -qv '^{' "$LOG_FILE2"; then
     bad "rotacao deixou linha parcial no arquivo"

@@ -256,7 +256,8 @@ try {
     Assert-Equal ($last -match 'eyJhbGciOi|s3cr3t|alice@example.com') $false "credencial/e-mail nao fluem para o log"
     Assert-Equal ($last -match 'Authorization') $true "cabecalho Authorization e reconhecido"
     Assert-Equal ($last -match '<redacted>') $true "cabecalho Authorization e redigido"
-    Assert-Equal ($last -match '\*\*\*@example\.test') $true "URL com credencial vira usuario:***@host"
+    Assert-Equal ($last -match '<redacted-url>') $true "URL com credencial vira <redacted-url>"
+    Assert-Equal ($last -match 'example\.test/x') $false "host/path privado nao fluem para o log"
     Assert-Equal ($last -match '<email>') $true "e-mail vira <email>"
 
     # Valor aninhado nao e stringificado.

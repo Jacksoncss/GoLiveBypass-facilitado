@@ -71,7 +71,7 @@ REPO_RAW="https://raw.githubusercontent.com/bezumiya/GoLiveBypass/main"
 # so, o pnpm build do checkout quebra: native.ts importa vpn-controller/vpn-proton/
 # vpn-linux/update-*. Os binarios dos helpers nao vem por aqui — em Linux eles vao
 # embutidos no vpn-proton.ts e o plugin os materializa sozinho quando nao acha bin/.
-PLUGIN_FILES="goLiveBypass/index.tsx goLiveBypass/native.ts goLiveBypass/bug-report.ts goLiveBypass/update-channel.ts goLiveBypass/update-security.ts goLiveBypass/stability.ts goLiveBypass/vpn-controller.ts goLiveBypass/vpn-proton.ts goLiveBypass/vpn-types.ts goLiveBypass/vpn-snapshot.ts goLiveBypass/vpn-snapshot-worker.ts goLiveBypass/vpn-windows.ts goLiveBypass/vpn-linux.ts goLiveBypass/manifest.json"
+PLUGIN_FILES="goLiveBypass/index.tsx goLiveBypass/native.ts goLiveBypass/plugin-log.ts goLiveBypass/bug-report.ts goLiveBypass/update-channel.ts goLiveBypass/update-security.ts goLiveBypass/stability.ts goLiveBypass/vpn-controller.ts goLiveBypass/vpn-proton.ts goLiveBypass/vpn-types.ts goLiveBypass/vpn-snapshot.ts goLiveBypass/vpn-snapshot-worker.ts goLiveBypass/vpn-windows.ts goLiveBypass/vpn-linux.ts goLiveBypass/manifest.json"
 PLUGIN_DIR_NAME="goLiveBypass"
 EQUICORD_GIT="https://github.com/Equicord/Equicord"
 VENCORD_GIT="https://github.com/Vendicated/Vencord"
@@ -136,8 +136,8 @@ _glb_redact() {
     # Cabecalho de autenticacao consome o resto; token Bearer/Basic isolado tambem.
     texto="$(printf '%s' "$texto" | sed -E 's#([Aa]uthorization[[:space:]]*:[[:space:]]*)([^[:space:]]+[[:space:]]+)?[^[:space:]]+#\1<redacted>#g')"
     texto="$(printf '%s' "$texto" | sed -E 's#([Bb]earer[[:space:]]+)[^[:space:]]+#\1<redacted>#g')"
-    # Credenciais embutidas em URL: scheme://usuario:senha@host
-    texto="$(printf '%s' "$texto" | sed -E 's#([A-Za-z][A-Za-z0-9+.-]*://)([^/[:space:]@:]+):([^/[:space:]@]+)@#\1\2:***@#g')"
+    # URL com credenciais: usuário, senha, host e path são privados.
+    texto="$(printf '%s' "$texto" | sed -E 's#(^|[^A-Za-z0-9])[A-Za-z][A-Za-z0-9+.-]*://[^/[:space:]@]+(:[^/[:space:]@]*)?@[^[:space:]]+#\1<redacted-url>#g')"
     # E-mail.
     texto="$(printf '%s' "$texto" | sed -E 's#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}#<email>#g')"
     # chave=valor de credencial.
@@ -148,21 +148,25 @@ _glb_redact() {
     printf '%s' "$texto" | cut -c1-"$GLB_REDACT_MAX"
 }
 
+_glb_trim_log() {
+    local tamanho
+    [ -f "$GLB_INSTALLER_LOG" ] || return 0
+    tamanho="$(wc -c < "$GLB_INSTALLER_LOG" 2>/dev/null || printf 0)"
+    case "$tamanho" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$tamanho" -gt "$GLB_INSTALLER_LOG_MAX" ] || return 0
+    tail -c $((GLB_INSTALLER_LOG_MAX / 2)) "$GLB_INSTALLER_LOG" 2>/dev/null \
+        | sed '1d' > "$GLB_INSTALLER_LOG.tmp" 2>/dev/null \
+        && mv "$GLB_INSTALLER_LOG.tmp" "$GLB_INSTALLER_LOG" 2>/dev/null \
+        || rm -f "$GLB_INSTALLER_LOG.tmp" 2>/dev/null || true
+    return 0
+}
+
 _glb_log_write() {
-    local linha="$1" tamanho
+    local linha="$1"
     mkdir -p "$GLB_INSTALLER_LOG_DIR" 2>/dev/null || return 0
-    if [ -f "$GLB_INSTALLER_LOG" ]; then
-        tamanho="$(wc -c < "$GLB_INSTALLER_LOG" 2>/dev/null || printf 0)"
-        case "$tamanho" in ''|*[!0-9]*) tamanho=0 ;; esac
-        if [ "$tamanho" -gt "$GLB_INSTALLER_LOG_MAX" ]; then
-            # Mantem ~a metade mais recente, sempre comecando numa linha JSONL completa.
-            tail -c $((GLB_INSTALLER_LOG_MAX / 2)) "$GLB_INSTALLER_LOG" 2>/dev/null \
-                | sed '1d' > "$GLB_INSTALLER_LOG.tmp" 2>/dev/null \
-                && mv "$GLB_INSTALLER_LOG.tmp" "$GLB_INSTALLER_LOG" 2>/dev/null \
-                || rm -f "$GLB_INSTALLER_LOG.tmp" 2>/dev/null || true
-        fi
-    fi
+    _glb_trim_log
     printf '%s\n' "$linha" >> "$GLB_INSTALLER_LOG" 2>/dev/null || true
+    _glb_trim_log
     return 0
 }
 

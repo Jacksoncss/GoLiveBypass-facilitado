@@ -19,11 +19,14 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Não há telemetria nem envio automático de bug report. Downloads normais do GitHub para instalar/atualizar o plugin continuam no fluxo existente; nenhuma decisão de roteamento, WireGuard/WireSock, ownership, relaunch ou rollback foi alterada.
 - Cobertura segura: `test-installer-log.sh` valida redaction, timestamp, rotação, falha de escrita, ausência de POST e #293; os testes de logger/helper do plugin cobrem JSONL, correlação, dedupe, restore, limites e dados sintéticos sem credenciais reais.
 
-### Updater beta-16 → beta-17: compatibilidade do archive
+## [2.0.6-beta-18] - 2026-09-14
 
-- O asset público beta-17 foi empacotado a partir de uma tag do GUI que omitia `bug-report.ts` e `vpn-snapshot-worker.ts`. A validação fail-closed detecta a árvore incompleta e preserva a instalação existente, sem substituir o plugin por um asset incompatível.
-- O workflow `release-assets` agora executa uma guarda com ZIP sintético antes do upload, exigindo os arquivos obrigatórios e rejeitando cada ausência conhecida. O asset público beta-17 existente **não foi corrigido** por esta mudança; ele só será substituído por uma release posterior explicitamente autorizada.
+### Incidente do archive beta-17: correção de distribuição
 
+- Causa confirmada do beta-17: a tag da linhagem GUI omitiu `bug-report.ts` e `vpn-snapshot-worker.ts`; por isso usuários beta-16 encontravam `archive do plugin não contém bug-report.ts` ao atualizar.
+- A validação do updater beta-16 permanece **fail-closed**: archive sem qualquer arquivo obrigatório é rejeitado e a instalação existente é preservada; o beta-17 público não foi corrigido por esta mudança.
+- O job `release-assets` agora executa a guarda de archive/required files antes do `zip` e do upload, exigindo também os módulos de compatibilidade beta-16 e bloqueando uma árvore incompatível antes da publicação.
+- O beta-18 corrige a árvore e os metadados versionados do plugin, incluindo os três arquivos observados (`bug-report.ts`, `vpn-snapshot-worker.ts` e `plugin-log.ts`); a publicação é mantida como prerelease do canal beta, nunca `latest`.
 
 ## [2.0.6-beta-15] - 2026-09-13
 

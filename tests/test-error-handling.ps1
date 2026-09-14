@@ -235,35 +235,40 @@ try {
     Assert-Equal ($logFile -like '*GoLiveBypass') $false "Log de teste fica fora do diretorio de dados real"
     Assert-Equal (Split-Path -Leaf $logFile) 'installer.log' "log se chama installer.log"
 
-    $line = (Get-Content -LiteralPath $logFile -First 1)
-    Assert-Equal ($line -match '"schema_version":1') $true "linha JSONL tem schema_version"
-    Assert-Equal ($line -match '"component":"installer.windows"') $true "linha identifica installer.windows"
-    Assert-Equal ($line -match 'installer\.detect\.started') $true "linha tem o evento"
-    Assert-Equal ($line -match '"phase":"detect"') $true "linha tem a fase"
-    Assert-Equal ($line -match '"ts":"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z"') $true "ts ISO-8601 UTC com milissegundos"
+    $lineRaw = (Get-Content -LiteralPath $logFile -First 1)
+    $line = $lineRaw | ConvertFrom-Json
+    Assert-Equal $line.schema_version 1 "linha JSONL tem schema_version"
+    Assert-Equal $line.level 'info' "linha tem level"
+    Assert-Equal $line.component 'installer.windows' "linha identifica installer.windows"
+    Assert-Equal $line.event 'installer.detect.started' "linha tem o evento"
+    Assert-Equal $line.phase 'detect' "linha tem a fase"
+    Assert-Equal ($line.ts -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') $true "ts ISO-8601 UTC com milissegundos"
+    Assert-Equal $line.data.mode 'Install' "campo observável mode preservado"
 
     Write-InstallerEvent 'error' 'installer.failed' 'detect' @{ reason = 'falhou em C:\Users\alice\Equicord'; token = 'abc123'; senha = 's3cr3t'; campo_desconhecido = 'x' }
-    $last = (Get-Content -LiteralPath $logFile -Last 1)
-    Assert-Equal ($last -match 'alice') $false "caminho pessoal nao flui para o log"
-    Assert-Equal ($last -match '<path>') $true "caminho absoluto vira <path>"
-    Assert-Equal ($last -match '"token":"<redacted>"') $true "chave proibida token vira <redacted>"
-    Assert-Equal ($last -match 'abc123|s3cr3t') $false "valor de credencial nao flui"
-    Assert-Equal ($last -match 'campo_desconhecido') $false "chave desconhecida e descartada"
+    $lastRaw = (Get-Content -LiteralPath $logFile -Last 1)
+    $last = $lastRaw | ConvertFrom-Json
+    Assert-Equal ($lastRaw -match 'alice|abc123|s3cr3t') $false "segredos originais nao fluem para o raw"
+    Assert-Equal $last.data.reason '<path>' "caminho absoluto vira <path>"
+    Assert-Equal $last.data.token '<redacted>' "chave proibida token vira <redacted>"
+    Assert-Equal $last.data.senha '<redacted>' "chave proibida senha vira <redacted>"
+    Assert-Equal ($last.data.PSObject.Properties.Name -contains 'campo_desconhecido') $false "chave desconhecida e descartada"
 
     # Cabecalho de autenticacao, URL com credencial e e-mail tambem sao redigidos.
     Write-InstallerEvent 'warn' 'installer.probe' 'detect' @{ reason = 'Authorization: Bearer eyJhbGciOi.abc.def em https://alice:s3cr3t@example.test/x contato alice@example.com' }
-    $last = (Get-Content -LiteralPath $logFile -Last 1)
-    Assert-Equal ($last -match 'eyJhbGciOi|s3cr3t|alice@example.com') $false "credencial/e-mail nao fluem para o log"
-    Assert-Equal ($last -match 'Authorization') $true "cabecalho Authorization e reconhecido"
-    Assert-Equal ($last -match '<redacted>') $true "cabecalho Authorization e redigido"
-    Assert-Equal ($last -match '<redacted-url>') $true "URL com credencial vira <redacted-url>"
-    Assert-Equal ($last -match 'example\.test/x') $false "host/path privado nao fluem para o log"
-    Assert-Equal ($last -match '<email>') $true "e-mail vira <email>"
+    $lastRaw = (Get-Content -LiteralPath $logFile -Last 1)
+    $last = $lastRaw | ConvertFrom-Json
+    Assert-Equal ($lastRaw -match 'eyJhbGciOi|s3cr3t|alice@example.com|example\.test/x') $false "segredos e host/path originais nao fluem para o raw"
+    $reason = [string]$last.data.reason
+    Assert-Equal ($reason -match 'Authorization=<redacted>') $true "cabecalho Authorization e redigido no valor parseado"
+    Assert-Equal ($reason -match '<redacted-url>') $true "URL com credencial vira <redacted-url> no valor parseado"
+    Assert-Equal ($reason -match 'example\.test/x') $false "host/path privado nao fluem no valor parseado"
+    Assert-Equal ($reason -match '<email>') $true "e-mail vira <email> no valor parseado"
 
     # Valor aninhado nao e stringificado.
     Write-InstallerEvent 'warn' 'installer.probe' 'detect' @{ reason = @('a', 'b') }
-    $last = (Get-Content -LiteralPath $logFile -Last 1)
-    Assert-Equal ($last -match '"reason":"<redacted>"') $true "valor nao escalar vira <redacted>"
+    $last = (Get-Content -LiteralPath $logFile -Last 1) | ConvertFrom-Json
+    Assert-Equal ([string]$last.data.reason) '<redacted>' "valor nao escalar vira <redacted> no valor parseado"
 
     # Falha de escrita nao pode lancar nem interromper o instalador.
     $env:GLB_INSTALLER_LOG_DIR = Join-Path $logFile 'nao-e-pasta'

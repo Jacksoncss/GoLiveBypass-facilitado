@@ -18,7 +18,7 @@ Uma sessão criada pela GUI beta-6 permanece em `%LOCALAPPDATA%\GoLiveBypass\pro
 - Alterar o formato da sessão em Linux.
 - Mudar o caminho canônico do cache ou copiar uma sessão para outro arquivo.
 - Reintroduzir delete-then-rename, fallback plaintext ou migração silenciosamente ignorada.
-- Alterar WireSock, seleção de rota, instalador, release, changelog ou autenticação Proton remota.
+- Alterar WireSock, seleção de rota, instalador (coberto separadamente em `2026-09-14-installer-injection-design.md`), release, changelog ou autenticação Proton remota.
 
 ## Arquitetura
 

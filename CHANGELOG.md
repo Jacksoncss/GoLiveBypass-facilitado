@@ -19,6 +19,15 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Não há telemetria nem envio automático de bug report. Downloads normais do GitHub para instalar/atualizar o plugin continuam no fluxo existente; nenhuma decisão de roteamento, WireGuard/WireSock, ownership, relaunch ou rollback foi alterada.
 - Cobertura segura: `test-installer-log.sh` valida redaction, timestamp, rotação, falha de escrita, ausência de POST e #293; os testes de logger/helper do plugin cobrem JSONL, correlação, dedupe, restore, limites e dados sintéticos sem credenciais reais.
 
+## [2.0.6-beta-19] - 2026-09-14
+
+### Instaladores: correção da injeção Windows/Linux
+
+- Corrige o shim Windows do `pnpm`: `Invoke-Pnpm` resolve um executável/entrypoint real, captura o código de saída de forma determinística (incluindo `exit=-1` quando o shim lança exceção) e é usado em `Test-Pnpm`, `Build-Mod` e `Remove-PluginSource`.
+- A pós-condição agora é verificada por Discord escolhido, com evento canônico `installer.inject`; `exit=-1` com a injeção confirmada vira apenas warning, enquanto ausência da pós-condição bloqueia o fluxo.
+- Os caminhos Linux deixam de passar o separador `--` extra ao `pnpm`; os detalhes da injeção continuam limitados e redigidos.
+- Esta correção sucede o incidente do beta-17 (archive sem `bug-report.ts`/`vpn-snapshot-worker.ts`) e a guarda de distribuição do beta-18; beta-19 inclui ambas as proteções e permanece prerelease do canal beta, nunca `latest`.
+
 ## [2.0.6-beta-18] - 2026-09-14
 
 ### Incidente do archive beta-17: correção de distribuição

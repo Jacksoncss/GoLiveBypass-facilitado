@@ -18,12 +18,15 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Na mesma VM Windows 11, a janela bloqueada caiu para 2,35 s em 75 s, contra 8,4–8,6 s antes; picos acima de 300 ms caíram de 16–17 para 4.
 - Evidência: `golive-gui/tests/plugin-inspection-async.test.ts` cobre delegação, reuso e fallback; a medição de fluidez é específica da VM Windows com o painel aberto.
 
-## [Unreleased]
+## [2.0.6-beta-16] - 2026-09-14
+
 ### Instaladores: preservação de Vencord e Equicord
 
-- Um Discord já patchado por Vencord/Equicord nunca mais é substituído por outro checkout quando a origem não pode ser resolvida. Clientes paralelos já modificados também são preservados, com `app.asar` e `_app.asar` intactos; o instalador recusa o alvo em vez de sobrescrevê-lo.
-- Os modos temporário e **Restaurar tudo** removem e recompilam somente `goLiveBypass`; não executam `pnpm uninject`, que desfazia o patch do mod inteiro.
-- Evidência: `tests/test-vencord-preserve.sh` usa árvores falsas e observa detecção, backup, recusa de patch paralelo e carregamento do plugin; passou sem tocar em Discord real.
+- Os instaladores Linux e Windows preservam um Discord já patchado por Vencord/Equicord quando a origem não pode ser resolvida, recusando o alvo em vez de substituir `app.asar` ou `_app.asar`.
+- Os modos temporário e **Restaurar tudo** removem e recompilam somente `goLiveBypass`; não executam `pnpm uninject` nem desfazem o patch do mod.
+- Evidência: `tests/test-vencord-preserve.sh` e `tests/test-vencord-preserve.ps1`, com validação de BOM/AST no PS1.
+
+## [Unreleased]
 ### Instalador Linux: seleção direta do cliente Discord
 
 - No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.

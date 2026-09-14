@@ -176,6 +176,7 @@ test("instalador Linux copia todas as fontes exigidas pelo plugin", () => {
     const required = section(pluginNative, "function requiredFilesForPlatform", "const files =");
     const files = [...required.matchAll(/"([A-Za-z0-9_.-]+\.(?:ts|tsx|json))"/g)].map(match => match[1]);
     assert.ok(files.length >= 10, `fontes comuns esperadas em native.ts, achei ${files.length}`);
+    assert.ok(files.includes("plugin-log.ts"), "requiredFilesForPlatform precisa listar plugin-log.ts");
     const list = section(linuxInstaller, "PLUGIN_FILES=", "\nPLUGIN_DIR_NAME=");
     for (const file of files) assert.ok(list.includes(`goLiveBypass/${file}`), `PLUGIN_FILES sem ${file}`);
 });
@@ -184,6 +185,7 @@ test("instalador Windows distribui todas as fontes do plugin WireGuard", () => {
     for (const file of [
         "goLiveBypass/index.tsx",
         "goLiveBypass/native.ts",
+        "goLiveBypass/plugin-log.ts",
         "goLiveBypass/update-channel.ts",
         "goLiveBypass/update-security.ts",
         "goLiveBypass/stability.ts",

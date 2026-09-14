@@ -97,6 +97,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
     const common = [
         "index.tsx",
         "native.ts",
+        "plugin-log.ts",
         "bug-report.ts",
         "update-channel.ts",
         "update-security.ts",

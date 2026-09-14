@@ -204,4 +204,10 @@ test("os módulos de canal e origem continuam ligados ao repositório oficial", 
     assert.match(securitySource, /LEGACY_RELEASE_MANIFEST/);
 });
 
-console.log("plugin update audit source tests: 20/20");
+test("release-assets bloqueia upload antes de criar o ZIP incompatível", () => {
+    const gate = workflowSource.indexOf("node --test tests/test-plugin-update-archive.mjs");
+    const zip = workflowSource.indexOf("zip -r", gate);
+    assert.ok(gate > 0 && zip > gate, "gate do archive precisa vir antes do zip");
+});
+
+console.log("plugin update audit source tests: 21/21");

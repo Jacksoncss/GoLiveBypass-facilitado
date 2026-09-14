@@ -13,6 +13,7 @@ import { StringDecoder } from "string_decoder";
 import { gunzipSync } from "zlib";
 
 import { normalizeProtonUsername, protonUsernamesMatch, safeDiagnosticDetail, type ProtonSessionStorage } from "./vpn-types";
+import { createOperationId } from "./plugin-log";
 
 export type ProtonLoginErrorCode =
     | "INVALID_CREDENTIALS"
@@ -830,6 +831,9 @@ export function runConfgen(options: RunConfgenOptions): Promise<ConfgenResult> {
         catch (error) { reject(error); return; }
 
         const timeoutMs = options.timeoutMs ?? 25_000;
+        const startedAt = Date.now();
+        const attemptId = createOperationId("helper");
+        options.log?.("info", "helper.started", { phase: "starting", timeout_ms: timeoutMs, attempt_id: attemptId, helper: path.basename(executable) });
         const child = spawn(executable, options.args, { windowsHide: true, env: { ...process.env } });
         let stdout = "";
         let stderr = "";
@@ -840,7 +844,6 @@ export function runConfgen(options: RunConfgenOptions): Promise<ConfgenResult> {
         let killTimer: ReturnType<typeof setTimeout> | undefined;
         const stdoutDecoder = new StringDecoder("utf8");
         const stderrDecoder = new StringDecoder("utf8");
-
         const emitProgress = (chunk: string) => {
             stderrBuffer = (stderrBuffer + chunk).slice(-MAX_STDERR_BYTES);
             const lines = stderrBuffer.split(/\r?\n/);
@@ -850,7 +853,20 @@ export function runConfgen(options: RunConfgenOptions): Promise<ConfgenResult> {
                 if (!match || terminationError) continue;
                 try {
                     const progress = validProgress(JSON.parse(match[1]));
-                    if (progress) options.onProgress?.(progress);
+                    if (progress) {
+                        options.log?.("info", "helper.progress_sampled", {
+                            phase: progress.phase,
+                            attempt_id: attemptId,
+                            total: progress.total,
+                            tested: progress.tested,
+                            succeeded: progress.succeeded,
+                            server: progress.server,
+                            ping_ms: progress.pingMs,
+                            download_mbps: progress.downloadMbps,
+                            upload_mbps: progress.uploadMbps,
+                        });
+                        options.onProgress?.(progress);
+                    }
                 } catch {}
             }
         };
@@ -860,6 +876,15 @@ export function runConfgen(options: RunConfgenOptions): Promise<ConfgenResult> {
             clearTimeout(timer);
             clearTimeout(killTimer);
             options.signal?.removeEventListener("abort", abort);
+            options.log?.("error", "helper.failed", {
+                phase: "failed",
+                duration_ms: Date.now() - startedAt,
+                attempt_id: attemptId,
+                stdout_bytes: Buffer.byteLength(stdout, "utf8"),
+                stderr_bytes: Buffer.byteLength(stderr, "utf8"),
+                aborted,
+                error: safeDiagnosticDetail(error, 300),
+            });
             reject(error);
         };
         const kill = (error: Error) => {
@@ -904,7 +929,17 @@ export function runConfgen(options: RunConfgenOptions): Promise<ConfgenResult> {
                 return;
             }
             settled = true;
-            resolve({ code, stdout, stderr, json: parseConfgenJson(stdout) });
+            const parsedJson = parseConfgenJson(stdout);
+            options.log?.("info", "helper.completed", {
+                phase: "completed",
+                attempt_id: attemptId,
+                duration_ms: Date.now() - startedAt,
+                exit_code: code,
+                stdout_bytes: Buffer.byteLength(stdout, "utf8"),
+                stderr_bytes: Buffer.byteLength(stderr, "utf8"),
+                json: Boolean(parsedJson),
+            });
+            resolve({ code, stdout, stderr, json: parsedJson });
         });
     });
 }

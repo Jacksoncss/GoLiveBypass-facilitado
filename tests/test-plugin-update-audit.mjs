@@ -9,7 +9,7 @@ const workflowSource = readFileSync(new URL("../.github/workflows/build-gui.yml"
 
 test("a versão usada pelo updater acompanha o manifest reescrito no asset", () => {
     const nativeFallback = nativeSource.match(/const PLUGIN_VERSION = "([^"]+)"/)?.[1];
-    assert.equal(nativeFallback, "2.0.6-beta-16");
+    assert.equal(nativeFallback, "2.0.6-beta-18");
     assert.match(workflowSource, /sed -i .*manifest\.json/);
     assert.doesNotMatch(workflowSource, /native\.ts/);
     assert.match(nativeSource, /function readInstalledPluginVersion\(/);
@@ -204,4 +204,10 @@ test("os módulos de canal e origem continuam ligados ao repositório oficial", 
     assert.match(securitySource, /LEGACY_RELEASE_MANIFEST/);
 });
 
-console.log("plugin update audit source tests: 20/20");
+test("release-assets bloqueia upload antes de criar o ZIP incompatível", () => {
+    const gate = workflowSource.indexOf("node --test tests/test-plugin-update-archive.mjs");
+    const zip = workflowSource.indexOf("zip -r", gate);
+    assert.ok(gate > 0 && zip > gate, "gate do archive precisa vir antes do zip");
+});
+
+console.log("plugin update audit source tests: 21/21");

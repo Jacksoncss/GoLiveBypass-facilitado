@@ -34,9 +34,11 @@ function global:Get-DiscordResources { return $script:DiscordResourcesForTest }
 $Yes = $true
 $PluginDirName = 'goLiveBypass'
 $REPORT_NO_AUTO = 1
-$failed = $false
-try { Select-Target $null } catch { $failed = $true }
-if (-not $failed) { throw 'Select-Target aceitou Vencord sem checkout' }
+# O gate atual vive em Find-Checkout: quando a injeção revela um mod, mas nenhum checkout
+# é provado, ele devolve $null. Select-Target segue para o menu de download e não é o alvo
+# deste cenário.
+$checkout = Find-Checkout
+if ($checkout) { throw 'Find-Checkout aceitou Vencord sem checkout' }
 if ((Get-FileHash (Join-Path $discordResources 'app.asar')).Hash -ne $originalApp) { throw 'app.asar mudou na recusa' }
 if ((Get-FileHash (Join-Path $discordResources '_app.asar')).Hash -ne $originalBackup) { throw '_app.asar mudou na recusa' }
 $parallel = Join-Path $local 'Vesktop\resources'

@@ -225,6 +225,9 @@ jobs:
           # Vencord sempre baixe o asset mais recente independente da tag.
           echo "vencord_basename=goLiveBypass-vencord" >> $GITHUB_OUTPUT
 
+      - name: Validar contrato do archive do plugin antes do upload
+        run: node --test tests/test-plugin-update-archive.mjs
+
       - name: Zip do userplugin Vencord (Onda 2 do auto-update)
         run: |
           mkdir -p goLiveBypass/bin/win32-x64

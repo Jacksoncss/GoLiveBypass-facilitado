@@ -28,8 +28,9 @@
 printf '\n[BETA] GoLiveBypass para Equicord/Vencord — canal beta WireGuard.\n' >&2
 printf '        Este instalador entrega a versao beta atual do plugin; resultados podem mudar.\n' >&2
 printf '        O sistema ainda nao e estavel e so chega la com gente testando: cada bug\n' >&2
-printf '        reportado vira uma issue e encurta o caminho. Ao falhar, deixe o relatorio\n' >&2
-printf '        automatico seguir, ou abra voce mesmo em\n' >&2
+printf '        reportado vira uma issue e encurta o caminho. Ao falhar, copie a saida\n' >&2
+printf '        acima ou abra o log local (installer.log na pasta GoLiveBypass) e abra\n' >&2
+printf '        o relato voce mesmo em\n' >&2
 printf '        https://github.com/bezumiya/GoLiveBypass/issues\n' >&2
 printf '        No Linux a parte menos testada e a ativacao do tunel, que pede autorizacao\n' >&2
 printf '        no pkexec/polkit — a validacao atual parou nesse ponto.\n' >&2
@@ -70,7 +71,7 @@ REPO_RAW="https://raw.githubusercontent.com/bezumiya/GoLiveBypass/main"
 # so, o pnpm build do checkout quebra: native.ts importa vpn-controller/vpn-proton/
 # vpn-linux/update-*. Os binarios dos helpers nao vem por aqui — em Linux eles vao
 # embutidos no vpn-proton.ts e o plugin os materializa sozinho quando nao acha bin/.
-PLUGIN_FILES="goLiveBypass/index.tsx goLiveBypass/native.ts goLiveBypass/bug-report.ts goLiveBypass/update-channel.ts goLiveBypass/update-security.ts goLiveBypass/stability.ts goLiveBypass/vpn-controller.ts goLiveBypass/vpn-proton.ts goLiveBypass/vpn-types.ts goLiveBypass/vpn-snapshot.ts goLiveBypass/vpn-snapshot-worker.ts goLiveBypass/vpn-windows.ts goLiveBypass/vpn-linux.ts goLiveBypass/manifest.json"
+PLUGIN_FILES="goLiveBypass/index.tsx goLiveBypass/native.ts goLiveBypass/plugin-log.ts goLiveBypass/bug-report.ts goLiveBypass/update-channel.ts goLiveBypass/update-security.ts goLiveBypass/stability.ts goLiveBypass/vpn-controller.ts goLiveBypass/vpn-proton.ts goLiveBypass/vpn-types.ts goLiveBypass/vpn-snapshot.ts goLiveBypass/vpn-snapshot-worker.ts goLiveBypass/vpn-windows.ts goLiveBypass/vpn-linux.ts goLiveBypass/manifest.json"
 PLUGIN_DIR_NAME="goLiveBypass"
 EQUICORD_GIT="https://github.com/Equicord/Equicord"
 VENCORD_GIT="https://github.com/Vendicated/Vencord"
@@ -100,65 +101,119 @@ fi
 step() { printf '  %s[*] %s%s\n' "$C_DIM" "$1" "$C_OFF" >&2; }
 ok()   { printf '  %s[OK] %s%s\n' "$C_GREEN" "$1" "$C_OFF" >&2; }
 warn() { printf '  %s[!] %s%s\n' "$C_YELLOW" "$1" "$C_OFF" >&2; }
-# should_report <mensagem>: 0 se a mensagem deve virar issue no GitHub, 1 se nao.
-# Tudo o que e "erro de uso" (dependencia faltando, CLI digitada errada, path
-# errado, ferramenta externa quebrada) cai aqui — NAO e bug do projeto. O resto
-# (bug real do instalador/bypass/patcher) continua abrindo issue como antes.
-should_report() {
-    case "$1" in
-        # --- cancelamento e instrucoes de uso ---
-        "Cancelado.") return 1 ;;
-        # Cancelamento via Ctrl+C: bash imprime "^C" mas o erro que captura o
-        # catch do sh vem do comando interrompido ("interrompido", "terminated"
-        # ou "canceled" dependendo do shell).
-        *"cancelada pelo usu"*) return 1 ;;
-        *"canceled by the user"*) return 1 ;;
-        *"interrompido"*) return 1 ;;
-        *"terminated"*) return 1 ;;
-        "O Discord nao fechou"*) return 1 ;;
-        # Argumento vazio/ilegal passado pro instalador (input ruim do usuario, nao bug):
-        # ver notas no installer.ps1.
-        *"cadeia de caracteres vazia"*) return 1 ;;
-        *"empty string"*) return 1 ;;
-        *"Illegal characters in path"*) return 1 ;;
-        *"associar"*"metro"*) return 1 ;;
-        *"porque ele "*" nulo"*) return 1 ;;
-        *"because it is null"*) return 1 ;;
-        *"Nao e possivel associar"*) return 1 ;;
-        *"Cannot bind argument"*) return 1 ;;
-        # --- input / uso do usuario ---
-        "Opcao desconhecida: "*) return 1 ;;
-        "Nao consegui baixar "*) return 1 ;;
-        # --- dependencia faltando (ambiente) ---
-        "Instale "*) return 1 ;;
-        "O npm nao conseguiu instalar o pnpm"*) return 1 ;;
-        "Nao consegui deixar o pnpm funcionando"*) return 1 ;;
-        # --- path / checkout errado ---
-        "Nao encontrei o checkout do Equicord/Vencord"*) return 1 ;;
-        "Nao achei "*) return 1 ;;
-        *"ja existe e nao parece um checkout"*) return 1 ;;
-        "Nao achei o patcher "*) return 1 ;;
-        "Nao achei nenhum Discord instalado"*) return 1 ;;
-        # --- ferramenta externa (ambiente) ---
-        "git clone falhou") return 1 ;;
-        "pnpm install falhou") return 1 ;;
-        "pnpm build falhou") return 1 ;;
-        "pnpm inject falhou") return 1 ;;
-        # --- desinstalacao / elevacao parcial ---
-        "Nao consegui desinstalar de todos"*) return 1 ;;
-        "NADA foi injetado"*) return 1 ;;
-        # default: e bug, reporta
-        *) return 0 ;;
-    esac
+# =========================================================================== log local
+# Observabilidade LOCAL do instalador (escopo B): eventos em installer.log (JSONL) no
+# diretorio de dados existente. Nao ha POST, webhook ou telemetria — o usuario copia a
+# saida acima ou abre o log manualmente. Falha de escrita NUNCA derruba a instalacao.
+GLB_INSTALLER_LOG_DIR="${GLB_INSTALLER_LOG_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/GoLiveBypass}"
+GLB_INSTALLER_LOG="$GLB_INSTALLER_LOG_DIR/installer.log"
+GLB_INSTALLER_LOG_MAX=262144
+GLB_COMPONENT="installer.linux"
+GLB_OPERATION_ID="installer-$(date +%s 2>/dev/null || printf 0)-$$"
+GLB_ARCH="$(uname -m 2>/dev/null || printf unknown)"
+GLB_PHASE="detect"
+GLB_REDACT_MAX=300
+
+_glb_json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037\177'
+}
+
+# Timestamp UTC ISO-8601 com milissegundos (GNU/busybox `date +%N`; onde nao houver,
+# cai para 000 sem quebrar o formato).
+_glb_ts() {
+    local base ms
+    base="$(date -u +%Y-%m-%dT%H:%M:%S 2>/dev/null || printf '1970-01-01T00:00:00')"
+    ms="$(date -u +%N 2>/dev/null | cut -c1-3)"
+    case "$ms" in ''|*[!0-9]*) ms=000 ;; esac
+    printf '%s.%sZ' "$base" "$ms"
+}
+
+_glb_redact() {
+    # fail-closed: credencial (inclusive em URL e cabecalho), e-mail e caminho pessoal
+    # nunca chegam ao log compartilhavel.
+    local texto
+    texto="$(printf '%s' "$1" | tr '\r\n\t' '   ')"
+    # Cabecalho de autenticacao consome o resto; token Bearer/Basic isolado tambem.
+    texto="$(printf '%s' "$texto" | sed -E 's#([Aa]uthorization[[:space:]]*:[[:space:]]*)([^[:space:]]+[[:space:]]+)?[^[:space:]]+#\1<redacted>#g')"
+    texto="$(printf '%s' "$texto" | sed -E 's#([Bb]earer[[:space:]]+)[^[:space:]]+#\1<redacted>#g')"
+    # URL com credenciais: usuário, senha, host e path são privados.
+    texto="$(printf '%s' "$texto" | sed -E 's#(^|[^A-Za-z0-9])[A-Za-z][A-Za-z0-9+.-]*://[^/[:space:]@]+(:[^/[:space:]@]*)?@[^[:space:]]+#\1<redacted-url>#g')"
+    # E-mail.
+    texto="$(printf '%s' "$texto" | sed -E 's#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}#<email>#g')"
+    # chave=valor de credencial.
+    texto="$(printf '%s' "$texto" | sed -E 's/(password|senha|token|secret|private[_]?key|public[_]?key|authorization|cookie|session|credential|twofactorcode|captchatoken)[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig')"
+    # Caminhos: Windows, UNC e POSIX absoluto. As regras exigem fronteira/nao-barra
+    # para nao destruir URL publica (https://...) nem o "s:/" do proprio scheme.
+    texto="$(printf '%s' "$texto" | sed -E 's#(^|[^A-Za-z0-9])[A-Za-z]:[\\/][^[:space:]]*#\1<path>#g; s#\\\\[^[:space:]]*#<path>#g; s#(^|[[:space:]:=])/([^/[:space:]][^[:space:]]*)#\1<path>#g')"
+    printf '%s' "$texto" | cut -c1-"$GLB_REDACT_MAX"
+}
+
+_glb_trim_log() {
+    local tamanho
+    [ -f "$GLB_INSTALLER_LOG" ] || return 0
+    tamanho="$(wc -c < "$GLB_INSTALLER_LOG" 2>/dev/null || printf 0)"
+    case "$tamanho" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$tamanho" -gt "$GLB_INSTALLER_LOG_MAX" ] || return 0
+    tail -c $((GLB_INSTALLER_LOG_MAX / 2)) "$GLB_INSTALLER_LOG" 2>/dev/null \
+        | sed '1d' > "$GLB_INSTALLER_LOG.tmp" 2>/dev/null \
+        && mv "$GLB_INSTALLER_LOG.tmp" "$GLB_INSTALLER_LOG" 2>/dev/null \
+        || rm -f "$GLB_INSTALLER_LOG.tmp" 2>/dev/null || true
+    return 0
+}
+
+_glb_log_write() {
+    local linha="$1"
+    mkdir -p "$GLB_INSTALLER_LOG_DIR" 2>/dev/null || return 0
+    _glb_trim_log
+    printf '%s\n' "$linha" >> "$GLB_INSTALLER_LOG" 2>/dev/null || true
+    _glb_trim_log
+    return 0
+}
+
+# installer_log <nivel> <evento> <fase> [chave valor]...
+# So chaves conhecidas entram em data; chave proibida vira <redacted> e chave desconhecida
+# e descartada (fail-closed). Valores numericos/booleanos conhecidos saem tipados.
+installer_log() {
+    local nivel="$1" evento="$2" fase="$3"
+    shift 3
+    local data="" sep="" chave valor par
+    while [ "$#" -ge 2 ]; do
+        chave="$1"; valor="$2"; shift 2
+        # Chave normalizada: a comparacao proibida/allowlist e case-insensitive e a chave
+        # emitida e sempre a canonica minuscula.
+        chave="$(printf '%s' "$chave" | tr '[:upper:]' '[:lower:]')"
+        case "$chave" in
+            *password*|*senha*|*token*|*captcha*|*secret*|*privatekey*|*private_key*|*publickey*|*authorization*|*cookie*|*session*|*credential*|*stdin*|*rawconfig*|config|endpoint)
+                valor="<redacted>" ;;
+            mode|permanent|we_injected|target_count|candidate_count|discord_count|mod_kind|reason|reason_code|result|exit_code|duration_ms|path_present|path_kind|active|preserved|identity|count)
+                valor="$(_glb_redact "$valor")" ;;
+            *) continue ;;
+        esac
+        case "$chave" in
+            target_count|candidate_count|discord_count|exit_code|duration_ms|count)
+                case "$valor" in ''|*[!0-9]*) par="\"$chave\":\"$(_glb_json_escape "$valor")\"" ;;
+                    *) par="\"$chave\":$valor" ;; esac ;;
+            path_present|permanent|we_injected|active|preserved)
+                case "$valor" in true|false) par="\"$chave\":$valor" ;;
+                    *) par="\"$chave\":\"$(_glb_json_escape "$valor")\"" ;; esac ;;
+            *) par="\"$chave\":\"$(_glb_json_escape "$valor")\"" ;;
+        esac
+        data="$data$sep$par"
+        sep=","
+    done
+    _glb_log_write "{\"schema_version\":1,\"ts\":\"$(_glb_ts)\",\"level\":\"$nivel\",\"component\":\"$GLB_COMPONENT\",\"event\":\"$(_glb_json_escape "$evento")\",\"operation_id\":\"$GLB_OPERATION_ID\",\"phase\":\"$(_glb_json_escape "$fase")\",\"platform\":\"linux\",\"arch\":\"$(_glb_json_escape "$GLB_ARCH")\",\"data\":{$data}}"
+    return 0
 }
 
 fail() {
-    printf '\n  %s[X] %s%s\n\n' "$C_RED" "$1" "$C_OFF" >&2
-    if [ "${REPORT_NO_AUTO:-0}" -eq 0 ] && should_report "$1"; then
-        report_error "Falha no instalador GoLiveBypass: $1" 2>&1 || true
-    fi
+    local msg="$1"
+    printf '\n  %s[X] %s%s\n\n' "$C_RED" "$msg" "$C_OFF" >&2
+    installer_log error installer.failed "$GLB_PHASE" reason "$msg"
+    printf '  %sLog local: %s%s\n' "$C_DIM" "$GLB_INSTALLER_LOG" "$C_OFF" >&2
+    printf '  %sCopie a saida acima ou abra o log para relatar.%s\n\n' "$C_DIM" "$C_OFF" >&2
     exit 1
 }
+# =========================================================================== /log local
 
 banner() {
     printf '\n  %sGoLiveBypass%s\n' "$C_CYAN$C_BOLD" "$C_OFF"
@@ -177,80 +232,9 @@ confirm() {
     esac
 }
 
-# =========================================================================== Report de bugs
-# Quando o instalador falha, monta um diagnostico (versao, OS, log sanitizado) e chama
-# a mesma API de bugs da GUI. A issue abre automaticamente no bezumiya/GoLiveBypass.
-# O envio NUNCA bloqueia o fluxo.
-
-BUG_API_URL="https://api.skyplaceia.com/bugs/v1/reports"
-BUG_API_TOKEN="c3d0bff691ecc3ddc6f6ca10037b9ac967c62547e681d3749204e50800504511"
-
-report_sanitize() {
-    local texto="$1"
-    texto="$(printf '%s' "$texto" | sed -E 's#([a-z][a-z0-9+.-]*://)([^/ @:]+):([^/@]+)@#\1\2:***@#g')"
-    texto="$(printf '%s' "$texto" | sed -E 's/\b(mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,})\b/***/g')"
-    texto="$(printf '%s' "$texto" | sed -E 's#(https://gateway[^ ?]+)\?[^ ]*#\1?<params>#g')"
-    printf '%s' "$texto"
-}
-
-report_send() {
-    local titulo="$1" descricao="$2" corpo json
-
-    # Dedupe: o mesmo erro NAO reabre issue (os reports duplos da 1.1.11 vieram
-    # daqui — cada rodada do mesmo bug abria issue nova). Este script nao tem
-    # INSTALL_DIR (era da versao antiga da GUI), entao o estado mora no XDG cache;
-    # assinatura = titulo, com epoch, janela de 48h.
-    local sig state ultimo data
-    sig="$(printf '%s' "$titulo" | sha256sum 2>/dev/null | cut -c1-16)"
-    state="${XDG_CACHE_HOME:-$HOME/.cache}/golivebypass-last-report"
-    if [ -n "$sig" ] && [ -f "$state" ]; then
-        ultimo=""; data=0
-        read -r ultimo data < "$state" 2>/dev/null || true
-        case "$data" in ''|*[!0-9]*) data=0 ;; esac
-        if [ "$ultimo" = "$sig" ] && [ $(( $(date +%s) - data )) -lt 172800 ]; then
-            printf '  %s[i]%s Esse erro ja foi reportado a menos de 48h — nao vou reabrir a issue.\n' "$C_DIM" "$C_OFF" >&2
-            return 0
-        fi
-    fi
-    if [ -n "$sig" ]; then
-        mkdir -p "$(dirname "$state")" 2>/dev/null || true
-        printf '%s %s\n' "$sig" "$(date +%s)" > "$state" 2>/dev/null || true
-    fi
-
-    corpo="$(report_sanitize "$descricao")"
-    json="$(printf '{"title":"%s","description":"%s","includeLogs":true}' \
-        "$(printf '%s' "$titulo" | sed 's/"/\\"/g')" \
-        "$(printf '%s' "$corpo" | sed 's/"/\\"/g')")"
-    if have curl; then
-        curl -fsS -X POST "$BUG_API_URL" -H "Authorization: Bearer $BUG_API_TOKEN" -H "Content-Type: application/json" -d "$json" >/dev/null 2>&1 && return 0
-    elif have wget; then
-        echo "$json" | wget -qO- --post-data=- --header="Authorization: Bearer $BUG_API_TOKEN" --header="Content-Type: application/json" "$BUG_API_URL" >/dev/null 2>&1 && return 0
-    fi
-    return 1
-}
-
-report_error() {
-    local titulo="$1" desc=""
-    # INSTALL_DIR nao eh setado neste script (era de uma versao antiga da GUI). O log
-    # do bypass fica em ${XDG_DATA_HOME:-$HOME/.local/share}/GoLiveBypass/golivebypass.log,
-    # o mesmo que a GUI e o standalone usam. Fallback para o path do log se existir.
-    local logdir="${XDG_DATA_HOME:-$HOME/.local/share}/GoLiveBypass"
-    if [ -f "$logdir/golivebypass.log" ]; then
-        desc="$(tail -n 40 "$logdir/golivebypass.log" 2>/dev/null || true)"
-    fi
-    if [ -n "$desc" ]; then
-        printf '  %s[!]%s Ocorreu um erro. Enviando relatorio automatico (issue no GitHub)...%s\n' "$C_YELLOW" "$C_OFF" "$C_OFF" >&2
-        if report_send "$titulo" "$desc"; then
-            printf '  %s[OK]%s Relatorio enviado. Obrigado — os devs vao ver a issue no GitHub.%s\n' "$C_GREEN" "$C_OFF" "$C_OFF" >&2
-        else
-            printf '  %s[!]%s Nao consegui enviar o relatorio automatico. Mande esta saida.%s\n' "$C_YELLOW" "$C_OFF" "$C_OFF" >&2
-        fi
-    else
-        printf '  %s[!]%s Nao consegui montar o relatorio (sem logs). Mande o erro acima.%s\n' "$C_YELLOW" "$C_OFF" "$C_OFF" >&2
-    fi
-}
-
 # =========================================================================== /Report de bugs
+# Nao ha envio remoto: qualquer relato e manual. O usuario copia a saida do terminal ou
+# abre o installer.log no diretorio de dados. Nenhum token, POST, webhook ou payload.
 
 # =========================================================================== TUI
 # Interface no estilo OpenCode: dark, caixas, setas/Enter, mouse SGR onde o terminal
@@ -587,10 +571,6 @@ tui_done() {
 # =========================================================================== /TUI
 
 have() { command -v "$1" >/dev/null 2>&1; }
-
-# Em automacao (--yes) o report automatico nao deve spammar a API (test/CI).
-# Usuario de verdade sem --yes reporta.
-[ "$ASSUME_YES" -eq 1 ] && REPORT_NO_AUTO=1 || REPORT_NO_AUTO=0
 
 # O id do flatpak a que um caminho pertence, ou nada se o caminho nao for de flatpak. Serve
 # para os dois lugares onde o Discord de flatpak aparece: o deploy em .../flatpak/app/<id>/ e
@@ -1058,16 +1038,25 @@ EOF
 find_checkout() {
     local root installed
     if [ -n "$SOURCE" ]; then
-        is_checkout "$SOURCE" || fail "Nao encontrei um checkout do Equicord ou Vencord em $SOURCE"
-        printf '%s\n' "$SOURCE"; return 0
+        installer_log info installer.checkout_candidate detect candidate_kind source candidate_count 1
+        if is_checkout "$SOURCE"; then
+            installer_log info installer.selected detect candidate_kind source path_present true
+            printf '%s\n' "$SOURCE"; return 0
+        fi
+        installer_log warn installer.checkout_rejected detect candidate_kind source reason_code SOURCE_NOT_A_CHECKOUT
+        fail "Nao encontrei um checkout do Equicord ou Vencord em $SOURCE"
     fi
 
+    installer_log info installer.checkout_candidate detect candidate_kind injection
     if root="$(checkout_from_injection)"; then
+        installer_log info installer.selected detect candidate_kind injection path_present true
         ok "Achei pelo Discord: $root"
         printf '%s\n' "$root"; return 0
     fi
 
+    installer_log info installer.checkout_candidate detect candidate_kind disk
     if root="$(checkout_on_disk)"; then
+        installer_log info installer.selected detect candidate_kind disk path_present true
         ok "Achei no disco: $root"
         printf '%s\n' "$root"; return 0
     fi
@@ -1077,9 +1066,13 @@ find_checkout() {
     # o usuário já usa. Preserve o app.asar e peça o checkout correto.
     installed="$(installed_mod || true)"
     if [ -n "$installed" ]; then
+        # #293: mod detectado, checkout nao provado. A distincao fica por codigo
+        # (a mensagem livre nao leva caminho pessoal ao log).
+        installer_log warn installer.checkout_rejected detect reason_code MOD_INSTALLED_WITHOUT_CHECKOUT mod_kind "$installed"
         fail "Detectei $installed no Discord, mas nao encontrei o checkout fonte. Nenhum mod foi substituido; use --source apontando para o checkout $installed."
     fi
 
+    installer_log warn installer.checkout_rejected detect reason_code CHECKOUT_NOT_FOUND
     return 1
 }
 
@@ -1285,6 +1278,7 @@ install_mod() {
         *) fail "Mod desconhecido: $choice" ;;
     esac
     target="$HOME/$choice"
+    installer_log info installer.selected preparing mode download mod_kind "$choice"
 
     printf '\n  %sVou fazer:%s\n' "$C_BOLD" "$C_OFF" >&2
     printf '  %s  1. Baixar o %s em %s%s\n' "$C_DIM" "$choice" "$target" "$C_OFF" >&2
@@ -1432,6 +1426,8 @@ install_plugin_source() {
 
 build_mod() {
     local root="$1"
+    GLB_PHASE="build"
+    installer_log info installer.build build mod_kind "$(checkout_mod "$root")"
     if [ ! -d "$root/node_modules" ]; then
         step "Instalando dependencias (na primeira vez demora alguns minutos)"
         (cd "$root" && pnpm install) || fail "pnpm install falhou"
@@ -1525,6 +1521,7 @@ patch_parallel_one() {
     local existing_injection
     existing_injection="$(injected_path "$target" || true)"
     if [ -n "$existing_injection" ]; then
+        installer_log warn installer.preserved inject reason_code PARALLEL_ALREADY_PATCHED target_count 1
         printf "  [!] %s ja tem um patch em %s; preservei app.asar e _app.asar.\n" "$client_name" "$existing_injection"
         return 1
     fi
@@ -1852,7 +1849,14 @@ EOF
 # Injeta nos alvos ja escolhidos por selecionar_alvos_inject.
 injetar_alvos() { # $1 = root, $2 = escolhidos
     local root="$1" escolhidos="$2"
-    local tipo alvo loc id falha injetou_oficial tem_oficial
+    local tipo alvo loc id falha injetou_oficial tem_oficial alvo_count
+
+    GLB_PHASE="inject"
+    alvo_count=0
+    if [ -n "$escolhidos" ]; then
+        alvo_count="$(printf '%s\n' "$escolhidos" | grep -c '|' || true)"
+    fi
+    installer_log info installer.inject inject target_count "$alvo_count"
 
     # Ha Discord puro entre os escolhidos? Sem nenhum, o unico caminho e o patch direto dos
     # paralelos, e ali uma falha e definitiva (nao ha injecao de mod para segurar o resultado).
@@ -2497,10 +2501,17 @@ download_text() {
 }
 
 do_install() {
-    local root="${1:-}"
+    local root="${1:-}" installed_kind
+    installer_log info installer.detect.started detect mode install
     root="$(select_target "$root")"
     local checkout_identity identity
     checkout_identity="$(checkout_mod "$root")"
+    installer_log info installer.discord_detected detect discord_count "$(discord_installs | wc -l | tr -d ' ')"
+    installed_kind="$(installed_mod || true)"
+    if [ -n "$installed_kind" ]; then
+        installer_log info installer.mod_detected detect mod_kind "$installed_kind"
+    fi
+    installer_log info installer.selected preparing mod_kind "$checkout_identity" path_present true
     while IFS= read -r identity; do
         [ -z "$identity" ] && continue
         if [ "$identity" != "$checkout_identity" ]; then
@@ -2556,6 +2567,13 @@ EOF
     set_plugin_settings "$root"
 
     start_discord "$root"
+
+    GLB_PHASE="completed"
+    if [ "$permanente" -eq 1 ]; then
+        installer_log info installer.completed completed permanent true
+    else
+        installer_log info installer.completed completed permanent false
+    fi
 
     printf '\n'
     ok "Pronto. O plugin ja vem ativado, nao precisa mexer em nada."

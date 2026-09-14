@@ -37,6 +37,32 @@ function section(source, from, to) {
     assert.notEqual(end, -1, `fim ausente: ${to}`);
     return source.slice(start, end);
 }
+function pluginSourceFilesFromNative() {
+    const required = section(pluginNative, "function requiredFilesForPlatform", "const files =");
+    return [...required.matchAll(/"([A-Za-z0-9_.-]+\.(?:tsx|ts|json))"/g)].map(match => match[1]);
+}
+
+function pluginFilesFromInstaller(source, from, to) {
+    const list = section(source, from, to);
+    return [...list.matchAll(/goLiveBypass\/([A-Za-z0-9_.-]+\.(?:tsx|ts|json))/g)].map(match => match[1]);
+}
+
+function assertPluginDistributionList(files, listed, label) {
+    const required = new Set(files);
+    assert.ok(files.length >= 10, `fontes comuns esperadas em native.ts, achei ${files.length}`);
+    assert.equal(required.size, files.length, `${label}: requiredFilesForPlatform contém fonte duplicada`);
+    assert.ok(required.has("plugin-log.ts"), "requiredFilesForPlatform precisa listar plugin-log.ts");
+    for (const file of files) {
+        assert.ok(fs.existsSync(path.join(root, "goLiveBypass", file)),
+            `${label}: native.ts exige goLiveBypass/${file}, mas o arquivo não existe na árvore/arquivo`);
+    }
+    for (const file of listed) {
+        assert.ok(required.has(file), `${label}: lista do instalador contém fonte antiga/inexistente goLiveBypass/${file}`);
+    }
+    assert.deepEqual([...new Set(listed)].sort(), [...required].sort(),
+        `${label}: lista do instalador diverge de requiredFilesForPlatform`);
+}
+
 
 test("standalone limita RTC a uma tentativa", () => {
     assert.match(standalone, /const VOICE_TENTATIVAS = 1;/);
@@ -169,35 +195,23 @@ test("instalador Linux libera explicitamente a linha beta", () => {
     assert.doesNotMatch(banner, /Nenhuma instalacao foi realizada/);
 });
 
-test("instalador Linux copia todas as fontes exigidas pelo plugin", () => {
-    // native.ts e a fonte da verdade: o que requiredFilesForPlatform exige precisa estar na
-    // lista que o instalador baixa, senao o pnpm build do checkout quebra (o import de
-    // vpn-linux/vpn-controller/update-* some junto).
-    const required = section(pluginNative, "function requiredFilesForPlatform", "const files =");
-    const files = [...required.matchAll(/"([A-Za-z0-9_.-]+\.(?:ts|tsx|json))"/g)].map(match => match[1]);
-    assert.ok(files.length >= 10, `fontes comuns esperadas em native.ts, achei ${files.length}`);
-    const list = section(linuxInstaller, "PLUGIN_FILES=", "\nPLUGIN_DIR_NAME=");
-    for (const file of files) assert.ok(list.includes(`goLiveBypass/${file}`), `PLUGIN_FILES sem ${file}`);
+test("instalador Linux copia exatamente as fontes existentes exigidas pelo plugin", () => {
+    // native.ts é a fonte da verdade. O teste também confirma que cada nome ainda existe
+    // na árvore do archive: assim uma lista herdada de uma release antiga não passa só por
+    // estar repetida no instalador.
+    const files = pluginSourceFilesFromNative();
+    const listed = pluginFilesFromInstaller(linuxInstaller, "PLUGIN_FILES=", "\nPLUGIN_DIR_NAME=");
+    assertPluginDistributionList(files, listed, "Linux");
 });
 
-test("instalador Windows distribui todas as fontes do plugin WireGuard", () => {
-    for (const file of [
-        "goLiveBypass/index.tsx",
-        "goLiveBypass/native.ts",
-        "goLiveBypass/update-channel.ts",
-        "goLiveBypass/update-security.ts",
-        "goLiveBypass/stability.ts",
-        "goLiveBypass/vpn-controller.ts",
-        "goLiveBypass/vpn-proton.ts",
-        "goLiveBypass/vpn-types.ts",
-        "goLiveBypass/vpn-snapshot.ts",
-        "goLiveBypass/vpn-snapshot-worker.ts",
-        "goLiveBypass/vpn-windows.ts",
-        "goLiveBypass/vpn-linux.ts",
-        "goLiveBypass/manifest.json",
-    ]) {
-        assert.match(windowsInstaller, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    }
+test("instalador Windows copia exatamente as fontes existentes exigidas pelo plugin", () => {
+    const files = pluginSourceFilesFromNative();
+    const listed = pluginFilesFromInstaller(
+        windowsInstaller,
+        "$PluginFiles = @(",
+        "$PluginHelperRelative",
+    );
+    assertPluginDistributionList(files, listed, "Windows");
     assert.match(windowsInstaller, /PluginHelperRelative/);
     assert.match(windowsInstaller, /Copy-PluginHelper/);
     assert.match(windowsInstaller, /Get-LatestBetaHelperAsset/);
@@ -221,11 +235,11 @@ test("instaladores do plugin nao distribuem o seletor de saida legado", () => {
 });
 
 test("manifesto local e linha v2 beta", () => {
-    assert.equal(manifest.version, "2.0.6-beta-16");
+    assert.equal(manifest.version, "2.0.6-beta-18");
 });
 
 test("plugin mostra versao e oferece verificacao na configuracao", () => {
-    assert.match(pluginRenderer, /PLUGIN_VERSION = "2\.0\.6-beta-16"/);
+    assert.match(pluginRenderer, /PLUGIN_VERSION = "2\.0\.6-beta-18"/);
     assert.match(pluginRenderer, /checkPluginUpdate\(/);
     assert.match(pluginRenderer, /Atualizar/);
 });

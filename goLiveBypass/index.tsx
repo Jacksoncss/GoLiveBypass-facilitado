@@ -111,7 +111,7 @@ const RTCConnectionStore: DiagnosticStore = findStoreLazy("RTCConnectionStore");
 
 const VIDEO_GUARD = "2026-08-video-guard";
 
-const PLUGIN_VERSION = "2.0.6-beta-16";
+const PLUGIN_VERSION = "2.0.6-beta-18";
 const PLUGIN_UPDATE_STATUS_POLL_INTERVAL_MS = 15_000;
 const PLUGIN_UPDATE_STATUS_TIMEOUT_MS = 10_000;
 const PLUGIN_UPDATE_OPERATION_TIMEOUT_MS = 45_000;
@@ -377,7 +377,7 @@ function schedulePluginUpdateStatusObservation(lifecycleGeneration: number): voi
             }
             if (status.pending) notifyPendingPluginUpdate(status.current, status.pendingVersion, status.pendingChannel || status.channel);
         }).catch(error => {
-            if (lifecycleGeneration === pluginLifecycleGeneration) logger.error("Falha ao consultar atualização pendente do plugin", error);
+            if (lifecycleGeneration === pluginLifecycleGeneration) recordRendererError("Falha ao consultar atualização pendente do plugin", error);
         }).finally(scheduleNext);
     };
 
@@ -557,7 +557,7 @@ function PluginOnboardingModal({ modalProps, onClosed }: { modalProps: RenderMod
         const activeRequestId = optimizationRequestRef.current;
         optimizationRequestRef.current = null;
         if (!activeRequestId || typeof Native?.cancelProtonOptimization !== "function") return;
-        void Promise.resolve(Native.cancelProtonOptimization(activeRequestId)).catch(error => logger.error("Falha ao cancelar otimização ao fechar o assistente", error));
+        void Promise.resolve(Native.cancelProtonOptimization(activeRequestId)).catch(error => recordRendererError("Falha ao cancelar otimização ao fechar o assistente", error));
     };
 
     const cancelActiveLogin = () => {
@@ -572,7 +572,7 @@ function PluginOnboardingModal({ modalProps, onClosed }: { modalProps: RenderMod
             setLoginCancelRequested(true);
             setError("Cancelando o login Proton…");
         }
-        void Promise.resolve(Native.cancelProtonLogin(activeRequestId)).catch(error => logger.error("Falha ao cancelar login Proton", error));
+        void Promise.resolve(Native.cancelProtonLogin(activeRequestId)).catch(error => recordRendererError("Falha ao cancelar login Proton", error));
     };
 
     useEffect(() => {
@@ -633,7 +633,7 @@ function PluginOnboardingModal({ modalProps, onClosed }: { modalProps: RenderMod
                 );
             }
         }).catch(activationError => {
-            logger.error("Falha ao ativar a VPN após concluir a configuração", activationError);
+            recordRendererError("Falha ao ativar a VPN após concluir a configuração", activationError);
         });
     };
 
@@ -729,7 +729,7 @@ function PluginOnboardingModal({ modalProps, onClosed }: { modalProps: RenderMod
                 if (!disposed && !disposedRef.current && request === optimizationStatusRequestRef.current
                     && !requireFreshOptimizationRef.current && belongsToCurrentAttempt) setOptimization(next);
             } catch (statusError) {
-                if (!disposed && !disposedRef.current) logger.error("Falha ao ler progresso da otimização Proton", statusError);
+                if (!disposed && !disposedRef.current) recordRendererError("Falha ao ler progresso da otimização Proton", statusError);
             }
         };
         void refresh();
@@ -1105,7 +1105,7 @@ function openPluginOnboarding() {
     } catch (error) {
         onboardingOpen = false;
         onboardingModalKey = null;
-        logger.error("Falha ao abrir o assistente do GoLiveBypass", error);
+        recordRendererError("Falha ao abrir o assistente do GoLiveBypass", error);
     }
 }
 
@@ -1176,7 +1176,7 @@ function PluginUpdateSettings() {
             return next;
         } catch (error) {
             if (isRequestCurrent()) {
-                logger.error("Falha ao consultar o estado do updater do plugin", error);
+                recordRendererError("Falha ao consultar o estado do updater do plugin", error);
                 setState(prev => ({ ...prev, available: false }));
             }
             return null;
@@ -1273,7 +1273,7 @@ function PluginUpdateSettings() {
                 }
                 if (isRevisionCurrent()) await refreshStatus(revision);
             } catch (error) {
-                if (isRevisionCurrent()) logger.error("Falha ao configurar o updater do plugin", error);
+                if (isRevisionCurrent()) recordRendererError("Falha ao configurar o updater do plugin", error);
             }
         };
         void configure();
@@ -1513,7 +1513,7 @@ function VpnPanel() {
                 setUsername(savedUsername);
             }
         } catch (error) {
-            if (isCurrent()) logger.error("Falha ao ler o estado da VPN do plugin", error);
+            if (isCurrent()) recordRendererError("Falha ao ler o estado da VPN do plugin", error);
         }
     };
 
@@ -1527,7 +1527,7 @@ function VpnPanel() {
             const activeRequestId = loginRequestIdRef.current;
             loginRequestIdRef.current = null;
             if (activeRequestId && typeof Native?.cancelProtonLogin === "function") {
-                void Promise.resolve(Native.cancelProtonLogin(activeRequestId)).catch(error => logger.error("Falha ao cancelar login Proton ao desmontar o painel", error));
+                void Promise.resolve(Native.cancelProtonLogin(activeRequestId)).catch(error => recordRendererError("Falha ao cancelar login Proton ao desmontar o painel", error));
             }
             clearInterval(timer);
         };
@@ -1590,7 +1590,7 @@ function VpnPanel() {
         setLoginCancelRequested(true);
         setPassword("");
         setTwoFactorCode("");
-        void Promise.resolve(Native.cancelProtonLogin(activeRequestId)).catch(error => logger.error("Falha ao cancelar login Proton", error));
+        void Promise.resolve(Native.cancelProtonLogin(activeRequestId)).catch(error => recordRendererError("Falha ao cancelar login Proton", error));
     };
 
     const optimize = async () => {
@@ -1834,6 +1834,15 @@ function record(message: string) {
         });
     }
 }
+function recordRendererError(message: string, error?: unknown) {
+    logger.error(message, error);
+    if (typeof Native?.logFromRenderer !== "function") return;
+    const detail = error instanceof Error ? error.message : error == null ? "" : String(error);
+    const payload = `[error][renderer] ${message}${detail ? `: ${detail}` : ""}`;
+    void Native.logFromRenderer(payload).catch(() => {
+        // Sem o processo principal, o logger do Vencord continua sendo a saída local.
+    });
+}
 
 // O que so o renderer enxerga. Sem isto o arquivo mostraria qual saida subiu, mas nunca se o
 // servidor aceitou, que e a pergunta que importa.
@@ -1856,7 +1865,7 @@ function reportSession() {
     Native.getVpnStatus().then(status => {
         record(`sessao aberta | VPN ${status.state} | ativa ${status.active} | ownership ${status.owned}`);
         if (videoIsBlocked()) record("o servidor ainda reporta o guard de video; nenhuma troca automatica de rede foi feita");
-    }).catch(error => logger.error("Falha ao consultar a VPN do plugin", error));
+    }).catch(error => recordRendererError("Falha ao consultar a VPN do plugin", error));
 }
 
 function ask(store: object, method: string, ...args: unknown[]) {
@@ -1995,7 +2004,7 @@ function pollStreamClaim() {
         // Watchdog e diagnostico: uma mudanca de store nunca pode derrubar o
         // renderer. Registra uma vez e continua tentando nos proximos ciclos.
         if (!streamClaimProbeFailed)
-            logger.error("Failed to inspect the native stream state", error);
+            recordRendererError("Failed to inspect the native stream state", error);
         streamClaimProbeFailed = true;
     }
 }
@@ -2099,7 +2108,7 @@ function openBugReport() {
     } catch (error) {
         bugReportOpen = false;
         bugReportModalKey = null;
-        logger.error("Falha ao abrir o relato de bug do GoLiveBypass", error);
+        recordRendererError("Falha ao abrir o relato de bug do GoLiveBypass", error);
     }
 }
 
@@ -2139,7 +2148,7 @@ function BugReportModal({ modalProps, onClosed }: { modalProps: RenderModalProps
             if (disposedRef.current || !status?.blocked) return;
             setBlockedSeconds(status.retryAfter);
             setPhase("blocked");
-        }).catch(error => logger.error("Falha ao consultar o bloqueio de relatos", error));
+        }).catch(error => recordRendererError("Falha ao consultar o bloqueio de relatos", error));
     }, []);
 
     useEffect(() => {
@@ -2183,7 +2192,7 @@ function BugReportModal({ modalProps, onClosed }: { modalProps: RenderModalProps
             setPhase("error");
         } catch (error) {
             if (disposedRef.current) return;
-            logger.error("Falha ao enviar o relato de bug", error);
+            recordRendererError("Falha ao enviar o relato de bug", error);
             setFeedback("Não consegui falar com a parte nativa do plugin. Copie o diagnóstico e tente novamente.");
             setPhase("error");
         }
@@ -2192,7 +2201,7 @@ function BugReportModal({ modalProps, onClosed }: { modalProps: RenderModalProps
     const copiarDiagnostico = () => {
         void buildReport()
             .then(report => copyWithToast(report, "Diagnóstico copiado."))
-            .catch(error => logger.error("Falha ao montar o diagnóstico do relato", error));
+            .catch(error => recordRendererError("Falha ao montar o diagnóstico do relato", error));
     };
 
     const enviando = phase === "sending";
@@ -2317,7 +2326,7 @@ export default definePlugin({
                 enabled: settings.store.autoUpdate !== false,
                 channel: normalizedUpdateChannel(settings.store.updateChannel)
             }).catch(error => {
-                if (isLifecycleCurrent()) logger.error("Falha ao configurar o updater do plugin", error);
+                if (isLifecycleCurrent()) recordRendererError("Falha ao configurar o updater do plugin", error);
             });
         }
 
@@ -2340,7 +2349,7 @@ export default definePlugin({
                 if (result?.success === false && !result.suppressed)
                     showToast(`GoLiveBypass não conseguiu ativar a VPN: ${result.error || result.message || "veja o log"}`, Toasts.Type.FAILURE);
             }).catch(error => {
-                if (isLifecycleCurrent()) logger.error("Failed to reach the desktop process", error);
+                if (isLifecycleCurrent()) recordRendererError("Failed to reach the desktop process", error);
             });
         }
     },
@@ -2382,7 +2391,7 @@ export default definePlugin({
         stopStreamClaimWatch();
         restoreRegion();
         if (typeof Native?.shutdown === "function") {
-            void Native.shutdown().catch(error => logger.error("Failed to reach the desktop process", error));
+            void Native.shutdown().catch(error => recordRendererError("Failed to reach the desktop process", error));
         }
     }
 });

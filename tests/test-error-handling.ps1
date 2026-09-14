@@ -1,4 +1,4 @@
-# PowerShell test script for error handling and null-safety validation
+﻿# PowerShell test script for error handling and null-safety validation
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $repoRoot) { $repoRoot = (Get-Location).Path }
@@ -50,8 +50,6 @@ $tempInstaller = Join-Path ([System.IO.Path]::GetTempPath()) "test-temp-installe
 Set-Content -LiteralPath $tempInstaller -Value $truncatedInstaller -Encoding UTF8
 . $tempInstaller
 
-# Salva referencia para Test-ShouldReport do instalador
-$installerShouldReport = ${function:Test-ShouldReport}
 $installerWaitAntesDeFechar = ${function:Wait-AntesDeFechar}
 $installerTestJanela = ${function:Test-JanelaTransitoria}
 
@@ -93,7 +91,7 @@ function Assert-Equal($actual, $expected, $desc) {
     }
 }
 
-Write-Host "`n-- 2.1 Test-ShouldReport (Instalador e Standalone) --" -ForegroundColor Yellow
+Write-Host "`n-- 2.1 Test-ShouldReport (Standalone) --" -ForegroundColor Yellow
 
 $testMessages = @(
     # Mensagens que NAO devem reportar (retornam $false)
@@ -115,10 +113,9 @@ $testMessages = @(
     @{ Msg = "Erro desconhecido ao processar pacote asar."; Expected = $true; Desc = "Erro desconhecido" }
 )
 
+# O instalador nao decide mais sobre envio remoto (escopo B): Test-ShouldReport saiu
+# junto com a chamada automatica. O standalone mantem o comportamento proprio.
 foreach ($t in $testMessages) {
-    $resInst = & $installerShouldReport $t.Msg
-    Assert-Equal $resInst $t.Expected "Installer Test-ShouldReport: $($t.Desc)"
-    
     $resStand = & $standaloneShouldReport $t.Msg
     Assert-Equal $resStand $t.Expected "Standalone Test-ShouldReport: $($t.Desc)"
 }
@@ -189,7 +186,7 @@ try {
     $InstallDir = $origInstallDir
 }
 
-Write-Host "`n-- 2.4 Get-EffectiveLocalApp / Get-ReportMeta (caminho 8.3, issue #94) --" -ForegroundColor Yellow
+Write-Host "`n-- 2.4 Get-EffectiveLocalApp (caminho 8.3, issue #94) --" -ForegroundColor Yellow
 
 $origLocalAppData = $env:LOCALAPPDATA
 try {
@@ -208,20 +205,7 @@ try {
     $env:LOCALAPPDATA = $origLocalAppData
 }
 
-try {
-    # Get-ReportMeta: flag caminho_8_3 marca variaveis gravadas na forma curta
-    # (ex. C:\Users\CSAR~1) -- o cenario reportado na issue #94.
-    $env:LOCALAPPDATA = 'C:\Users\CSAR~1\AppData\Local'
-    $metaCurto = Get-ReportMeta $null
-    Assert-Equal $metaCurto['caminho_8_3'] 'sim' "Get-ReportMeta marca caminho_8_3=sim para forma curta"
-
-    $env:LOCALAPPDATA = $origLocalAppData
-    $metaNormal = Get-ReportMeta $null
-    Assert-Equal $metaNormal['caminho_8_3'] 'nao' "Get-ReportMeta marca caminho_8_3=nao para forma longa"
-    Assert-Equal ($null -eq $metaNormal['excecao']) $true "Get-ReportMeta sem ErrorRecord nao define 'excecao'"
-} finally {
-    $env:LOCALAPPDATA = $origLocalAppData
-}
+# Get-ReportMeta saiu junto com o envio automatico (escopo B: log local/manual).
 
 Write-Host "`n-- 2.5 Descoberta e injecao segura de mod --" -ForegroundColor Yellow
 $selectTargetStart = $installerContent.IndexOf('function Select-Target')
@@ -232,6 +216,72 @@ Assert-Equal ($installerContent -match 'function Test-TargetInjectedFromCheckout
 Assert-Equal ($installerContent -match '& pnpm run inject --location \$loc') $true "Injecao nao passa separador -- extra"
 Assert-Equal ($installerContent -match '& pnpm run inject -- --location') $false "Fallback de argumento antigo removido"
 Assert-Equal ($installerContent -match '& pnpm inject') $false "Fallback cego por exit code removido"
+Assert-Equal ($installerContent -match 'Get-InstallerLogFile') $true "Instalador grava log local"
+Assert-Equal ($installerContent -match 'installer\.checkout_rejected') $true "Instalador registra rejeicao de checkout (#293)"
+Assert-Equal ($installerContent -match 'MOD_INSTALLED_WITHOUT_CHECKOUT') $true "Rejeicao da #293 tem codigo proprio"
+Assert-Equal ($installerContent -match 'Invoke-SendAutoReport|BugApiToken|includeLogs') $false "Instalador nao envia relatorio remoto"
+
+Write-Host "`n-- 2.6 Log local do instalador (installer.log, sem telemetria) --" -ForegroundColor Yellow
+
+$logTemp = Join-Path ([System.IO.Path]::GetTempPath()) "glb-installer-log-$([Guid]::NewGuid().ToString('N'))"
+$origLogDir = $env:GLB_INSTALLER_LOG_DIR
+$env:GLB_INSTALLER_LOG_DIR = $logTemp
+try {
+    Assert-Equal (Test-Path -LiteralPath $logTemp) $false "Diretorio de log nao existe antes do primeiro evento"
+
+    Write-InstallerEvent 'info' 'installer.detect.started' 'detect' @{ mode = 'Install' }
+    $logFile = Get-InstallerLogFile
+    Assert-Equal (Test-Path -LiteralPath $logFile) $true "Write-InstallerEvent cria installer.log"
+    Assert-Equal ($logFile -like '*GoLiveBypass') $false "Log de teste fica fora do diretorio de dados real"
+    Assert-Equal (Split-Path -Leaf $logFile) 'installer.log' "log se chama installer.log"
+
+    $lineRaw = (Get-Content -LiteralPath $logFile -First 1)
+    $line = $lineRaw | ConvertFrom-Json
+    Assert-Equal $line.schema_version 1 "linha JSONL tem schema_version"
+    Assert-Equal $line.level 'info' "linha tem level"
+    Assert-Equal $line.component 'installer.windows' "linha identifica installer.windows"
+    Assert-Equal $line.event 'installer.detect.started' "linha tem o evento"
+    Assert-Equal $line.phase 'detect' "linha tem a fase"
+    Assert-Equal ($line.ts -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') $true "ts ISO-8601 UTC com milissegundos"
+    Assert-Equal $line.data.mode 'Install' "campo observável mode preservado"
+
+    Write-InstallerEvent 'error' 'installer.failed' 'detect' @{ reason = 'falhou em C:\Users\alice\Equicord'; token = 'abc123'; senha = 's3cr3t'; campo_desconhecido = 'x' }
+    $lastRaw = (Get-Content -LiteralPath $logFile -Last 1)
+    $last = $lastRaw | ConvertFrom-Json
+    Assert-Equal ($lastRaw -match 'alice|abc123|s3cr3t') $false "segredos originais nao fluem para o raw"
+    Assert-Equal ([string]$last.data.reason -match '<path>$') $true "caminho absoluto vira <path> no fim do valor parseado"
+    Assert-Equal $last.data.token '<redacted>' "chave proibida token vira <redacted>"
+    Assert-Equal $last.data.senha '<redacted>' "chave proibida senha vira <redacted>"
+    Assert-Equal ($last.data.PSObject.Properties.Name -contains 'campo_desconhecido') $false "chave desconhecida e descartada"
+
+    # Cabecalho de autenticacao, URL com credencial e e-mail tambem sao redigidos.
+    Write-InstallerEvent 'warn' 'installer.probe' 'detect' @{ reason = 'Authorization: Bearer eyJhbGciOi.abc.def em https://alice:s3cr3t@example.test/x contato alice@example.com' }
+    $lastRaw = (Get-Content -LiteralPath $logFile -Last 1)
+    $last = $lastRaw | ConvertFrom-Json
+    Assert-Equal ($lastRaw -match 'eyJhbGciOi|s3cr3t|alice@example.com|example\.test/x') $false "segredos e host/path originais nao fluem para o raw"
+    $reason = [string]$last.data.reason
+    Assert-Equal ($reason -match 'Authorization=<redacted>') $true "cabecalho Authorization e redigido no valor parseado"
+    Assert-Equal ($reason -match '<redacted-url>') $true "URL com credencial vira <redacted-url> no valor parseado"
+    Assert-Equal ($reason -match 'example\.test/x') $false "host/path privado nao fluem no valor parseado"
+    Assert-Equal ($reason -match '<email>') $true "e-mail vira <email> no valor parseado"
+
+    # Valor aninhado nao e stringificado.
+    Write-InstallerEvent 'warn' 'installer.probe' 'detect' @{ reason = @('a', 'b') }
+    $last = (Get-Content -LiteralPath $logFile -Last 1) | ConvertFrom-Json
+    Assert-Equal ([string]$last.data.reason) '<redacted>' "valor nao escalar vira <redacted> no valor parseado"
+
+    # Falha de escrita nao pode lancar nem interromper o instalador.
+    $env:GLB_INSTALLER_LOG_DIR = Join-Path $logFile 'nao-e-pasta'
+    try {
+        Write-InstallerEvent 'info' 'installer.probe' 'detect' @{ count = 1 }
+        Assert-Equal $true $true "falha de escrita no log nao lanca"
+    } catch {
+        Assert-Equal $false $true "falha de escrita no log lancou: $($_.Exception.Message)"
+    }
+} finally {
+    $env:GLB_INSTALLER_LOG_DIR = $origLogDir
+    if (Test-Path -LiteralPath $logTemp) { Remove-Item -LiteralPath $logTemp -Recurse -Force -ErrorAction SilentlyContinue }
+}
 
 Write-Host "`n========================================================" -ForegroundColor Cyan
 Write-Host " 3. Wait-AntesDeFechar / Test-JanelaTransitoria" -ForegroundColor Cyan

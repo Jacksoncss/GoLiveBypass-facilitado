@@ -39,8 +39,9 @@ Write-Host ''
 Write-Host '  [BETA] GoLiveBypass para Equicord/Vencord — canal beta WireGuard.' -ForegroundColor Yellow
 Write-Host '         Este instalador entrega a versao beta atual do plugin; resultados podem mudar.' -ForegroundColor DarkGray
 Write-Host '         O sistema ainda nao e estavel e so chega la com gente testando: cada bug reportado' -ForegroundColor DarkGray
-Write-Host '         vira uma issue e encurta o caminho. Se algo falhar, deixe o relatorio automatico' -ForegroundColor DarkGray
-Write-Host '         seguir — ou abra em https://github.com/bezumiya/GoLiveBypass/issues.' -ForegroundColor DarkGray
+Write-Host '         vira uma issue e encurta o caminho. Se algo falhar, copie a saida acima ou' -ForegroundColor DarkGray
+Write-Host '         abra o installer.log da pasta GoLiveBypass e relate voce mesmo em' -ForegroundColor DarkGray
+Write-Host '         https://github.com/bezumiya/GoLiveBypass/issues.' -ForegroundColor DarkGray
 Write-Host '         O standalone continua separado, indisponivel e nao e alterado por este instalador.' -ForegroundColor DarkGray
 Write-Host ''
 
@@ -55,6 +56,7 @@ $RepoRaw = 'https://raw.githubusercontent.com/bezumiya/GoLiveBypass/main'
 $PluginFiles = @(
     'goLiveBypass/index.tsx',
     'goLiveBypass/native.ts',
+    'goLiveBypass/plugin-log.ts',
     'goLiveBypass/bug-report.ts',
     'goLiveBypass/update-channel.ts',
     'goLiveBypass/update-security.ts',
@@ -162,170 +164,111 @@ function Confirm-Action($question) {
     return (Read-Escolha "  $question [s/N]") -match '^[sSyY]'
 }
 
-# =========================================================================== Report de bugs
-# Igual a GUI: ao falhar, monta diagnostico sanitizado e POST na API de bugs
-# (abre issue no bezumiya/GoLiveBypass). Nunca bloqueia o fluxo.
+# =========================================================================== log local
+# Observabilidade LOCAL do instalador (escopo B): eventos em installer.log (JSONL) no
+# diretorio de dados existente. Nao ha POST, webhook ou telemetria — o usuario copia a
+# saida do terminal ou abre o log manualmente. Falha de escrita NUNCA derruba a instalacao.
+$script:InstallerLogMaxBytes = 256 * 1024
+$script:InstallerComponent = 'installer.windows'
+$script:InstallerOperationId = 'installer-' + ([guid]::NewGuid().ToString('N').Substring(0, 12))
+$script:InstallerPhase = 'detect'
+# Chave proibida vira <redacted>; chave fora da allowlist e descartada (fail-closed).
+$script:InstallerForbiddenKey = '(?i)(password|senha|token|captcha|secret|private[_]?key|public[_]?key|authorization|cookie|session|credential|stdin|rawconfig|^config$|endpoint)'
+$script:InstallerAllowedKeys = @(
+    'mode', 'permanent', 'we_injected', 'target_count', 'candidate_count', 'candidate_kind',
+    'discord_count', 'mod_kind', 'reason', 'reason_code', 'result', 'exit_code',
+    'duration_ms', 'path_present', 'path_kind', 'active', 'preserved', 'identity', 'count'
+)
 
-$script:BugApiUrl = 'https://api.skyplaceia.com/bugs/v1/reports'
-$script:BugApiToken = 'c3d0bff691ecc3ddc6f6ca10037b9ac967c62547e681d3749204e50800504511'
-
-function Invoke-BugReport([string]$title, [string]$description, [string]$log = '', [hashtable]$meta = @{}) {
-    if ($Yes) { return }  # automacao: nao spammar a API
-    # Dedupe: o mesmo erro NAO reabre issue. Os 3 reports duplos da 1.1.11
-    # (issues 124-126) vieram daqui: cada rodada do mesmo bug abria issue nova.
-    # Assinatura = titulo + primeira linha da descricao, com data; janela de 48h.
-    try {
-        $primeiraLinha = ($description -split "`n" | Select-Object -First 1)
-        if ($primeiraLinha.Length -gt 300) { $primeiraLinha = $primeiraLinha.Substring(0, 300) }
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$title|$primeiraLinha"))) -replace '-', '').Substring(0, 16)
-        $sha.Dispose()
-        $stateFile = Join-Path (Get-EffectiveLocalApp) 'GoLiveBypass\.last-report'
-        if (Test-Path -LiteralPath $stateFile) {
-            $campos = @((Get-Content -LiteralPath $stateFile -First 1) -split ' ')
-            if ($campos.Count -ge 2 -and $campos[0] -eq $hash) {
-                try {
-                    $ultimo = [datetime]::ParseExact($campos[1], 'yyyyMMddHHmm', [Globalization.CultureInfo]::InvariantCulture)
-                    if (((Get-Date) - $ultimo).TotalHours -lt 48) {
-                        Write-Host '  [i] Esse erro ja foi reportado a menos de 48h — nao vou reabrir a issue.' -ForegroundColor DarkGray
-                        return
-                    }
-                } catch { }
-            }
-        }
-        New-Item -ItemType Directory -Path (Split-Path -Parent $stateFile) -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-Content -LiteralPath $stateFile -Value "$hash $(Get-Date -Format 'yyyyMMddHHmm')" -ErrorAction SilentlyContinue
-    } catch { }
-    $desc = Invoke-SanitizeBug $description
-    # Mesma forma do payload da GUI (golive-gui/electron/bugreport.ts): {title,
-    # description, log, meta}. O formato antigo (includeLogs) nunca foi lido pela
-    # API -- os reports do instalador/standalone chegavam no GitHub com log e
-    # metadata vazios (ex.: issue #94).
-    $body = @{ title = $title; description = $desc; log = $log; meta = $meta } | ConvertTo-Json
-    try {
-        Invoke-RestMethod -Method Post -Uri $script:BugApiUrl -Body $body -ContentType 'application/json' -Headers @{ Authorization = "Bearer $($script:BugApiToken)" } -TimeoutSec 15 -ErrorAction Stop | Out-Null
-        Write-Host ''
-        Write-Host '  [OK] Relatorio enviado. Obrigado — os devs vao ver a issue no GitHub.' -ForegroundColor Green
-    } catch {
-        Write-Host ''
-        Write-Host '  [!] Nao consegui enviar o relatorio automatico. Rode de novo e mande a saida.' -ForegroundColor Yellow
-    }
+function Get-InstallerLogDir {
+    if ($env:GLB_INSTALLER_LOG_DIR) { return $env:GLB_INSTALLER_LOG_DIR }
+    return (Join-Path (Get-EffectiveLocalApp) 'GoLiveBypass')
 }
 
-function Invoke-SanitizeBug([string]$text) {
-    $text = [regex]::Replace($text, '([a-z][a-z0-9+.-]*://)([^/ @:]+):([^/@]+)@', '$1$2:***@')
-    $text = [regex]::Replace($text, '\b(mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,})\b', '***')
-    $text = [regex]::Replace($text, '(https://gateway[^ ?]+)\?[^ ]*', '$1?<params>')
+function Get-InstallerLogFile { return (Join-Path (Get-InstallerLogDir) 'installer.log') }
+
+function ConvertTo-InstallerSafeText([string]$value, [int]$max = 300) {
+    # fail-closed: credenciais e caminhos pessoais nunca chegam ao log compartilhavel.
+    $text = [string]$value
+    if (-not $text) { return '' }
+    $text = [regex]::Replace($text, '[\r\n\t]+', ' ')
+    # Cabecalho de autenticacao consome o resto; token Bearer isolado tambem.
+    $text = [regex]::Replace($text, '(?i)((?:proxy-)?authorization\s*:\s*)(?:\S+\s+)?\S+', '$1<redacted>')
+    $text = [regex]::Replace($text, '(?i)(bearer\s+)\S+', '$1<redacted>')
+    # URL com credenciais: usuário, senha, host e path são privados.
+    $text = [regex]::Replace($text, '(?i)\b[a-z][a-z0-9+.-]*://[^/\s@]+(?::[^/\s@]*)?@[^\s]+', '<redacted-url>')
+    # E-mail.
+    $text = [regex]::Replace($text, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>')
+    # chave=valor de credencial.
+    $text = [regex]::Replace($text, '(?i)(password|senha|token|secret|private[_]?key|public[_]?key|authorization|cookie|session|credential|captchatoken|twofactorcode)\s*[:=]\s*\S+', '$1=<redacted>')
+    # Caminhos: Windows, UNC e POSIX absoluto. As regras exigem fronteira/nao-barra
+    # para nao destruir URL publica (https://...) nem o "s:/" do proprio scheme.
+    $text = [regex]::Replace($text, '(?i)(^|[^A-Za-z0-9])[a-z]:[\\/][^\s]*', '$1<path>')
+    $text = [regex]::Replace($text, '\\\\[^\s]+', '<path>')
+    $text = [regex]::Replace($text, '(^|[\s:=])/[^/\s][^\s]*', '$1<path>')
+    if ($text.Length -gt $max) { $text = $text.Substring(0, $max) }
     return $text
 }
 
-# Metadata do report, mesmo espirito da GUI (bugreport.ts montarMeta): so flags de
-# diagnostico, sem caminhos completos do usuario. caminho_8_3 marca variaveis de
-# ambiente gravadas na forma curta (ex. C:\Users\CSAR~1) -- o cenario da issue #94.
-function Get-ReportMeta($ErrorRecord) {
-    $short = $false
-    foreach ($v in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:TEMP)) {
-        if ($v -and $v -match '~\d($|\\)') { $short = $true; break }
+function ConvertTo-InstallerData($data) {
+    $out = [ordered]@{}
+    if ($null -eq $data) { return $out }
+    foreach ($k in @($data.Keys)) {
+        $key = [string]$k
+        if ($key -match $script:InstallerForbiddenKey) { $out[$key] = '<redacted>'; continue }
+        if ($script:InstallerAllowedKeys -notcontains $key) { continue }
+        $value = $data[$k]
+        if ($value -is [bool]) { $out[$key] = $value; continue }
+        if ($value -is [int] -or $value -is [long] -or $value -is [double]) { $out[$key] = $value; continue }
+        if ($value -is [System.Collections.IDictionary] -or ($value -is [System.Collections.IEnumerable] -and $value -isnot [string])) {
+            # Objeto/lista nunca e stringificado: chave aninhada poderia carregar segredo.
+            $out[$key] = '<redacted>'
+            continue
+        }
+        $out[$key] = ConvertTo-InstallerSafeText ([string]$value)
     }
-    $meta = @{
-        versao                = 'instalador'
-        plataforma            = "win32-$env:PROCESSOR_ARCHITECTURE"
-        locale                = "$(if ($PSUICulture -and $PSUICulture.Name) { $PSUICulture.Name } else { '?' })"
-        localappdata_presente = "$(if ($env:LOCALAPPDATA) { 'sim' } else { 'nao' })"
-        caminho_8_3           = "$(if ($short) { 'sim' } else { 'nao' })"
-    }
-    if ($ErrorRecord -and $ErrorRecord.Exception) {
-        $meta['excecao'] = $ErrorRecord.Exception.GetType().FullName
-    }
-    return $meta
+    return $out
 }
 
-function Invoke-SendAutoReport([string]$summary, [string]$extra = '', $ErrorRecord = $null) {
-    if ($Yes) { return }
-    $desc = "$extra`n`n--- logs ---`n"
-    $tail = ''
+function Trim-InstallerLogFile([string]$file) {
+    if (-not (Test-Path -LiteralPath $file)) { return }
+    $bytes = [IO.File]::ReadAllBytes($file)
+    if ($bytes.Length -le $script:InstallerLogMaxBytes) { return }
+    $keep = [int][Math]::Floor($script:InstallerLogMaxBytes / 2)
+    $start = [Math]::Max(0, $bytes.Length - $keep)
+    $tail = [Text.Encoding]::UTF8.GetString($bytes, $start, $bytes.Length - $start)
+    $nl = $tail.IndexOf("`n")
+    $tail = if ($nl -lt 0) { '' } else { $tail.Substring($nl + 1) }
+    [IO.File]::WriteAllText($file, $tail, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Write-InstallerEvent([string]$level, [string]$event, [string]$phase, $data = $null) {
     try {
-        $logDir = Join-Path (Get-EffectiveLocalApp) 'GoLiveBypass'
-        foreach ($log in @('golivebypass.log', 'gui.log')) {
-            $lp = Join-Path $logDir $log
-            if (Test-Path -LiteralPath $lp) {
-                $tail += (Get-Content -LiteralPath $lp -Tail 40 -ErrorAction SilentlyContinue | Out-String)
-            }
+        $record = [ordered]@{
+            schema_version = 1
+            ts             = ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff') + 'Z')
+            level          = $level
+            component      = $script:InstallerComponent
+            event          = $event
+            operation_id   = $script:InstallerOperationId
+            phase          = $phase
+            platform       = 'win32'
+            arch           = $(if ($env:PROCESSOR_ARCHITECTURE) { [string]$env:PROCESSOR_ARCHITECTURE } else { 'unknown' })
+            data           = (ConvertTo-InstallerData $data)
         }
-    } catch { }
-    if ($ErrorRecord -and $ErrorRecord.Exception) {
-        $frame = ''
-        try {
-            $st = $ErrorRecord.Exception.StackTrace
-            if ($st) { $frame = (($st -split "`n") | Select-Object -First 1).Trim() }
-        } catch { }
-        $desc += "`n`nexcecao: " + $ErrorRecord.Exception.GetType().FullName
-        if ($frame) { $desc += "`nframe: " + $frame }
-        # A LINHA do script: sem ela um "Invalid handle" de FileStream nao diz nada
-        # (issue #127). O catch do instalador mostra no console; o report so via aqui.
-        $info = $ErrorRecord.InvocationInfo
-        if ($info -and $info.ScriptLineNumber) {
-            $desc += "`nlinha do script: $($info.ScriptLineNumber): $($info.Line.Trim())"
-        } elseif ($ErrorRecord.ScriptStackTrace) {
-            # Excecao .NET surfada pelo pipeline as vezes chega sem InvocationInfo
-            # util (#136: DriveNotFoundException sem linha nenhuma no relato). O
-            # ScriptStackTrace e preenchido sempre que existe frame de script.
-            $pilha = ($ErrorRecord.ScriptStackTrace -split "`n" | Select-Object -First 2) -join ' | '
-            $desc += "`npilha: " + $pilha
-        }
+        $line = ConvertTo-Json -InputObject $record -Compress -Depth 6
+        $file = Get-InstallerLogFile
+        $dir = Split-Path -Parent $file
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        Trim-InstallerLogFile $file
+        [IO.File]::AppendAllText($file, $line + [Environment]::NewLine, $utf8)
+        Trim-InstallerLogFile $file
+    } catch {
+        # Diagnostico nunca pode derrubar a instalacao.
     }
-    Invoke-BugReport $summary $desc $tail (Get-ReportMeta $ErrorRecord)
 }
-
-# Test-ShouldReport <mensagem>: $false se a mensagem NAO deve abrir issue.
-# Mesmo espelho do should_report() do .sh: erros de uso (dependencia faltando,
-# CLI digitada errada, path errado, ferramenta externa quebrada) nao viram
-# issue. O resto (bug real) continua reportando.
-function Test-ShouldReport([string]$msg) {
-    # cancelamento e instrucoes de uso
-    if ($msg -eq 'Cancelado.') { return $false }
-    # console sem teclado (issue #146): ambiente de uso, o aviso ja diz o que fazer
-    if ($msg -like '*Este console nao aceita entrada de teclado*') { return $false }
-    # Cancelamento via Ctrl+C no Read-Host: PowerShell lanca a mensagem nativa
-    # "Esse comando nao pode ser executado devido ao erro: A operacao foi cancelada
-    # pelo usuario." (PT-BR) / "This command cannot be executed ... The operation
-    # was canceled by the user." (EN). E cancelamento do usuario, nao bug.
-    if ($msg -like '*cancelada pelo usu*rio*') { return $false }
-    if ($msg -like '*canceled by the user*') { return $false }
-    if ($msg -like '*cadeia de caracteres vazia*') { return $false }
-    if ($msg -like '*empty string*') { return $false }
-    if ($msg -like 'Illegal characters in path*') { return $false }
-    if ($msg -like '*associar*par*metro*') { return $false }
-    if ($msg -like '*Cannot bind argument*') { return $false }
-    if ($msg -like '*porque ele ? nulo*' -or $msg -like '*because it is null*') { return $false }
-    if ($msg -like 'Nao e possivel associar*') { return $false }
-    if ($msg -like 'O Discord nao fechou*') { return $false }
-    # input / uso do usuario
-    if ($msg -like 'Opcao desconhecida: *') { return $false }
-    if ($msg -like 'Nao consegui baixar *') { return $false }
-    # dependencia faltando (ambiente)
-    if ($msg -like 'Instale *') { return $false }
-    if ($msg -like 'O npm nao conseguiu instalar o pnpm*') { return $false }
-    if ($msg -like 'Nao consegui deixar o pnpm funcionando*') { return $false }
-    # path / checkout errado
-    if ($msg -like 'Nao encontrei o checkout do Equicord/Vencord*') { return $false }
-    if ($msg -like 'Nao achei *') { return $false }
-    if ($msg -like '*ja existe e nao parece um checkout*') { return $false }
-    if ($msg -like 'Nao achei o patcher *') { return $false }
-    if ($msg -like 'Nao achei nenhum Discord instalado*') { return $false }
-    # ferramenta externa (ambiente)
-    if ($msg -eq 'git clone falhou') { return $false }
-    if ($msg -eq 'pnpm install falhou') { return $false }
-    if ($msg -eq 'pnpm build falhou') { return $false }
-    if ($msg -eq 'pnpm inject falhou') { return $false }
-    # desinstalacao / elevacao parcial
-    if ($msg -like 'Nao consegui desinstalar de todos*') { return $false }
-    if ($msg -like 'NADA foi injetado*') { return $false }
-    # default: e bug, reporta
-    return $true
-}
-
-# =========================================================================== /Report de bugs
+# =========================================================================== /log local
 
 # =========================================================================== TUI (PowerShell)
 # Interface no estilo OpenCode: dark, caixas, setas/Enter. Mouse: o console do Windows
@@ -744,23 +687,41 @@ function Find-CheckoutOnDisk {
 }
 
 function Find-Checkout {
+    $discordCount = @(Get-DiscordResources).Count
+    Write-InstallerEvent 'info' 'installer.discord_detected' 'detect' @{ discord_count = $discordCount }
+    $installedMod = Get-InstalledMod
+    if ($installedMod) { Write-InstallerEvent 'info' 'installer.mod_detected' 'detect' @{ mod_kind = $installedMod } }
+
     if ($Source) {
-        if (Test-ModCheckout $Source) { return $Source }
+        Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'source'; candidate_count = 1 }
+        if (Test-ModCheckout $Source) {
+            Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'source'; path_present = $true }
+            return $Source
+        }
+        Write-InstallerEvent 'warn' 'installer.checkout_rejected' 'detect' @{ candidate_kind = 'source'; reason_code = 'SOURCE_NOT_A_CHECKOUT' }
         throw "Nao encontrei um checkout do Equicord ou Vencord em $Source"
     }
 
+    Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'injection' }
     $root = Find-CheckoutFromInjection
     if ($root) {
+        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'injection'; path_present = $true }
         Write-Ok "Achei pelo Discord: $root"
         return $root
     }
 
+    Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'disk' }
     $root = Find-CheckoutOnDisk
     if ($root) {
+        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'disk'; path_present = $true }
         Write-Ok "Achei no disco: $root"
         return $root
     }
 
+    # Mod detectado sem checkout provado (#293): o caminho nao substitui app.asar; a
+    # distincao fica por codigo, sem levar caminho pessoal ao log.
+    $reasonCode = if ($installedMod) { 'MOD_INSTALLED_WITHOUT_CHECKOUT' } else { 'CHECKOUT_NOT_FOUND' }
+    Write-InstallerEvent 'warn' 'installer.checkout_rejected' 'detect' @{ reason_code = $reasonCode; mod_kind = [string]$installedMod }
     return $null
 }
 
@@ -894,6 +855,7 @@ function Copy-PatchParallel($root, $resources) {
     $appAsar = Join-Path $resources 'app.asar'
     $existingInjection = Get-InjectedPath $resources
     if ($existingInjection) {
+        Write-InstallerEvent 'warn' 'installer.preserved' 'inject' @{ reason_code = 'PARALLEL_ALREADY_PATCHED'; target_count = 1 }
         $motivo = "$nome ja tem um patch em $existingInjection; app.asar e _app.asar foram preservados."
         Write-Warn $motivo
         return [pscustomobject]@{ Ok = $false; Motivo = $motivo }
@@ -1049,6 +1011,8 @@ function Install-Toolchain($needGit) {
 function Install-Mod($choice) {
     $info = $Mods[$choice]
     $target = Join-Path $env:USERPROFILE $info.Label
+    $script:InstallerPhase = 'preparing'
+    Write-InstallerEvent 'info' 'installer.selected' 'preparing' @{ mode = 'download'; mod_kind = $choice; path_present = $true }
 
     Write-Host ''
     Write-Host '  Vou fazer:' -ForegroundColor White
@@ -1275,6 +1239,8 @@ function Install-PluginSource($root) {
 
 function Build-Mod($root) {
     if (-not $root) { throw 'Caminho do checkout invalido para compilar o mod.' }
+    $script:InstallerPhase = 'build'
+    Write-InstallerEvent 'info' 'installer.build' 'build' @{ mod_kind = (Get-CheckoutMod $root) }
     Push-Location -LiteralPath $root
     try {
         if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules'))) {
@@ -1315,6 +1281,8 @@ function Invoke-Injection($root, $targets) {
     if (-not $root) { throw 'Caminho do checkout invalido para injetar o mod.' }
     Push-Location -LiteralPath $root
     try {
+        $script:InstallerPhase = 'inject'
+        Write-InstallerEvent 'info' 'installer.inject' 'inject' @{ target_count = @($targets).Count }
         Stop-Discord
         $falha = $false
         # Detalhe por alvo: sem isto o relato automatico chegava so com a mensagem
@@ -1429,6 +1397,9 @@ function Invoke-Install($root) {
     Set-PluginSettings $root
 
     Start-Discord
+
+    $script:InstallerPhase = 'completed'
+    Write-InstallerEvent 'info' 'installer.completed' 'completed' @{ permanent = [bool]$permanent; we_injected = [bool]$weInjected }
 
     Write-Host ''
     Write-Ok 'Pronto. O plugin ja vem ativado, nao precisa mexer em nada.'
@@ -2107,6 +2078,9 @@ function Invoke-UpdateFromZip($root, $zipUrl, $expectedVersion) {
 
 Show-Banner
 
+$script:InstallerPhase = 'detect'
+Write-InstallerEvent 'info' 'installer.detect.started' 'detect' @{ mode = $Mode }
+
 try {
     switch ($Mode) {
         'Install'     { Invoke-Install (Find-Checkout) }
@@ -2127,12 +2101,10 @@ try {
         Write-Host "      linha $($info.ScriptLineNumber): $($info.Line.Trim())" -ForegroundColor DarkGray
     }
     Write-Host '      Se for relatar, mande esta linha junto.' -ForegroundColor DarkGray
+    Write-Host "      Log local: $(Get-InstallerLogFile)" -ForegroundColor DarkGray
+    Write-Host '      Copie a saida acima ou abra o log para relatar.' -ForegroundColor DarkGray
 
-    # Report automatico (se nao for automacao): a issue abre no GitHub.
-    # Erros de uso (dependencia, CLI typo, path errado, ferramenta externa) nao viram issue.
-    if (Test-ShouldReport $_.Exception.Message) {
-        Invoke-SendAutoReport "Falha no instalador GoLiveBypass: $($_.Exception.Message)" $_.Exception.Message $_
-    }
+    Write-InstallerEvent 'error' 'installer.failed' $script:InstallerPhase @{ reason = $_.Exception.Message }
     Wait-AntesDeFechar
     exit 1
 }

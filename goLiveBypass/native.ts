@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { AsyncLocalStorage } from "async_hooks";
 import { RendererSettings } from "@main/settings";
 import { execFile, execFileSync, spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
@@ -70,8 +71,9 @@ import {
 } from "./vpn-linux";
 import * as proton from "./vpn-proton";
 import { safeDiagnosticDetail } from "./vpn-types";
+import { createOperationId, createPluginLogger, trimJsonlTailByBytes, type PluginLogContext } from "./plugin-log";
 
-const PLUGIN_VERSION = "2.0.6-beta-16";
+const PLUGIN_VERSION = "2.0.6-beta-18";
 const PLUGIN_ASSET = "goLiveBypass-vencord.zip";
 const PLUGIN_CHECKSUM_ASSET = `${PLUGIN_ASSET}.sha256`;
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/bezumiya/GoLiveBypass/releases?per_page=20";
@@ -95,6 +97,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
     const common = [
         "index.tsx",
         "native.ts",
+        "plugin-log.ts",
         "bug-report.ts",
         "update-channel.ts",
         "update-security.ts",
@@ -189,8 +192,6 @@ const UPDATE_LOCK_FILE = "plugin-update.lock";
 const BACKUP_DIR = ".golivebypass-update-backups";
 const SAFE_BACKUP_NAME = /^goLiveBypass-[0-9]{10,}$/;
 const SAFE_DISPLACED_NAME = /^goLiveBypass-pending-[0-9]{10,}$/;
-const MAX_LOG_LINES = 400;
-const MAX_LOG_BYTES = 256 * 1024;
 const CAPTCHA_IPC_CHANNEL = "golive-plugin-proton-captcha-response";
 const CAPTCHA_TIMEOUT_MS = 120_000;
 const SOURCE_DIGEST_PATTERN = /^[a-f0-9]{64}$/i;
@@ -199,7 +200,42 @@ const VPN_DATA_DIR = defaultPluginVpnDataDir();
 const GUI_DATA_DIR = dirname(VPN_DATA_DIR);
 const LOG_FILE = join(VPN_DATA_DIR, "plugin-vpn.log");
 
-const history: string[] = [];
+const logContext = new AsyncLocalStorage<PluginLogContext>();
+
+function trimPluginLogFile(): void {
+    const bytes = readFileSync(LOG_FILE);
+    if (bytes.byteLength <= 256 * 1024) return;
+    writeFileSync(LOG_FILE, trimJsonlTailByBytes(bytes, 256 * 1024));
+}
+
+function persistPluginLogLine(line: string): void {
+    try {
+        mkdirSync(VPN_DATA_DIR, { recursive: true });
+        trimPluginLogFile();
+        appendFileSync(LOG_FILE, line, "utf8");
+        trimPluginLogFile();
+    } catch {
+        // Diagnóstico nunca pode impedir o Discord de continuar abrindo.
+    }
+}
+
+const pluginLogger = createPluginLogger({
+    component: "plugin.native",
+    pluginVersion: PLUGIN_VERSION,
+    platform: process.platform,
+    arch: process.arch,
+    onLine: persistPluginLogLine,
+});
+
+try {
+    if (existsSync(LOG_FILE)) {
+        const previous = readFileSync(LOG_FILE, "utf8").slice(-128 * 1024).split(/\r?\n/);
+        pluginLogger.restore(previous);
+    }
+} catch {
+    // O ring da execução corrente continua disponível se o arquivo antigo não puder ser lido.
+}
+
 let quitting = false;
 
 type PluginUpdatePolicy = { enabled: boolean; channel: PluginUpdateChannel };
@@ -346,33 +382,76 @@ function controllerSettings(): PluginSettingsRecord {
     };
 }
 
-function describeData(data: Record<string, unknown> | undefined): string {
-    if (!data) return "";
-    return Object.entries(data)
-        .map(([key, value]) => {
-            let printed: string;
-            try { printed = typeof value === "string" ? value : JSON.stringify(value) ?? String(value); } catch { printed = String(value); }
-            return `${key}=${safeDiagnosticDetail(printed, 500)}`;
-        })
-        .join(" ");
+const LEGACY_EVENT_MAP: Record<string, string> = {
+    "abrindo plugin VPN": "plugin.process.started",
+    "falha ao inicializar o controlador VPN": "plugin.process.failed",
+    "ativação VPN falhou": "vpn.activation.failed",
+    "ativação VPN Linux falhou": "vpn.activation.failed",
+    "serviço WireSock ativo com filtro por aplicativo": "wiresock.start.accepted",
+    "WireSock próprio parado": "wiresock.stop.completed",
+    "diagnóstico assíncrono da rede": "wiresock.diagnostic",
+    "probe de rota do Discord concluído": "route.probe.completed",
+    "probe de rota do Discord falhou": "route.probe.failed",
+};
+
+function eventForMessage(message: string): string {
+    const normalized = message.trim();
+    if (/^[A-Za-z][A-Za-z0-9_.-]{2,}$/.test(normalized) && normalized.includes(".")) return normalized;
+    const lower = normalized.toLowerCase();
+    const exact = LEGACY_EVENT_MAP[normalized];
+    if (exact) return exact;
+    if (lower.includes("watchdog")) return "wiresock.watchdog";
+    if (lower.includes("rota") || lower.includes("probe de rota")) return "route.diagnostic";
+    if (lower.includes("helper") || lower.includes("proton-confgen")) return "helper.event";
+    if (lower.includes("wiresock")) return "wiresock.event";
+    if (lower.includes("updater") || lower.includes("update")) return "updater.event";
+    if (lower.includes("proton") || lower.includes("autenticação") || lower.includes("sessão")) return "proton.event";
+    return "legacy.message";
 }
 
 function log(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>): void {
-    const detail = describeData(data);
-    const line = `${new Date().toISOString().slice(11, 23)} [${level}] ${safeDiagnosticDetail(message, 1500)}${detail ? ` | ${detail}` : ""}`;
-    history.push(line);
-    while (history.length > MAX_LOG_LINES) history.shift();
-
-    try {
-        mkdirSync(VPN_DATA_DIR, { recursive: true });
-        if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > MAX_LOG_BYTES)
-            writeFileSync(LOG_FILE, readFileSync(LOG_FILE, "utf8").slice(-Math.floor(MAX_LOG_BYTES / 2)), "utf8");
-        appendFileSync(LOG_FILE, `${line}\n`, "utf8");
-    } catch (error) {
-        // Diagnóstico nunca pode impedir o Discord de continuar abrindo.
-        if (history.length < MAX_LOG_LINES)
-            history.push(`${new Date().toISOString().slice(11, 23)} [warn] não consegui gravar o log: ${safeDiagnosticDetail(error)}`);
+    const context = logContext.getStore() || {};
+    const operationId = typeof data?.operation_id === "string" ? data.operation_id : context.operation_id;
+    const attemptId = typeof data?.attempt_id === "string" ? data.attempt_id : context.attempt_id;
+    const phase = typeof data?.phase === "string" ? data.phase : context.phase;
+    const cleanData = data ? { ...data } : undefined;
+    if (cleanData) {
+        delete cleanData.operation_id;
+        delete cleanData.attempt_id;
+        delete cleanData.phase;
     }
+    pluginLogger.emit(level, eventForMessage(message), {
+        ...context,
+        operation_id: operationId,
+        attempt_id: attemptId,
+        phase,
+    }, cleanData, message);
+}
+
+function operationFailure(value: unknown): { failed: boolean; error?: unknown } {
+    if (value === null || typeof value !== "object" || !("success" in value) || value.success !== false)
+        return { failed: false };
+    return { failed: true, error: "error" in value ? value.error : undefined };
+}
+function runLogOperation<T>(prefix: string, operation: () => Promise<T> | T): Promise<T> {
+    const operationId = createOperationId(prefix);
+    return logContext.run({ operation_id: operationId }, async () => {
+        const startedAt = Date.now();
+        log("info", `operation.${prefix}.started`, { phase: "requested" });
+        try {
+            const result = await operation();
+            const failure = operationFailure(result);
+            log(failure.failed ? "error" : "info", `operation.${prefix}.${failure.failed ? "failed" : "completed"}`, {
+                phase: failure.failed ? "failed" : "completed",
+                duration_ms: Date.now() - startedAt,
+                ...(failure.failed ? { error: failure.error } : {}),
+            });
+            return result;
+        } catch (error) {
+            log("error", `operation.${prefix}.failed`, { phase: "failed", duration_ms: Date.now() - startedAt, error: safeDiagnosticDetail(error, 300) });
+            throw error;
+        }
+    });
 }
 
 async function requestRelaunch(namespace: string | null): Promise<boolean> {
@@ -703,7 +782,14 @@ const controller = new PluginVpnController({
     requestRelaunch,
 });
 export function logFromRenderer(_: IpcMainInvokeEvent, message: unknown): void {
-    if (typeof message === "string" && message.trim()) log("info", message.slice(0, 2000));
+    if (typeof message !== "string" || !message.trim()) return;
+    const trimmed = message.slice(0, 2000);
+    const isError = trimmed.startsWith("[error][renderer]");
+    const clean = isError ? trimmed.replace(/^\[error\]\[renderer\]\s*/, "") : trimmed;
+    pluginLogger.emit(isError ? "error" : "info", isError ? "renderer.error" : "renderer.message", {
+        ...logContext.getStore(),
+        component: "plugin.renderer",
+    }, { error: clean, source: "renderer" }, clean);
 }
 
 function setStoredUsername(username: string): void {
@@ -865,11 +951,11 @@ function solveCaptcha(rawUrl: string, parent: BrowserWindow | null, signal?: Abo
 }
 
 export function enable(_: IpcMainInvokeEvent) {
-    return controller.enable();
+    return runLogOperation("vpn-activation", () => controller.enable());
 }
 
 export function enableAutomatic(_: IpcMainInvokeEvent) {
-    return controller.enableAutomatic();
+    return runLogOperation("vpn-autostart", () => controller.enableAutomatic());
 }
 
 export function shutdown(_: IpcMainInvokeEvent) {
@@ -878,15 +964,15 @@ export function shutdown(_: IpcMainInvokeEvent) {
     // voltar à rede host sem relaunch; portanto pedimos relaunch externo apenas no Linux.
     controller.cancelProtonLogin();
     disposeWireSockSnapshotWorker();
-    return controller.shutdown(process.platform === "linux");
+    return runLogOperation("vpn-shutdown", () => controller.shutdown(process.platform === "linux"));
 }
 
 export function restoreNetwork(_: IpcMainInvokeEvent) {
-    return controller.restoreNetwork();
+    return runLogOperation("vpn-restore", () => controller.restoreNetwork());
 }
 
 export function restartDiscord(_: IpcMainInvokeEvent) {
-    return controller.restartDiscord();
+    return runLogOperation("vpn-restart", () => controller.restartDiscord());
 }
 
 export function getVpnStatus(_: IpcMainInvokeEvent) {
@@ -907,7 +993,7 @@ export function getProtonOptimizationStatus(_: IpcMainInvokeEvent): PluginOptimi
 }
 
 export function getLog(_: IpcMainInvokeEvent): string {
-    return history.join("\n");
+    return pluginLogger.getLog();
 }
 
 export function getPluginVpnPaths(_: IpcMainInvokeEvent) {
@@ -1069,7 +1155,7 @@ export async function submitBugReport(_: IpcMainInvokeEvent, value: unknown): Pr
 
     const segredos = coletarSegredosLocais();
     const blocoDeLog = pedido.includeLogs
-        ? montarLog({ ring: history.join("\n"), caudaArquivo: lerCaudaDoLog(), sessao: pedido.session, segredos, token: BUG_API_TOKEN })
+        ? montarLog({ ring: pluginLogger.getLog(), caudaArquivo: lerCaudaDoLog(), sessao: pedido.session, segredos, token: BUG_API_TOKEN })
         : "";
     const status = await controller.getStatusAsync();
     const meta = montarMeta({
@@ -1136,15 +1222,17 @@ export function getProtonSettings(_: IpcMainInvokeEvent) {
 }
 
 export async function loginProton(event: IpcMainInvokeEvent, value: unknown) {
-    try {
-        const payload = cleanLoginPayload(value);
-        const parent = BrowserWindow.fromWebContents(event.sender);
-        const result = await controller.loginProton(payload, (url, signal) => solveCaptcha(url, parent, signal).then(captcha => captcha.ok ? captcha.token : null));
-        if (result.success && result.username) setStoredUsername(result.username);
-        return result;
-    } catch (error) {
-        return { success: false as const, code: "CONFIGURATION_ERROR" as const, retryable: false, message: safeDiagnosticDetail(error, 500), error: safeDiagnosticDetail(error, 500) };
-    }
+    return runLogOperation("proton-login", async () => {
+        try {
+            const payload = cleanLoginPayload(value);
+            const parent = BrowserWindow.fromWebContents(event.sender);
+            const result = await controller.loginProton(payload, (url, signal) => solveCaptcha(url, parent, signal).then(captcha => captcha.ok ? captcha.token : null));
+            if (result.success && result.username) setStoredUsername(result.username);
+            return result;
+        } catch (error) {
+            return { success: false as const, code: "CONFIGURATION_ERROR" as const, retryable: false, message: safeDiagnosticDetail(error, 500), error: safeDiagnosticDetail(error, 500) };
+        }
+    });
 }
 
 export function cancelProtonLogin(_: IpcMainInvokeEvent, requestId?: unknown) {
@@ -1153,23 +1241,26 @@ export function cancelProtonLogin(_: IpcMainInvokeEvent, requestId?: unknown) {
 
 export function checkProtonSession(_: IpcMainInvokeEvent, username?: unknown) {
     const value = typeof username === "string" && username.trim() ? username : String(controllerSettings().protonUsername || "");
-    return controller.checkProtonSession(value).catch(() => ({
+    return runLogOperation("proton-session-check", () => controller.checkProtonSession(value).catch(() => ({
         valid: false,
         code: "UNKNOWN" as const,
         error: "Não foi possível verificar a sessão Proton.",
-    }));
+    })));
 }
 
 export function getProtonPlan(_: IpcMainInvokeEvent, username?: unknown) {
     const value = typeof username === "string" && username.trim() ? username : String(controllerSettings().protonUsername || "");
-    return controller.getProtonPlan(value);
+    return runLogOperation("proton-plan", () => controller.getProtonPlan(value));
 }
 
 export async function logoutProton(_: IpcMainInvokeEvent) {
-    const result = await controller.logoutProton();
-    if (result.success) setStoredUsername("");
-    return result;
+    return runLogOperation("proton-logout", async () => {
+        const result = await controller.logoutProton();
+        if (result.success) setStoredUsername("");
+        return result;
+    });
 }
+
 
 export function optimizeProtonRoute(event: IpcMainInvokeEvent, value: unknown) {
     const options = cleanOptimizationOptions(value);
@@ -1205,7 +1296,7 @@ export function optimizeProtonRoute(event: IpcMainInvokeEvent, value: unknown) {
         };
         if (!event.sender.isDestroyed()) event.sender.send("golive-vpn-proton-progress", progress);
     };
-    return controller.optimizeProton(options).then(result => {
+    return runLogOperation("proton-optimization", () => controller.optimizeProton(options).then(result => {
         pluginOptimizationStatus = {
             ...pluginOptimizationStatus,
             active: false,
@@ -1229,7 +1320,7 @@ export function optimizeProtonRoute(event: IpcMainInvokeEvent, value: unknown) {
             updatedAt: Date.now(),
         };
         throw error;
-    });
+    }));
 }
 
 export function cancelProtonOptimization(_: IpcMainInvokeEvent, requestId: unknown) {
@@ -2316,19 +2407,23 @@ export function getPluginUpdateStatus(_: IpcMainInvokeEvent) {
 }
 
 export async function checkPluginUpdate(_: IpcMainInvokeEvent, value?: unknown): Promise<PluginUpdateCheckResult> {
-    const policy = policyFrom(value);
-    const revision = pluginUpdatePolicyRevision;
-    const result = runPluginUpdateCheck(policy);
-    void result.then(valueResult => setPluginUpdateLastError(policy, revision, valueResult.ok ? null : valueResult.error));
-    return await result;
+    return runLogOperation("updater-check", async () => {
+        const policy = policyFrom(value);
+        const revision = pluginUpdatePolicyRevision;
+        const result = runPluginUpdateCheck(policy);
+        void result.then(valueResult => setPluginUpdateLastError(policy, revision, valueResult.ok ? null : valueResult.error));
+        return await result;
+    });
 }
 
 export async function updatePlugin(_: IpcMainInvokeEvent, value?: unknown): Promise<PluginUpdateResult> {
-    const policy = policyFrom(value);
-    const revision = pluginUpdatePolicyRevision;
-    const result = runPluginUpdate(policy, revision);
-    void result.then(valueResult => setPluginUpdateLastError(policy, revision, valueResult.ok ? null : valueResult.error));
-    return await result;
+    return runLogOperation("updater-update", async () => {
+        const policy = policyFrom(value);
+        const revision = pluginUpdatePolicyRevision;
+        const result = runPluginUpdate(policy, revision);
+        void result.then(valueResult => setPluginUpdateLastError(policy, revision, valueResult.ok ? null : valueResult.error));
+        return await result;
+    });
 }
 
 function readInstalledPluginVersion(target: string): string {
@@ -2446,10 +2541,10 @@ app.on("before-quit", event => {
     // (restore.catch(log).finally(app.quit)): o que falhou fica no log e o boot seguinte
     // adota owner.lock + WireSock para concluir a restauracao. Continuar vivo nao restaura
     // nada -- so esconde o erro e deixa o usuario sem conseguir fechar nem reabrir.
-    void controller.shutdown(false)
+    void runLogOperation("vpn-shutdown", () => controller.shutdown(false))
         .then(result => {
             if (!result.success)
-                log("error", "fechamento seguiu sem confirmar a restauração da VPN", { estado: result.state, erro: result.error });
+                log("error", "fechamento seguiu sem confirmar a restauração da VPN", { state: result.state, erro: result.error });
         })
         .catch(error => {
             log("error", "falha ao restaurar a rede antes do fechamento", { erro: safeDiagnosticDetail(error, 500) });

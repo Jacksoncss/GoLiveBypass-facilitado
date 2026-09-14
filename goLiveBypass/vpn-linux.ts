@@ -1015,12 +1015,15 @@ export async function startLinuxNetwork(
     const timeoutMs = options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     const signal = options?.signal;
 
+        options?.log?.("info", "linux.network.started", { phase: "preparing" });
     try {
         // 1. Criar network namespace
         await execPrivileged(ipPath, ["netns", "add", namespace], { timeoutMs, signal });
+        options?.log?.("info", "linux.network.phase", { phase: "namespace" });
 
         // 2. Criar interface WireGuard no namespace host
         await execPrivileged(ipPath, ["link", "add", interfaceName, "type", "wireguard"], { timeoutMs, signal });
+        options?.log?.("info", "linux.network.phase", { phase: "interface" });
 
         // 3. Configurar WireGuard ainda no host (socket permanece vinculado ao host para alcançar endpoint)
         await execPrivileged(wgPath, ["setconf", interfaceName, tempConfigFile], { timeoutMs, signal });
@@ -1038,6 +1041,7 @@ export async function startLinuxNetwork(
 
         // 7. Subir a interface WireGuard no namespace
         await execPrivileged(ipPath, ["-n", namespace, "link", "set", interfaceName, "up"], { timeoutMs, signal });
+        options?.log?.("info", "linux.network.phase", { phase: "routes" });
 
         // 8. Configurar rotas padrão no namespace (nunca no host)
         const hasIPv4 = addresses.some(a => net.isIP(a.split("/")[0]) === 4);
@@ -1065,7 +1069,9 @@ export async function startLinuxNetwork(
 
         owner.namespace = namespace;
         owner.interfaceName = interfaceName;
+        options?.log?.("info", "linux.network.ready", { phase: "active" });
     } catch (error) {
+        options?.log?.("error", "linux.network.failed", { phase: "failed", error: safeDiagnosticDetail(error, 300) });
         try {
             await stopLinuxNetwork({ namespace, interfaceName }, { timeoutMs: 5000 });
         } catch {
@@ -1120,6 +1126,7 @@ export async function stopLinuxNetwork(
     if (interfaceName && !isValidLinuxName(interfaceName, MAX_LINUX_INTERFACE_LEN)) {
         throw new Error(`Nome de interface inválido para teardown: '${interfaceName}'.`);
     }
+    options?.log?.("info", "linux.network.cleanup_started", { phase: "cleanup" });
 
     const ipPath = findSystemBinary("ip");
     const rmPath = findSystemBinary("rm");
@@ -1191,6 +1198,12 @@ export async function stopLinuxNetwork(
         throw new Error(`Falha ao remover interface '${interfaceName}'; a interface ainda existe no sistema.`);
     }
 
+    options?.log?.("info", "linux.network.cleanup_completed", {
+        phase: "restored",
+        namespace_removed: namespaceRemoved,
+        interface_removed: interfaceRemoved,
+        dns_removed: dnsRemoved,
+    });
     return {
         stopped: true,
         namespaceRemoved,

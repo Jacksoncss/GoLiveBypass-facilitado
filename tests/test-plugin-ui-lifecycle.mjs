@@ -40,9 +40,9 @@ test("o polling do overlay ignora respostas stale e erros após desmontagem", ()
   assert.match(block, /const statusRequest = readPluginUpdateStatus\(\)/);
   assert.match(block, /pluginUpdateStatusMatchesPolicy\(next, selectedUpdatePolicy\)/);
   assert.match(block, /const next = await statusRequest;\n\s+if \(!isRequestCurrent\(\)\) return null;\n\s+if \(!pluginUpdateStatusMatchesPolicy\(next, selectedUpdatePolicy\)\) return null;\n\s+setStatus\(next\)/);
-  // A guarda pode vir como `if (isRequestCurrent()) logger.error(...)` ou com o corpo em
-  // bloco; o que importa e' o log de erro so acontecer na requisicao ainda corrente.
-  assert.match(block, /isRequestCurrent\(\)\)[\s\S]{0,60}logger\.error\("Falha ao consultar o estado do updater do plugin"/);
+  // A guarda pode usar o encaminhador nativo ou um corpo em bloco; o que importa e' o
+  // log de erro so acontecer na requisicao ainda corrente.
+  assert.match(block, /isRequestCurrent\(\)[\s\S]{0,80}recordRendererError\("Falha ao consultar o estado do updater do plugin"/);
   assert.match(source, /schedulePluginUpdateStatusObservation[\s\S]*?const statusRequest = readPluginUpdateStatus\(\)/);
   assert.match(source, /pluginUpdateStatusMatchesRendererPolicy\(status\)/);
 });

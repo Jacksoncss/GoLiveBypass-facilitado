@@ -1562,14 +1562,10 @@ patch_parallel_one() {
 # quem escolhe e o instalador do mod, que lista todos.
 run_inject() {
     local root="$1" loc="${2:-}"
-
-    # Nem todo pnpm come o -- antes de repassar o resto, e o instalador do mod que recebe um --
-    # solto para de ler opcoes ali e ignora o --location. Nao da para impedir de fora; da para
-    # cair no caminho de sempre, que e o instalador do mod perguntando qual Discord usar.
-    if [ -n "$loc" ] && (cd "$root" && pnpm run inject -- --location "$loc"); then
-        return 0
+    if [ -n "$loc" ]; then
+        (cd "$root" && pnpm run inject --location "$loc")
+        return $?
     fi
-
     (cd "$root" && pnpm inject)
 }
 
@@ -1582,14 +1578,8 @@ run_inject_root() {
     # Sem HOME de proposito: o instalador do mod ja descobre o HOME de verdade pelo SUDO_USER,
     # e mandar o do usuario so faria o pnpm encher ~/.cache de arquivo do root.
     if [ -n "$loc" ]; then
-        sudo env PATH="$PATH" bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$root" pnpm run inject -- --location "$loc" || rc=$?
+        sudo env PATH="$PATH" bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$root" pnpm run inject --location "$loc" || rc=$?
     else
-        sudo env PATH="$PATH" bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$root" pnpm inject || rc=$?
-    fi
-
-    # Mesmo motivo do run_inject: se o --location nao chegou, tentar sem ele.
-    if [ "$rc" -ne 0 ] && [ -n "$loc" ]; then
-        rc=0
         sudo env PATH="$PATH" bash -c 'cd "$1" || exit 1; shift; exec "$@"' _ "$root" pnpm inject || rc=$?
     fi
 
@@ -1907,10 +1897,10 @@ injetar_alvos() { # $1 = root, $2 = escolhidos
 $escolhidos
 EOF
 
-    # O pnpm inject sai com 0 mesmo quando o instalador do mod falha, entao o codigo de saida
-    # nao serve de prova. Conferir se a injecao realmente passou a apontar para este checkout.
+    # O pnpm inject pode sair com 0 mesmo quando o instalador do mod falha: cada alvo oficial
+    # escolhido precisa apontar para este checkout; um cliente nao aprova outro.
     if [ "$injetou_oficial" -eq 1 ]; then
-        injected_from_checkout "$root" || fail "A injecao nao pegou. Se o Discord estiver em /usr/share, /opt ou num flatpak, rode: cd $root && sudo pnpm inject"
+        alvos_ja_injetados "$root" "$escolhidos" || fail "A injecao nao foi confirmada em todos os Discords escolhidos."
 
         # De novo por conta propria, e nao so confiando no instalador do mod: ele so libera o
         # sandbox quando descobre sozinho que aquilo e um flatpak, e o comando e idempotente.

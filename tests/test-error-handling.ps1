@@ -212,10 +212,6 @@ $selectTargetStart = $installerContent.IndexOf('function Select-Target')
 $selectTargetBody = $installerContent.Substring($selectTargetStart, 700)
 Assert-Equal ($selectTargetBody -match 'Detectei .*nao encontrei o checkout fonte') $false "Fonte ausente nao bloqueia mod detectado"
 Assert-Equal ($selectTargetBody -match 'Install-Mod \(Show-ModChoice\)') $true "Fonte ausente oferece download explicito"
-Assert-Equal ($installerContent -match 'function Test-TargetInjectedFromCheckout') $true "Injecao verifica estado por alvo"
-Assert-Equal ($installerContent -match '& pnpm run inject --location \$loc') $true "Injecao nao passa separador -- extra"
-Assert-Equal ($installerContent -match '& pnpm run inject -- --location') $false "Fallback de argumento antigo removido"
-Assert-Equal ($installerContent -match '& pnpm inject') $false "Fallback cego por exit code removido"
 Assert-Equal ($installerContent -match 'Get-InstallerLogFile') $true "Instalador grava log local"
 Assert-Equal ($installerContent -match 'installer\.checkout_rejected') $true "Instalador registra rejeicao de checkout (#293)"
 Assert-Equal ($installerContent -match 'MOD_INSTALLED_WITHOUT_CHECKOUT') $true "Rejeicao da #293 tem codigo proprio"
@@ -281,6 +277,88 @@ try {
 } finally {
     $env:GLB_INSTALLER_LOG_DIR = $origLogDir
     if (Test-Path -LiteralPath $logTemp) { Remove-Item -LiteralPath $logTemp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Write-Host "`n-- 2.7 Fixture de pnpm/injecao por alvo --" -ForegroundColor Yellow
+$originalInvokePnpm = ${function:Invoke-Pnpm}
+$originalFindPnpmApplications = ${function:Find-PnpmApplications}
+$originalGetInjectedPath = ${function:Get-InjectedPath}
+$originalStopDiscord = ${function:Stop-Discord}
+$origInjectionLogDir = $env:GLB_INSTALLER_LOG_DIR
+$injectionRoot = Join-Path ([System.IO.Path]::GetTempPath()) "GoLiveBypassInjection_$([Guid]::NewGuid().ToString('N'))"
+$injectionLogDir = Join-Path $injectionRoot 'logs'
+New-Item -ItemType Directory -Path $injectionRoot -Force | Out-Null
+$resourcesOne = Join-Path $injectionRoot 'Discord\app-1.0.0\resources'
+$resourcesTwo = Join-Path $injectionRoot 'DiscordPTB\app-1.0.0\resources'
+$script:mockInjectedPaths = @{}
+$script:mockInjectionMode = 'minus-one'
+$script:mockInjectionArgs = @()
+try {
+    # Sem app pnpm descoberto, o wrapper devolve um código determinístico, sem executar
+    # fallback cego nem confundir um LASTEXITCODE herdado.
+    function Find-PnpmApplications { @() }
+    $script:PnpmExitCode = -1
+    Invoke-Pnpm @('run', 'inject', '--location', (Split-Path -Parent (Split-Path -Parent $resourcesOne)))
+    Assert-Equal $script:PnpmExitCode 127 "Invoke-Pnpm usa exit=127 quando nao ha application pnpm"
+
+    function Invoke-Pnpm([string[]]$Arguments) {
+        $script:mockInjectionArgs = @($Arguments)
+        switch ($script:mockInjectionMode) {
+            'zero' { $script:PnpmExitCode = 0; Write-Output 'injecao sintetica'; return }
+            'nine' { $script:PnpmExitCode = 9; Write-Output ('diagnostico sintetico ' + ('x' * 700)); return }
+            'exception' { $script:PnpmExitCode = $null; throw ('erro sintetico ' + ('x' * 700)) }
+            default { $script:PnpmExitCode = -1; Write-Output ('diagnostico sintetico ' + ('x' * 700)) }
+        }
+    }
+    function Get-InjectedPath($resources) { return $script:mockInjectedPaths[$resources] }
+    function Stop-Discord {}
+    $env:GLB_INSTALLER_LOG_DIR = $injectionLogDir
+
+    $targetOne = [pscustomobject]@{ Flavour = 'Discord'; Resources = $resourcesOne; Tipo = 'O' }
+    $targetTwo = [pscustomobject]@{ Flavour = 'DiscordPTB'; Resources = $resourcesTwo; Tipo = 'O' }
+    $script:mockInjectedPaths[$resourcesOne] = Join-Path $injectionRoot 'dist\desktop'
+    Invoke-Injection $injectionRoot @($targetOne)
+    Assert-Equal (($script:mockInjectionArgs -join '|') -eq 'run|inject|--location|' + (Split-Path -Parent (Split-Path -Parent $resourcesOne))) $true "Invoke-Injection envia a raiz sem -- extra"
+    Assert-Equal $script:PnpmExitCode -1 "exit=-1 com stub confirmado nao falha"
+    $events = @(Get-Content -LiteralPath (Get-InstallerLogFile) | ForEach-Object { $_ | ConvertFrom-Json })
+    $warning = $events | Where-Object { $_.event -eq 'installer.inject' -and $_.data.result -eq 'warning' } | Select-Object -Last 1
+    Assert-Equal ($null -ne $warning -and $warning.data.reason_code -eq 'POSTCONDITION_CONFIRMED_NONZERO' -and $warning.data.exit_code -eq -1) $true "exit=-1 confirmado vira warning no evento canonico"
+    Assert-Equal ((Format-InjectionDetail ('x' * 700)).Length -le 603) $true "saida do injector e limitada"
+    $redacted = Format-InjectionDetail 'Authorization: Bearer secret-token https://alice:secret@example.test/x mfa.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    Assert-Equal ($redacted -notmatch 'secret-token|secret@example|mfa\.A') $true "detalhe do injector nao vaza credencial ou token"
+
+    $script:mockInjectionMode = 'zero'
+    $script:mockInjectedPaths.Remove($resourcesOne)
+    try {
+        Invoke-Injection $injectionRoot @($targetOne)
+        Assert-Equal $false $true "Exit zero sem pos-condicao deveria falhar"
+    } catch {
+        Assert-Equal ($_.Exception.Message -match 'pos-condicao nao confirmada') $true "Exit zero sem pos-condicao falha pelo estado do alvo"
+    }
+
+    $script:mockInjectedPaths[$resourcesOne] = Join-Path $injectionRoot 'dist\desktop'
+    $script:mockInjectionMode = 'nine'
+    Invoke-Injection $injectionRoot @($targetOne)
+    Assert-Equal $script:PnpmExitCode 9 "exit=9 com stub confirmado nao falha"
+
+    $script:mockInjectionMode = 'exception'
+    Invoke-Injection $injectionRoot @($targetOne)
+    Assert-Equal $script:PnpmExitCode -1 "excecao sem codigo recebe exit=-1 deterministico"
+
+    $script:mockInjectionMode = 'zero'
+    try {
+        Invoke-Injection $injectionRoot @($targetOne, $targetTwo)
+        Assert-Equal $false $true "Um alvo nao pode aprovar outro"
+    } catch {
+        Assert-Equal ($_.Exception.Message -match 'DiscordPTB: pos-condicao nao confirmada') $true "Pos-condicao e independente por alvo"
+    }
+} finally {
+    $env:GLB_INSTALLER_LOG_DIR = $origInjectionLogDir
+    Set-Item -Path Function:Invoke-Pnpm -Value $originalInvokePnpm
+    Set-Item -Path Function:Find-PnpmApplications -Value $originalFindPnpmApplications
+    Set-Item -Path Function:Get-InjectedPath -Value $originalGetInjectedPath
+    Set-Item -Path Function:Stop-Discord -Value $originalStopDiscord
+    if (Test-Path -LiteralPath $injectionRoot) { Remove-Item -LiteralPath $injectionRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Write-Host "`n========================================================" -ForegroundColor Cyan

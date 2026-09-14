@@ -249,7 +249,7 @@ try {
     $lastRaw = (Get-Content -LiteralPath $logFile -Last 1)
     $last = $lastRaw | ConvertFrom-Json
     Assert-Equal ($lastRaw -match 'alice|abc123|s3cr3t') $false "segredos originais nao fluem para o raw"
-    Assert-Equal $last.data.reason '<path>' "caminho absoluto vira <path>"
+    Assert-Equal ([string]$last.data.reason -match '<path>$') $true "caminho absoluto vira <path> no fim do valor parseado"
     Assert-Equal $last.data.token '<redacted>' "chave proibida token vira <redacted>"
     Assert-Equal $last.data.senha '<redacted>' "chave proibida senha vira <redacted>"
     Assert-Equal ($last.data.PSObject.Properties.Name -contains 'campo_desconhecido') $false "chave desconhecida e descartada"

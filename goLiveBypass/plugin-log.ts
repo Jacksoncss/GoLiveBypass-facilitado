@@ -26,8 +26,9 @@ export interface PluginLogRecord {
     arch?: string;
     message?: string;
     data?: Record<string, unknown>;
-    count?: number;
-    first_ts?: string;
+    count: number;
+    first_ts: string;
+    last_ts: string;
 }
 
 export interface PluginLoggerOptions {
@@ -81,7 +82,7 @@ function clip(value: unknown, max = MAX_TEXT): string {
 
 function redactString(value: string): string {
     return clip(value)
-        .replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi, "$1<redacted>@")
+        .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+(?::[^\s/@]*)?@[^\s]+/gi, "<redacted-url>")
         .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "<email>")
         .replace(/((?:proxy-)?authorization\s*:\s*)(?:bearer\s+)?[^\s,;]+/gi, "$1<redacted>")
         .replace(/\b(?:bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer <redacted>")
@@ -147,6 +148,10 @@ function sameDedupe(a: PluginLogRecord, b: PluginLogRecord): boolean {
     return a.level === b.level && a.component === b.component && a.event === b.event && a.operation_id === b.operation_id
         && JSON.stringify(a.data || {}) === JSON.stringify(b.data || {});
 }
+function validTimestamp(value: unknown): string | undefined {
+    if (typeof value !== "string" || value.length > 40 || Number.isNaN(Date.parse(value))) return undefined;
+    return value;
+}
 
 export function createPluginLogger(options: PluginLoggerOptions): PluginLogger {
     const maxEvents = Math.max(1, Math.floor(options.maxEvents ?? 400));
@@ -155,15 +160,25 @@ export function createPluginLogger(options: PluginLoggerOptions): PluginLogger {
     const ring: PluginLogRecord[] = [];
     let ringBytes = 0;
     let lastDedupeAt = 0;
-
-    const appendRing = (record: PluginLogRecord) => {
-        const cost = utf8Bytes(JSON.stringify(record));
-        ring.push(record);
-        ringBytes += cost;
+    const trimRing = () => {
         while (ring.length > maxEvents || ringBytes > maxBytes) {
             const removed = ring.shift();
             if (removed) ringBytes -= utf8Bytes(JSON.stringify(removed));
         }
+    };
+    const appendRing = (record: PluginLogRecord) => {
+        ring.push(record);
+        ringBytes += utf8Bytes(JSON.stringify(record));
+        trimRing();
+    };
+
+    const mergeAggregate = (target: PluginLogRecord, incoming: PluginLogRecord): void => {
+        const before = utf8Bytes(JSON.stringify(target));
+        target.count = Math.max(target.count, incoming.count);
+        target.first_ts = target.first_ts < incoming.first_ts ? target.first_ts : incoming.first_ts;
+        target.last_ts = target.last_ts > incoming.last_ts ? target.last_ts : incoming.last_ts;
+        ringBytes += utf8Bytes(JSON.stringify(target)) - before;
+        trimRing();
     };
 
     const emit = (level: PluginLogLevel, rawEvent: string, context: PluginLogContext = {}, data?: Record<string, unknown>, message?: string): PluginLogRecord | null => {
@@ -185,15 +200,17 @@ export function createPluginLogger(options: PluginLoggerOptions): PluginLogger {
             arch: validContext(context.arch || options.arch, 40),
             message: message ? redactString(clip(message, MAX_MESSAGE)) : undefined,
             data: sanitizedData,
+            count: 1,
+            first_ts: ts,
+            last_ts: ts,
         };
-        for (const key of Object.keys(record)) if (record[key as keyof PluginLogRecord] === undefined) delete record[key as keyof PluginLogRecord];
-
         const previous = ring[ring.length - 1];
         const elapsed = date.getTime() - lastDedupeAt;
         const dedupe = Boolean(previous && DEDUPE_EVENT.test(event) && sameDedupe(previous, record) && elapsed < (event.includes("progress") ? 2_000 : 60_000));
         if (dedupe && previous) {
-            previous.count = (previous.count || 1) + 1;
-            previous.last_ts = ts;
+            record.count = previous.count + 1;
+            mergeAggregate(previous, record);
+            try { options.onLine?.(`${JSON.stringify(previous)}\n`); } catch { /* logging never interrupts the operation */ }
             return previous;
         }
         if (DEDUPE_EVENT.test(event)) lastDedupeAt = date.getTime();
@@ -206,26 +223,30 @@ export function createPluginLogger(options: PluginLoggerOptions): PluginLogger {
         for (const line of lines) {
             try {
                 const value = JSON.parse(line) as PluginLogRecord;
-                if (value?.schema_version !== 1 || typeof value.ts !== "string" || typeof value.event !== "string") continue;
-                const restored = {
-                    level: value.level,
-                    component: value.component,
-                    event: value.event,
-                    operation_id: value.operation_id,
-                    attempt_id: value.attempt_id,
-                    phase: value.phase,
-                    plugin_version: value.plugin_version,
-                    platform: value.platform,
-                    arch: value.arch,
-                    message: value.message,
-                    data: redactPluginData(value.data),
-                };
-                if (restored.level !== "info" && restored.level !== "warn" && restored.level !== "error") continue;
-                appendRing({
+                const ts = validTimestamp(value?.ts);
+                if (value?.schema_version !== 1 || !ts || typeof value.event !== "string") continue;
+                if (value.level !== "info" && value.level !== "warn" && value.level !== "error") continue;
+                const restored: PluginLogRecord = {
                     schema_version: 1,
-                    ts: clip(value.ts, 40),
-                    ...restored,
-                });
+                    ts,
+                    level: value.level,
+                    component: eventName(typeof value.component === "string" ? value.component : options.component),
+                    event: eventName(value.event),
+                    operation_id: validContext(value.operation_id),
+                    attempt_id: validContext(value.attempt_id),
+                    phase: validContext(value.phase, 80),
+                    plugin_version: validContext(value.plugin_version || options.pluginVersion, 80),
+                    platform: validContext(value.platform || options.platform, 40),
+                    arch: validContext(value.arch || options.arch, 40),
+                    message: typeof value.message === "string" ? redactString(value.message) : undefined,
+                    data: redactPluginData(value.data),
+                    count: Number.isInteger(value.count) && Number(value.count) > 0 ? Math.min(Number(value.count), 1_000_000) : 1,
+                    first_ts: validTimestamp(value.first_ts) || ts,
+                    last_ts: validTimestamp(value.last_ts) || ts,
+                };
+                const previous = ring[ring.length - 1];
+                if (previous && DEDUPE_EVENT.test(restored.event) && sameDedupe(previous, restored)) mergeAggregate(previous, restored);
+                else appendRing(restored);
             } catch { /* ignore legacy or truncated lines */ }
         }
     };

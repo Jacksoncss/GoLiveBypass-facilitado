@@ -52,11 +52,41 @@ describe("núcleo de logs do plugin", () => {
             arch: "x64",
         });
         const serialized = lines[0];
-        for (const secret of ["senha-falsa", "token-falso", "10.0.0.1:51820", "chave-falsa", "alice:secret", "conta@example.com", "bearer-falso", "/home/alice"]) {
+        for (const secret of ["senha-falsa", "token-falso", "10.0.0.1:51820", "chave-falsa", "alice:secret", "example.test/x", "conta@example.com", "bearer-falso", "/home/alice"]) {
             expect(serialized).not.toContain(secret);
         }
         expect(event.data.password).toBe("<redacted>");
         expect(event.data.nested.endpoint).toBe("<redacted>");
+    });
+
+
+    it("persiste o agregado e restaura contagem e intervalo temporal", () => {
+        const time = clock();
+        const lines: string[] = [];
+        const logger = createPluginLogger({
+            component: "plugin.controller",
+            pluginVersion: "test",
+            platform: "win32",
+            arch: "x64",
+            now: time.now,
+            onLine: line => lines.push(line),
+        });
+        for (let i = 0; i < 5; i++) {
+            logger.warn("wiresock.watchdog", { operation_id: "vpn-1" }, { state: "active" });
+            time.advance(100);
+        }
+        expect(lines).toHaveLength(5);
+        const persisted = JSON.parse(lines.at(-1)!);
+        expect(persisted).toMatchObject({
+            count: 5,
+            first_ts: "2026-09-14T12:00:00.000Z",
+            last_ts: "2026-09-14T12:00:00.400Z",
+        });
+        const restored = createPluginLogger({ component: "plugin.controller", pluginVersion: "test", platform: "win32", arch: "x64" });
+        restored.restore(lines);
+        expect(restored.records()).toHaveLength(1);
+        expect(restored.records()[0]).toMatchObject({ count: 5, first_ts: persisted.first_ts, last_ts: persisted.last_ts });
+        expect(restored.getLog()).toContain("count=5");
     });
 
     it("descarta chaves desconhecidas e nunca lança quando a escrita falha", () => {

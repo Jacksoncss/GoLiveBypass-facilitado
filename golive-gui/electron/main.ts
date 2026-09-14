@@ -2850,7 +2850,7 @@ async function optimizeProtonRouteAtStartup(
     return { success: true, skipped: true };
   }
 
-  const username = recoverProtonUsername() || (settings.protonUsername as string) || "";
+  const username = (await recoverProtonUsername()) || (settings.protonUsername as string) || "";
   if (!username) {
     return { success: false, error: "Nenhuma conta ProtonVPN conectada." };
   }
@@ -4149,8 +4149,8 @@ function restoreBypassFromWindowsStartup(): Promise<void> {
   return tracked;
 }
 
-function recoverProtonUsername(): string {
-  const saved = proton.getSavedSessionUsername(settingsDir());
+async function recoverProtonUsername(): Promise<string> {
+  const saved = await proton.getSavedSessionUsername(settingsDir());
   if (!saved) return "";
   const current = readSharedSettings().protonUsername;
   if (current !== saved) {
@@ -5129,7 +5129,7 @@ ipcMain.handle("set-vpn-mode", async (_event, mode: "proton" | "custom") => {
 
 ipcMain.handle("get-proton-settings", async () => {
   const s = readSharedSettings() as any;
-  const recoveredUsername = recoverProtonUsername() || (s.protonUsername as string) || "";
+  const recoveredUsername = (await recoverProtonUsername()) || (s.protonUsername as string) || "";
   return {
     vpnMode: (s.vpnMode as string) || "proton",
     username: recoveredUsername,
@@ -5146,7 +5146,7 @@ ipcMain.handle("get-proton-settings", async () => {
 
 ipcMain.handle("get-proton-plan", async (_event, options?: { force?: boolean }) => {
   const s = readSharedSettings() as any;
-  const username = recoverProtonUsername() || (s.protonUsername as string) || "";
+  const username = (await recoverProtonUsername()) || (s.protonUsername as string) || "";
   if (!username) return unknownProtonPlan("Sessão Proton não encontrada.");
   return resolveProtonPlan(username, options?.force === true);
 });
@@ -5180,7 +5180,7 @@ ipcMain.handle("set-proton-settings", async (_event, settings: any) => {
 
 ipcMain.handle("check-proton-session", async (_event, username?: string) => {
   const s = readSharedSettings() as any;
-  const user = username || recoverProtonUsername() || (s.protonUsername as string) || "";
+  const user = username || (await recoverProtonUsername()) || (s.protonUsername as string) || "";
   if (!user) return { valid: false, error: "Usuário não especificado" };
   return await proton.checkProtonSession(settingsDir(), user);
 });

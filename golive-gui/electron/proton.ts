@@ -361,6 +361,13 @@ export function classifyProtonError(error: unknown, stderr = '', stdout = ''): {
   // qualquer falha de autenticação (transporte, protocolo, captcha) com esse
   // prefixo. Só texto explícito de credencial pode acusar senha errada.
   if (/invalid credential|invalid password|wrong password|incorrect/.test(raw)) return { code: 'INVALID_CREDENTIALS', message: 'Usuário ou senha incorretos.', retryable: false };
+  if (/session persistence|session storage could not be updated|failed to (?:migrate|commit|write) session file/.test(raw)) {
+    return {
+      code: 'SESSION_PERSISTENCE',
+      message: 'A sessão Proton já salva não pôde ser atualizada neste computador. Sua senha não foi verificada e a sessão anterior foi preservada. Feche outras versões do aplicativo e tente novamente.',
+      retryable: true,
+    };
+  }
   if (/timeout|tempo limite|timed out/.test(raw)) return { code: 'TIMEOUT', message: 'O ProtonVPN demorou demais para responder. Tente novamente em alguns instantes.', retryable: true };
   if (/encontrado|not found|enoent|spawn/.test(raw)) return { code: 'MISSING_EXECUTABLE', message: 'O componente Proton não pôde ser preparado automaticamente. Verifique sua conexão e tente novamente; se persistir, envie um relatório de diagnóstico.', retryable: true };
   if (/network|connection|dns|tls|temporary|unreachable|reset/.test(raw)) return { code: 'NETWORK_ERROR', message: 'Não foi possível conectar aos servidores ProtonVPN. Verifique sua internet e tente novamente.', retryable: true };
@@ -371,11 +378,23 @@ export function getProtonSessionFile(installDir: string): string {
   return path.join(installDir, 'proton-session.json');
 }
 
-/** Read only the non-secret identity metadata from the cached session. */
-export function getSavedSessionUsername(installDir: string): string {
+/** Read only the non-secret identity through the sidecar's locked session contract. */
+export async function getSavedSessionUsername(installDir: string): Promise<string> {
   try {
-    const raw = JSON.parse(fs.readFileSync(getProtonSessionFile(installDir), 'utf8'));
-    return typeof raw?.username === 'string' ? raw.username.trim() : '';
+    ensureInstallDir(installDir);
+    const exePath = await ensureProtonConfgen(installDir);
+    const res = await runConfgen({
+      args: [
+        '-session-file',
+        getProtonSessionFile(installDir),
+        '-session-username',
+        '-json',
+      ],
+      timeoutMs: 10_000,
+      exePath,
+    });
+    if (res.code !== 0 || res.json?.success !== true || typeof res.json.username !== 'string') return '';
+    return res.json.username.trim();
   } catch {
     return '';
   }
@@ -402,7 +421,7 @@ export async function confirmSavedSessionIdentity(
   options: {
     attempts?: number;
     delayMs?: number;
-    readUsername?: () => string;
+    readUsername?: () => string | Promise<string>;
     wait?: (delayMs: number) => Promise<void>;
   } = {},
 ): Promise<ProtonSessionConfirmation> {
@@ -412,7 +431,7 @@ export async function confirmSavedSessionIdentity(
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let savedUsername = '';
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    savedUsername = readUsername();
+    savedUsername = await readUsername();
     if (savedUsername && protonIdentityMatches(savedUsername, expectedUsername)) {
       return { confirmed: true, savedUsername, attempts: attempt };
     }
@@ -645,6 +664,11 @@ function structuredProtonError(code: string): { message: string; retryable: bool
       return { message: 'O código 2FA está incorreto ou expirou.', retryable: false };
     case 'NETWORK_ERROR':
       return { message: 'Não foi possível conectar aos servidores ProtonVPN. Verifique sua internet e tente novamente.', retryable: true };
+    case 'SESSION_PERSISTENCE':
+      return {
+        message: 'A sessão Proton já salva não pôde ser atualizada neste computador. Sua senha não foi verificada e a sessão anterior foi preservada. Feche outras versões do aplicativo e tente novamente.',
+        retryable: true,
+      };
     default:
       return undefined;
   }

@@ -68,6 +68,14 @@ let idCounter = 0;
 function utf8Bytes(value: string): number {
     try { return new TextEncoder().encode(value).length; } catch { return value.length; }
 }
+export function trimJsonlTailByBytes(bytes: Uint8Array, maxBytes: number): Uint8Array {
+    const limit = Math.max(1, Math.floor(maxBytes));
+    if (bytes.byteLength <= limit) return bytes;
+    const keep = Math.floor(limit / 2);
+    const tail = bytes.subarray(Math.max(0, bytes.byteLength - keep));
+    const newline = tail.indexOf(10);
+    return newline < 0 ? tail.subarray(0, 0) : tail.subarray(newline + 1);
+}
 
 export function createOperationId(prefix: string): string {
     const safe = String(prefix || "operation").trim().replace(/[^A-Za-z0-9_-]+/g, "-") || "operation";

@@ -71,7 +71,7 @@ import {
 } from "./vpn-linux";
 import * as proton from "./vpn-proton";
 import { safeDiagnosticDetail } from "./vpn-types";
-import { createOperationId, createPluginLogger, type PluginLogContext } from "./plugin-log";
+import { createOperationId, createPluginLogger, trimJsonlTailByBytes, type PluginLogContext } from "./plugin-log";
 
 const PLUGIN_VERSION = "2.0.6-beta-16";
 const PLUGIN_ASSET = "goLiveBypass-vencord.zip";
@@ -202,14 +202,18 @@ const LOG_FILE = join(VPN_DATA_DIR, "plugin-vpn.log");
 
 const logContext = new AsyncLocalStorage<PluginLogContext>();
 
+function trimPluginLogFile(): void {
+    const bytes = readFileSync(LOG_FILE);
+    if (bytes.byteLength <= 256 * 1024) return;
+    writeFileSync(LOG_FILE, trimJsonlTailByBytes(bytes, 256 * 1024));
+}
+
 function persistPluginLogLine(line: string): void {
     try {
         mkdirSync(VPN_DATA_DIR, { recursive: true });
-        if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > 256 * 1024)
-            writeFileSync(LOG_FILE, readFileSync(LOG_FILE, "utf8").slice(-128 * 1024), "utf8");
+        trimPluginLogFile();
         appendFileSync(LOG_FILE, line, "utf8");
-        if (statSync(LOG_FILE).size > 256 * 1024)
-            writeFileSync(LOG_FILE, readFileSync(LOG_FILE, "utf8").slice(-128 * 1024), "utf8");
+        trimPluginLogFile();
     } catch {
         // Diagnóstico nunca pode impedir o Discord de continuar abrindo.
     }

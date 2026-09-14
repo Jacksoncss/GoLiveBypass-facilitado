@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createPluginLogger, redactPluginData } from "../../goLiveBypass/plugin-log";
+import { createPluginLogger, redactPluginData, trimJsonlTailByBytes } from "../../goLiveBypass/plugin-log";
 
 function clock() {
     let current = new Date("2026-09-14T12:00:00.000Z");
@@ -125,6 +125,18 @@ describe("núcleo de logs do plugin", () => {
         logger.info("plugin.process.ready", undefined, { state: "active" });
         expect(logger.records()).toHaveLength(3);
         expect(logger.getLog()).toContain("error.operation_failed");
+    });
+
+    it("recorta por bytes UTF-8 e descarta linha parcial", () => {
+        const input = new TextEncoder().encode(`{"text":"${"á".repeat(160)}"}\n{"event":"sentinel","text":"fim"}\n`);
+        const tail = trimJsonlTailByBytes(input, 128);
+        expect(tail.byteLength).toBeLessThanOrEqual(128);
+        const text = new TextDecoder().decode(tail);
+        expect(text).not.toContain("\uFFFD");
+        expect(text.split("\n").filter(Boolean).every(line => {
+            try { JSON.parse(line); return true; } catch { return false; }
+        })).toBe(true);
+        expect(text).toContain('"event":"sentinel"');
     });
 
     it("restaura somente linhas JSONL do schema conhecido", () => {

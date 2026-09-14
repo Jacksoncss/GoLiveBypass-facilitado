@@ -102,6 +102,11 @@ esac
 case "$first" in
     *'"ts":"20'*) ok "linha tem timestamp ISO-8601" ;; *) bad "sem ts: $first" ;;
 esac
+if grep -qE '"ts":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z"' "$LOG_FILE"; then
+    ok "ts ISO-8601 UTC com milissegundos"
+else
+    bad "ts sem milissegundos: $first"
+fi
 
 printf '\n== 2. redaction fail-closed ==\n'
 # shellcheck disable=SC1090
@@ -147,6 +152,34 @@ case "$last" in
     *) ok "caminho UNC e POSIX fora de /home sao redigidos" ;;
 esac
 
+# Cabecalho de autenticacao, URL com credencial e e-mail tambem sao redigidos.
+# shellcheck disable=SC1090
+(
+    set -eu
+    GLB_INSTALLER_LOG_DIR="$LOG_DIR"
+    . "$HARNESS"
+    installer_log warn installer.probe probe reason 'Authorization: Bearer eyJhbGciOi.abc.def em https://alice:s3cr3t@example.test/x contato alice@example.com'
+)
+last="$(tail -1 "$LOG_FILE")"
+for leak in 'eyJhbGciOi' 's3cr3t' 'alice@example.com'; do
+    case "$last" in
+        *"$leak"*) bad "vazou '$leak': $last" ;;
+        *) ok "nao vaza '$leak'" ;;
+    esac
+done
+case "$last" in
+    *'Authorization=<redacted>'*|*'Authorization: <redacted>'*) ok "cabecalho Authorization consome a credencial" ;;
+    *) bad "cabecalho Authorization nao foi redigido: $last" ;;
+esac
+case "$last" in
+    *'***@example.test'*) ok "URL com credencial vira usuario:***@host" ;;
+    *) bad "URL credenciada nao redigida: $last" ;;
+esac
+case "$last" in
+    *'<email>'*) ok "e-mail vira <email>" ;;
+    *) bad "e-mail nao redigido: $last" ;;
+esac
+
 printf '\n== 2b. falha de escrita nao quebra o fluxo ==\n'
 # Diretorio impossivel (arquivo comum no lugar da pasta): installer_log tem que
 # devolver sucesso e nao derrubar o instalador sob set -e.
@@ -168,25 +201,25 @@ fi
 
 printf '\n== 3. limite/rotacao ==\n'
 LOG_DIR2="$TMP/data2"
-long_value="$(awk 'BEGIN{ for(i=0;i<200;i++) printf "y" }')"
+mkdir -p "$LOG_DIR2"
+# Semeia o arquivo acima do teto (linhas JSONL completas) e escreve UM evento: e o
+# caminho exato de rotacao (limite atingido antes do append), sem custo de milhares
+# de eventos.
+awk 'BEGIN{ for (i=0;i<3000;i++) printf "{\"filler\":\"%0500d\"}\n", i }' > "$LOG_DIR2/installer.log"
+seeded_size="$(wc -c < "$LOG_DIR2/installer.log" | tr -d ' ')"
 # shellcheck disable=SC1090
 (
     set -eu
     GLB_INSTALLER_LOG_DIR="$LOG_DIR2"
     . "$HARNESS"
-    i=0
-    while [ "$i" -lt 900 ]; do
-        installer_log info installer.probe running reason "$long_value"
-        i=$((i + 1))
-    done
-    installer_log info installer.sentinel running count "$i"
+    installer_log info installer.sentinel running count 1
 )
 LOG_FILE2="$LOG_DIR2/installer.log"
 size="$(wc -c < "$LOG_FILE2" | tr -d ' ')"
-if [ "$size" -le 266240 ]; then
-    ok "arquivo respeita o teto de 256 KiB (tamanho=$size)"
+if [ "$seeded_size" -gt 262144 ] && [ "$size" -le 266240 ]; then
+    ok "rotacao trima acima do teto (semeado=$seeded_size, final=$size)"
 else
-    bad "arquivo passou do teto: $size bytes"
+    bad "rotacao nao respeitou o teto (semeado=$seeded_size, final=$size)"
 fi
 if grep -qv '^{' "$LOG_FILE2"; then
     bad "rotacao deixou linha parcial no arquivo"
@@ -200,7 +233,7 @@ else
 fi
 
 printf '\n== 4. ausencia de POST/token/payload legado ==\n'
-if grep -Eq 'BUG_API|api\.skyplaceia|includeLogs|Bearer|Invoke-SendAutoReport|Invoke-BugReport|-X POST|--post-data|report_send|report_error' "$SH_INSTALLER" "$PS_INSTALLER"; then
+if grep -Eq 'BUG_API|api\.skyplaceia|includeLogs|Invoke-SendAutoReport|Invoke-BugReport|-X POST|--post-data|report_send|report_error' "$SH_INSTALLER" "$PS_INSTALLER"; then
     bad "instalador ainda contem caminho de envio remoto"
 else
     ok "nenhum token/API/POST/payload legado nos instaladores"

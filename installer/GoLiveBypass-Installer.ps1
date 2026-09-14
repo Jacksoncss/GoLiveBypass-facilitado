@@ -191,10 +191,20 @@ function ConvertTo-InstallerSafeText([string]$value, [int]$max = 300) {
     $text = [string]$value
     if (-not $text) { return '' }
     $text = [regex]::Replace($text, '[\r\n\t]+', ' ')
-    $text = [regex]::Replace($text, '(?i)(password|senha|token|secret|private[_]?key|authorization|cookie|session|credential|captchatoken|twofactorcode)\s*[:=]\s*\S+', '$1=<redacted>')
-    $text = [regex]::Replace($text, '(?i)[a-z]:[\\/][^\s]*', '<path>')
+    # Cabecalho de autenticacao consome o resto; token Bearer isolado tambem.
+    $text = [regex]::Replace($text, '(?i)((?:proxy-)?authorization\s*:\s*)(?:\S+\s+)?\S+', '$1<redacted>')
+    $text = [regex]::Replace($text, '(?i)(bearer\s+)\S+', '$1<redacted>')
+    # Credenciais embutidas em URL: scheme://usuario:senha@host
+    $text = [regex]::Replace($text, '(?i)([a-z][a-z0-9+.-]*://)([^/\s@:]+):([^/\s@]+)@', '$1$2:***@')
+    # E-mail.
+    $text = [regex]::Replace($text, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '<email>')
+    # chave=valor de credencial.
+    $text = [regex]::Replace($text, '(?i)(password|senha|token|secret|private[_]?key|public[_]?key|authorization|cookie|session|credential|captchatoken|twofactorcode)\s*[:=]\s*\S+', '$1=<redacted>')
+    # Caminhos: Windows, UNC e POSIX absoluto. As regras exigem fronteira/nao-barra
+    # para nao destruir URL publica (https://...) nem o "s:/" do proprio scheme.
+    $text = [regex]::Replace($text, '(?i)(^|[^A-Za-z0-9])[a-z]:[\\/][^\s]*', '$1<path>')
     $text = [regex]::Replace($text, '\\\\[^\s]+', '<path>')
-    $text = [regex]::Replace($text, '(^|\s)/[^\s]+', '$1<path>')
+    $text = [regex]::Replace($text, '(^|[\s:=])/[^/\s][^\s]*', '$1<path>')
     if ($text.Length -gt $max) { $text = $text.Substring(0, $max) }
     return $text
 }
@@ -209,6 +219,11 @@ function ConvertTo-InstallerData($data) {
         $value = $data[$k]
         if ($value -is [bool]) { $out[$key] = $value; continue }
         if ($value -is [int] -or $value -is [long] -or $value -is [double]) { $out[$key] = $value; continue }
+        if ($value -is [System.Collections.IDictionary] -or ($value -is [System.Collections.IEnumerable] -and $value -isnot [string])) {
+            # Objeto/lista nunca e stringificado: chave aninhada poderia carregar segredo.
+            $out[$key] = '<redacted>'
+            continue
+        }
         $out[$key] = ConvertTo-InstallerSafeText ([string]$value)
     }
     return $out
@@ -218,7 +233,7 @@ function Write-InstallerEvent([string]$level, [string]$event, [string]$phase, $d
     try {
         $record = [ordered]@{
             schema_version = 1
-            ts             = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            ts             = ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff') + 'Z')
             level          = $level
             component      = $script:InstallerComponent
             event          = $event
@@ -228,7 +243,7 @@ function Write-InstallerEvent([string]$level, [string]$event, [string]$phase, $d
             arch           = $(if ($env:PROCESSOR_ARCHITECTURE) { [string]$env:PROCESSOR_ARCHITECTURE } else { 'unknown' })
             data           = (ConvertTo-InstallerData $data)
         }
-        $line = $record | ConvertTo-Json -Compress -Depth 6
+        $line = ConvertTo-Json -InputObject $record -Compress -Depth 6
         $file = Get-InstallerLogFile
         $dir = Split-Path -Parent $file
         if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -241,7 +256,9 @@ function Write-InstallerEvent([string]$level, [string]$event, [string]$phase, $d
                 if ($text.Length -gt $keep) {
                     $tail = $text.Substring($text.Length - $keep)
                     $nl = $tail.IndexOf("`n")
-                    if ($nl -ge 0) { $tail = $tail.Substring($nl + 1) }
+                    # Sem quebra de linha na janela nao ha corte em limite de registro:
+                    # descarta tudo em vez de gravar uma linha parcial.
+                    if ($nl -lt 0) { $tail = '' } else { $tail = $tail.Substring($nl + 1) }
                     [IO.File]::WriteAllText($file, $tail, $utf8)
                 }
             }

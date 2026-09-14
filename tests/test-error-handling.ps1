@@ -1,4 +1,4 @@
-# PowerShell test script for error handling and null-safety validation
+﻿# PowerShell test script for error handling and null-safety validation
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $repoRoot) { $repoRoot = (Get-Location).Path }
@@ -240,6 +240,7 @@ try {
     Assert-Equal ($line -match '"component":"installer.windows"') $true "linha identifica installer.windows"
     Assert-Equal ($line -match 'installer\.detect\.started') $true "linha tem o evento"
     Assert-Equal ($line -match '"phase":"detect"') $true "linha tem a fase"
+    Assert-Equal ($line -match '"ts":"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z"') $true "ts ISO-8601 UTC com milissegundos"
 
     Write-InstallerEvent 'error' 'installer.failed' 'detect' @{ reason = 'falhou em C:\Users\alice\Equicord'; token = 'abc123'; senha = 's3cr3t'; campo_desconhecido = 'x' }
     $last = (Get-Content -LiteralPath $logFile -Last 1)
@@ -248,6 +249,20 @@ try {
     Assert-Equal ($last -match '"token":"<redacted>"') $true "chave proibida token vira <redacted>"
     Assert-Equal ($last -match 'abc123|s3cr3t') $false "valor de credencial nao flui"
     Assert-Equal ($last -match 'campo_desconhecido') $false "chave desconhecida e descartada"
+
+    # Cabecalho de autenticacao, URL com credencial e e-mail tambem sao redigidos.
+    Write-InstallerEvent 'warn' 'installer.probe' 'detect' @{ reason = 'Authorization: Bearer eyJhbGciOi.abc.def em https://alice:s3cr3t@example.test/x contato alice@example.com' }
+    $last = (Get-Content -LiteralPath $logFile -Last 1)
+    Assert-Equal ($last -match 'eyJhbGciOi|s3cr3t|alice@example.com') $false "credencial/e-mail nao fluem para o log"
+    Assert-Equal ($last -match 'Authorization') $true "cabecalho Authorization e reconhecido"
+    Assert-Equal ($last -match '<redacted>') $true "cabecalho Authorization e redigido"
+    Assert-Equal ($last -match '\*\*\*@example\.test') $true "URL com credencial vira usuario:***@host"
+    Assert-Equal ($last -match '<email>') $true "e-mail vira <email>"
+
+    # Valor aninhado nao e stringificado.
+    Write-InstallerEvent 'warn' 'installer.probe' 'detect' @{ reason = @('a', 'b') }
+    $last = (Get-Content -LiteralPath $logFile -Last 1)
+    Assert-Equal ($last -match '"reason":"<redacted>"') $true "valor nao escalar vira <redacted>"
 
     # Falha de escrita nao pode lancar nem interromper o instalador.
     $env:GLB_INSTALLER_LOG_DIR = Join-Path $logFile 'nao-e-pasta'

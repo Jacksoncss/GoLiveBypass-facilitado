@@ -15,10 +15,17 @@ trap 'rm -rf "$TMP"' EXIT
 # Carrega somente as funções do instalador, sem executar o main nem fazer rede.
 HARNESS="$TMP/functions.sh"
 BANNER_LINE="$(awk '/^banner$/{print NR; exit}' "$REPO/installer/golivebypass-installer.sh")"
-{
-    sed -n '68,690p' "$REPO/installer/golivebypass-installer.sh"
-    sed -n "710,$((BANNER_LINE - 1))p" "$REPO/installer/golivebypass-installer.sh"
-} > "$HARNESS"
+# Extrai as funcoes ate a chamada de banner(), sem o laco de argumentos top-level (que nao
+# pode rodar ao sourcear). Por conteudo, e nao por numero de linha fixo: o intervalo por
+# numero quebrava a cada mudanca de tamanho antes do banner.
+awk -v end="$((BANNER_LINE - 1))" '
+    NR < 68 { next }
+    NR > end { next }
+    /^while \[ \$# -gt 0 \]; do$/ { skip = 1; next }
+    skip && /^done$/ { skip = 0; next }
+    skip { next }
+    { print }
+' "$REPO/installer/golivebypass-installer.sh" > "$HARNESS"
 
 new_tree() {
     TEST_HOME="$TMP/home-$1"

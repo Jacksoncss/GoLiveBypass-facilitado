@@ -115,15 +115,36 @@ GLB_PHASE="detect"
 GLB_REDACT_MAX=300
 
 _glb_json_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n\t'
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\000-\037\177'
+}
+
+# Timestamp UTC ISO-8601 com milissegundos (GNU/busybox `date +%N`; onde nao houver,
+# cai para 000 sem quebrar o formato).
+_glb_ts() {
+    local base ms
+    base="$(date -u +%Y-%m-%dT%H:%M:%S 2>/dev/null || printf '1970-01-01T00:00:00')"
+    ms="$(date -u +%N 2>/dev/null | cut -c1-3)"
+    case "$ms" in ''|*[!0-9]*) ms=000 ;; esac
+    printf '%s.%sZ' "$base" "$ms"
 }
 
 _glb_redact() {
-    # fail-closed: credenciais e caminhos pessoais nunca chegam ao log compartilhavel.
+    # fail-closed: credencial (inclusive em URL e cabecalho), e-mail e caminho pessoal
+    # nunca chegam ao log compartilhavel.
     local texto
     texto="$(printf '%s' "$1" | tr '\r\n\t' '   ')"
-    texto="$(printf '%s' "$texto" | sed -E 's/(password|senha|token|secret|private[_]?key|authorization|cookie|session|credential|twofactorcode|captchatoken)[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig')"
-    texto="$(printf '%s' "$texto" | sed -E 's#[A-Za-z]:[\\/][^[:space:]]*#<path>#g; s#\\\\[^[:space:]]*#<path>#g; s#(^|[[:space:]])/[^[:space:]]+#\1<path>#g')"
+    # Cabecalho de autenticacao consome o resto; token Bearer/Basic isolado tambem.
+    texto="$(printf '%s' "$texto" | sed -E 's#([Aa]uthorization[[:space:]]*:[[:space:]]*)([^[:space:]]+[[:space:]]+)?[^[:space:]]+#\1<redacted>#g')"
+    texto="$(printf '%s' "$texto" | sed -E 's#([Bb]earer[[:space:]]+)[^[:space:]]+#\1<redacted>#g')"
+    # Credenciais embutidas em URL: scheme://usuario:senha@host
+    texto="$(printf '%s' "$texto" | sed -E 's#([A-Za-z][A-Za-z0-9+.-]*://)([^/[:space:]@:]+):([^/[:space:]@]+)@#\1\2:***@#g')"
+    # E-mail.
+    texto="$(printf '%s' "$texto" | sed -E 's#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}#<email>#g')"
+    # chave=valor de credencial.
+    texto="$(printf '%s' "$texto" | sed -E 's/(password|senha|token|secret|private[_]?key|public[_]?key|authorization|cookie|session|credential|twofactorcode|captchatoken)[[:space:]]*[:=][[:space:]]*[^[:space:]]+/\1=<redacted>/Ig')"
+    # Caminhos: Windows, UNC e POSIX absoluto. As regras exigem fronteira/nao-barra
+    # para nao destruir URL publica (https://...) nem o "s:/" do proprio scheme.
+    texto="$(printf '%s' "$texto" | sed -E 's#(^|[^A-Za-z0-9])[A-Za-z]:[\\/][^[:space:]]*#\1<path>#g; s#\\\\[^[:space:]]*#<path>#g; s#(^|[[:space:]:=])/([^/[:space:]][^[:space:]]*)#\1<path>#g')"
     printf '%s' "$texto" | cut -c1-"$GLB_REDACT_MAX"
 }
 
@@ -136,7 +157,7 @@ _glb_log_write() {
         if [ "$tamanho" -gt "$GLB_INSTALLER_LOG_MAX" ]; then
             # Mantem ~a metade mais recente, sempre comecando numa linha JSONL completa.
             tail -c $((GLB_INSTALLER_LOG_MAX / 2)) "$GLB_INSTALLER_LOG" 2>/dev/null \
-                | sed '1{/^{/!d;}' > "$GLB_INSTALLER_LOG.tmp" 2>/dev/null \
+                | sed '1d' > "$GLB_INSTALLER_LOG.tmp" 2>/dev/null \
                 && mv "$GLB_INSTALLER_LOG.tmp" "$GLB_INSTALLER_LOG" 2>/dev/null \
                 || rm -f "$GLB_INSTALLER_LOG.tmp" 2>/dev/null || true
         fi
@@ -154,6 +175,9 @@ installer_log() {
     local data="" sep="" chave valor par
     while [ "$#" -ge 2 ]; do
         chave="$1"; valor="$2"; shift 2
+        # Chave normalizada: a comparacao proibida/allowlist e case-insensitive e a chave
+        # emitida e sempre a canonica minuscula.
+        chave="$(printf '%s' "$chave" | tr '[:upper:]' '[:lower:]')"
         case "$chave" in
             *password*|*senha*|*token*|*captcha*|*secret*|*privatekey*|*private_key*|*publickey*|*authorization*|*cookie*|*session*|*credential*|*stdin*|*rawconfig*|config|endpoint)
                 valor="<redacted>" ;;
@@ -173,7 +197,7 @@ installer_log() {
         data="$data$sep$par"
         sep=","
     done
-    _glb_log_write "{\"schema_version\":1,\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"level\":\"$nivel\",\"component\":\"$GLB_COMPONENT\",\"event\":\"$(_glb_json_escape "$evento")\",\"operation_id\":\"$GLB_OPERATION_ID\",\"phase\":\"$(_glb_json_escape "$fase")\",\"platform\":\"linux\",\"arch\":\"$(_glb_json_escape "$GLB_ARCH")\",\"data\":{$data}}"
+    _glb_log_write "{\"schema_version\":1,\"ts\":\"$(_glb_ts)\",\"level\":\"$nivel\",\"component\":\"$GLB_COMPONENT\",\"event\":\"$(_glb_json_escape "$evento")\",\"operation_id\":\"$GLB_OPERATION_ID\",\"phase\":\"$(_glb_json_escape "$fase")\",\"platform\":\"linux\",\"arch\":\"$(_glb_json_escape "$GLB_ARCH")\",\"data\":{$data}}"
     return 0
 }
 

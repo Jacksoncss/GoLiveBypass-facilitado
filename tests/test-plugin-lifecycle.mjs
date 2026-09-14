@@ -57,8 +57,8 @@ test("start e stop invalidam callbacks assíncronos de uma geração anterior", 
     assert.match(startBlock, /if \(!onboardingRequired && typeof Native\?\.enableAutomatic === "function"\)/);
     assert.match(startBlock, /Native\.enableAutomatic\(\)\.then\(result => \{\n\s+if \(!isLifecycleCurrent\(\)\) return;/);
     assert.match(startBlock, /result\?\.success === false && !result\.suppressed/);
-    assert.match(source, /if \(lifecycleGeneration === pluginLifecycleGeneration\) logger\.error\("Falha ao consultar atualização pendente do plugin"/);
-    assert.match(startBlock, /if \(isLifecycleCurrent\(\)\) logger\.error\("Failed to reach the desktop process"/);
+    assert.match(source, /if \(lifecycleGeneration === pluginLifecycleGeneration\) recordRendererError\("Falha ao consultar atualização pendente do plugin"/);
+    assert.match(startBlock, /if \(isLifecycleCurrent\(\)\) recordRendererError\("Failed to reach the desktop process"/);
     assert.match(stopBlock, /pluginLifecycleGeneration\+\+/);
     assert.match(stopBlock, /lastNotifiedUpdateErrorKey = null/);
     assert.match(stopBlock, /lastSuppressedUpdateErrorKey = null/);

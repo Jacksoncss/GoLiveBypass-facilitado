@@ -68,6 +68,10 @@ if ($loaded -ne 'vencord-plugin-loaded') { throw 'loader Vencord nao carregou o 
 $script:BuildLog = Join-Path $checkout 'build.log'
 Set-Content -LiteralPath $script:BuildLog -Value 'build-before'
 function global:pnpm { param([Parameter(ValueFromRemainingArguments = $true)]$Args) Add-Content -LiteralPath $script:BuildLog -Value ($Args -join ' ') }
+function global:Invoke-Pnpm([string[]]$Arguments) {
+    & pnpm @Arguments
+    $script:PnpmExitCode = 0
+}
 Remove-PluginSource $checkout
 if (Test-Path -LiteralPath $plugin) { throw 'plugin nao foi removido' }
 if (-not ((Get-FileHash (Join-Path $discordResources 'app.asar')).Hash -eq $originalApp)) { throw 'remoção mudou app.asar' }

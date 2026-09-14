@@ -192,7 +192,6 @@ const BACKUP_DIR = ".golivebypass-update-backups";
 const SAFE_BACKUP_NAME = /^goLiveBypass-[0-9]{10,}$/;
 const SAFE_DISPLACED_NAME = /^goLiveBypass-pending-[0-9]{10,}$/;
 const CAPTCHA_IPC_CHANNEL = "golive-plugin-proton-captcha-response";
-const PROTON_PROGRESS_CHANNEL = "golive-vpn-proton-progress";
 const CAPTCHA_TIMEOUT_MS = 120_000;
 const SOURCE_DIGEST_PATTERN = /^[a-f0-9]{64}$/i;
 

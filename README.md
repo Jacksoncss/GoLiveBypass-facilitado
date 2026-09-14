@@ -268,11 +268,11 @@ Ao abrir, ele mostra o que encontrou e um menu:
 
     [1] Instalar ou atualizar o GoLiveBypass
     [2] Remover so o plugin (o mod continua)
-    [3] Restaurar tudo (remove o plugin e desfaz a injecao)
+    [3] Restaurar tudo (remove o plugin; preserva a injeção do mod)
     [0] Sair
 ```
 
-Escolhendo instalar, ele pergunta duas coisas: **onde** (usar o mod que já está aí ou baixar outro) e **por quanto tempo** (permanente, ou temporário — que desfaz a injeção quando você fechar o Discord). A saída para fora do Brasil não é mais escolhida aqui: a conta Proton é configurada dentro do plugin, na primeira ativação.
+Escolhendo instalar, ele pergunta duas coisas: **onde** (usar o mod que já está aí ou baixar outro) e **por quanto tempo** (permanente, ou temporário — que remove apenas o GoLiveBypass quando você fechar o Discord, preservando Vencord/Equicord). A saída para fora do Brasil não é mais escolhida aqui: a conta Proton é configurada dentro do plugin, na primeira ativação.
 
 **Pelo PowerShell:**
 
@@ -281,12 +281,12 @@ irm https://raw.githubusercontent.com/bezumiya/GoLiveBypass/main/installer/GoLiv
 powershell -ExecutionPolicy Bypass -File .\GoLiveBypass-Installer.ps1
 ```
 
-Ele descobre onde está o seu checkout **lendo a própria injeção do Discord**: o instalador do Equicord e o do Vencord substituem o `app.asar` por um stub que faz `require` da pasta de build, e desse caminho dá para derivar a raiz do repositório. Se não achar por aí, procura nos lugares habituais.
+Ele tenta descobrir onde está o seu checkout **lendo a própria injeção do Discord**. Se o mod foi instalado a partir de um pacote sem o checkout fonte, a instalação é interrompida sem alterar `app.asar` ou `_app.asar`; nesse caso, use `-Source` apontando para o checkout original.
 
 | sua situação | o que acontece |
 |---|---|
 | Equicord ou Vencord já instalado a partir do fonte | Copia o plugin, compila e reinicia o Discord |
-| Instalado, mas o Discord não carrega desse checkout | Compila e roda o `pnpm inject` para apontar o Discord para ele |
+| checkout fonte não encontrado, mas Vencord/Equicord já está instalado | Interrompe sem alterar o Discord; use `-Source` apontando para o checkout do mod |
 | Você não tem nenhum dos dois | Mostra uma tela para escolher **Equicord** ou **Vencord**, baixa, compila e injeta |
 | Falta Git ou Node | No Windows, oferece instalar pelo winget. No Linux, mostra o comando da sua distro (o pacote do Node é `nodejs`, e costuma ser antigo demais: nesse caso use nvm, fnm ou o NodeSource). O pnpm sai do `corepack enable` nos dois |
 
@@ -300,7 +300,7 @@ Outros modos:
 .\GoLiveBypass-Installer.ps1 -Yes                             # sem perguntas, para automação
 .\GoLiveBypass-Installer.ps1 -Mode Install                    # instala direto, sem menu
 .\GoLiveBypass-Installer.ps1 -Mode Uninstall                  # remove o plugin e recompila
-.\GoLiveBypass-Installer.ps1 -Mode Restore                    # remove o plugin e desfaz a injeção
+.\GoLiveBypass-Installer.ps1 -Mode Restore                    # remove o plugin e preserva a injeção do mod
 ```
 
 ```bash
@@ -309,7 +309,7 @@ Outros modos:
 ./golivebypass-installer.sh --yes                 # sem perguntas, para automação
 ./golivebypass-installer.sh --install             # instala direto, sem menu
 ./golivebypass-installer.sh --uninstall           # remove o plugin e recompila
-./golivebypass-installer.sh --restore             # remove o plugin e desfaz a injeção
+./golivebypass-installer.sh --restore             # remove o plugin e preserva a injeção do mod
 ```
 
 O instalador **baixa o pacote da release** (o mesmo `goLiveBypass-vencord.zip` que o updater do

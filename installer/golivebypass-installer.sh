@@ -1001,6 +1001,23 @@ $(discord_resources)
 EOF
     return 1
 }
+injection_identities() {
+    local resources path
+    while IFS= read -r resources; do
+        path="$(injected_path "$resources" || true)"
+        [ -n "$path" ] || continue
+        case "$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')" in
+            *equibop*) printf 'Equibop\n' ;;
+            *equicord*) printf 'Equicord\n' ;;
+            *vesktop*) printf 'Vesktop\n' ;;
+            *vencord*) printf 'Vencord\n' ;;
+            *legcord*) printf 'Legcord\n' ;;
+            *) printf 'desconhecido\n' ;;
+        esac
+    done <<EOF
+$(discord_resources)
+EOF
+}
 
 checkout_from_injection() {
     local resources path root
@@ -1039,7 +1056,7 @@ EOF
 }
 
 find_checkout() {
-    local root
+    local root installed
     if [ -n "$SOURCE" ]; then
         is_checkout "$SOURCE" || fail "Nao encontrei um checkout do Equicord ou Vencord em $SOURCE"
         printf '%s\n' "$SOURCE"; return 0
@@ -1053,6 +1070,14 @@ find_checkout() {
     if root="$(checkout_on_disk)"; then
         ok "Achei no disco: $root"
         printf '%s\n' "$root"; return 0
+    fi
+
+    # Um Discord já patchado, mas sem checkout fonte, não pode cair no clone
+    # padrão de Equicord/Vencord: isso substituiria silenciosamente o mod que
+    # o usuário já usa. Preserve o app.asar e peça o checkout correto.
+    installed="$(installed_mod || true)"
+    if [ -n "$installed" ]; then
+        fail "Detectei $installed no Discord, mas nao encontrei o checkout fonte. Nenhum mod foi substituido; use --source apontando para o checkout $installed."
     fi
 
     return 1
@@ -1415,6 +1440,15 @@ build_mod() {
     step "Compilando"
     (cd "$root" && pnpm build) || fail "pnpm build falhou"
 }
+remove_plugin_source() {
+    local root="$1" target="$1/src/userplugins/$PLUGIN_DIR_NAME"
+    [ -d "$target" ] || return 0
+    step "Removendo apenas o plugin GoLiveBypass"
+    rm -rf "$target"
+    # O loader do mod permanece apontando para o checkout; recompilar remove
+    # somente o userplugin e não desfaz Vencord/Equicord do app.asar.
+    (cd "$root" && pnpm build) || warn "Nao consegui recompilar o mod sem o GoLiveBypass."
+}
 
 # Patch direto em UM cliente paralelo (Equibop/Vesktop/Legcord) com source local.
 # O instalador de mod do Equicord (EquilotlCli) nao reconhece esses clientes
@@ -1485,6 +1519,15 @@ patch_parallel_one() {
     fi
     asar="$root/$rel"
     app_path="$target/app.asar"
+    # Nunca sobrescrever um cliente paralelo que já foi patchado por Vencord,
+    # Equicord ou outro loader. Este caminho não sabe compor dois app.asar;
+    # recusar preserva tanto o patch quanto o backup `_app.asar`.
+    local existing_injection
+    existing_injection="$(injected_path "$target" || true)"
+    if [ -n "$existing_injection" ]; then
+        printf "  [!] %s ja tem um patch em %s; preservei app.asar e _app.asar.\n" "$client_name" "$existing_injection"
+        return 1
+    fi
 
     if [ ! -f "$asar" ]; then
         printf "  [!] Build nao gerou %s. Rode 'pnpm build' em %s e tente de novo.\n" "$asar" "$root"
@@ -2099,18 +2142,13 @@ wait_discord_exit() {
     local root="$1"
     printf '\n'
     ok "Discord aberto com o GoLiveBypass."
-    warn "Deixe este terminal aberto. Quando voce fechar o Discord, eu desfaco a injecao."
+    warn "Deixe este terminal aberto. Quando voce fechar o Discord, removo apenas o plugin GoLiveBypass."
 
     sleep 5
     while discord_running; do sleep 2; done
 
-    printf '\n'
-    step "Discord fechado, desfazendo a injecao"
-    if (cd "$root" && pnpm uninject); then
-        ok "Discord restaurado."
-    else
-        warn "O pnpm uninject falhou. Rode 'pnpm uninject' na pasta do mod."
-    fi
+    remove_plugin_source "$root"
+    ok "GoLiveBypass removido; Vencord/Equicord preservado."
 }
 
 
@@ -2461,6 +2499,16 @@ download_text() {
 do_install() {
     local root="${1:-}"
     root="$(select_target "$root")"
+    local checkout_identity identity
+    checkout_identity="$(checkout_mod "$root")"
+    while IFS= read -r identity; do
+        [ -z "$identity" ] && continue
+        if [ "$identity" != "$checkout_identity" ]; then
+            fail "O Discord ja carrega $identity, mas este checkout e $checkout_identity. Preservei o mod existente; use --source do checkout correto."
+        fi
+    done <<EOF
+$(injection_identities)
+EOF
 
     # A escolha de alvos vem PRIMEIRO, assim que o checkout esta definido, e antes de mexer
     # em qualquer coisa do ambiente ou do checkout. Com varios clientes e TUI, a pergunta
@@ -2555,21 +2603,17 @@ do_uninstall() {
 }
 
 do_restore_everything() {
-    local root target
+    local root
     if root="$(find_checkout)"; then
-        target="$root/src/userplugins/$PLUGIN_DIR_NAME"
-        [ -d "$target" ] && { step "Removendo $target"; rm -rf "$target"; }
-
+        remove_plugin_source "$root"
         stop_discord
-        step "Desfazendo a injecao"
-        (cd "$root" && pnpm uninject) || warn "O pnpm uninject falhou."
     else
         warn "Nao achei o fonte do mod, entao so posso parar por aqui."
     fi
 
     remove_tor
     printf '\n'
-    ok "Tudo restaurado. Seu Discord voltou ao normal."
+    ok "GoLiveBypass removido; Vencord/Equicord e o Discord foram preservados."
 }
 
 main_menu() {
@@ -2584,7 +2628,7 @@ main_menu() {
             "Verificar atualizacoes do plugin" \
             "Atualizar o plugin" \
             "Remover so o plugin (o mod continua)" \
-            "Restaurar tudo (remove o plugin e desfaz a injecao)" \
+            "Restaurar tudo (remove o plugin; preserva o mod)" \
             "Sair")"
         case "$tui_choice" in
             1) do_install "$root" ;;
@@ -2602,8 +2646,7 @@ main_menu() {
     printf '    %s[2] Verificar atualizacoes do plugin%s\n' "$C_CYAN" "$C_OFF"
     printf '    %s[3] Atualizar o plugin%s\n' "$C_GREEN" "$C_OFF"
     printf '    %s[4] Remover so o plugin (o mod continua)%s\n' "$C_YELLOW" "$C_OFF"
-    printf '    %s[5] Restaurar tudo (remove o plugin e desfaz a injecao)%s\n' "$C_RED" "$C_OFF"
-    printf '    [0] Sair\n\n'
+    printf '    %s[5] Restaurar tudo (remove o plugin; preserva o mod)%s\n' "$C_RED" "$C_OFF"
 
     local choice
     printf '%s' "  Escolha: " >&2

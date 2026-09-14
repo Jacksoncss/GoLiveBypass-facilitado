@@ -19,6 +19,11 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Evidência: `golive-gui/tests/plugin-inspection-async.test.ts` cobre delegação, reuso e fallback; a medição de fluidez é específica da VM Windows com o painel aberto.
 
 ## [Unreleased]
+### Instaladores: preservação de Vencord e Equicord
+
+- Um Discord já patchado por Vencord/Equicord nunca mais é substituído por outro checkout quando a origem não pode ser resolvida. Clientes paralelos já modificados também são preservados, com `app.asar` e `_app.asar` intactos; o instalador recusa o alvo em vez de sobrescrevê-lo.
+- Os modos temporário e **Restaurar tudo** removem e recompilam somente `goLiveBypass`; não executam `pnpm uninject`, que desfazia o patch do mod inteiro.
+- Evidência: `tests/test-vencord-preserve.sh` usa árvores falsas e observa detecção, backup, recusa de patch paralelo e carregamento do plugin; passou sem tocar em Discord real.
 ### Instalador Linux: seleção direta do cliente Discord
 
 - No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.

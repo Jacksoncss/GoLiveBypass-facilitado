@@ -679,6 +679,18 @@ function Get-InstalledMod {
     }
     return $null
 }
+function Get-InjectionIdentities {
+    foreach ($resources in Get-DiscordResources) {
+        $injected = Get-InjectedPath $resources
+        if (-not $injected) { continue }
+        if ($injected -match 'equibop') { 'Equicord' }
+        elseif ($injected -match 'equicord') { 'Equicord' }
+        elseif ($injected -match 'vesktop') { 'Vencord' }
+        elseif ($injected -match 'vencord') { 'Vencord' }
+        elseif ($injected -match 'legcord') { 'Legcord' }
+        else { 'desconhecido' }
+    }
+}
 
 function Find-CheckoutFromInjection {
     foreach ($resources in Get-DiscordResources) {
@@ -879,6 +891,12 @@ function Copy-PatchParallel($root, $resources) {
         return [pscustomobject]@{ Ok = $false; Motivo = $motivo }
     }
     $appAsar = Join-Path $resources 'app.asar'
+    $existingInjection = Get-InjectedPath $resources
+    if ($existingInjection) {
+        $motivo = "$nome ja tem um patch em $existingInjection; app.asar e _app.asar foram preservados."
+        Write-Warn $motivo
+        return [pscustomobject]@{ Ok = $false; Motivo = $motivo }
+    }
     $backup = Join-Path $resources '_app.asar'
     if (-not (Test-Path -LiteralPath $backup) -and (Test-Path -LiteralPath $appAsar)) {
         Copy-Item -LiteralPath $appAsar -Destination $backup
@@ -1271,6 +1289,19 @@ function Build-Mod($root) {
         Pop-Location
     }
 }
+function Remove-PluginSource($root) {
+    $target = Join-Path $root "src\userplugins\$PluginDirName"
+    if (-not (Test-Path -LiteralPath $target)) { return }
+    Write-Step 'Removendo apenas o plugin GoLiveBypass'
+    Remove-CaminhoSilencioso $target
+    Push-Location -LiteralPath $root
+    try {
+        & pnpm build
+        if ($LASTEXITCODE -ne 0) { Write-Warn 'Nao consegui recompilar o mod sem o GoLiveBypass.' }
+    } finally {
+        Pop-Location
+    }
+}
 
 function Invoke-Injection($root, $targets) {
     if (-not $root) { throw 'Caminho do checkout invalido para injetar o mod.' }
@@ -1344,6 +1375,12 @@ function Invoke-Install($root) {
     # argumento ao parametro Path", que nao diz nada a quem esta instalando.
     if (-not $root -or -not (Test-Path -LiteralPath $root)) {
         throw 'Nao consegui preparar a pasta do Equicord/Vencord. Rode de novo, ou use -Source "C:\caminho\do\Equicord" apontando para um checkout que voce ja tenha.'
+    }
+    $checkoutMod = Get-CheckoutMod $root
+    foreach ($identity in @(Get-InjectionIdentities | Select-Object -Unique)) {
+        if ($identity -and $identity -ne $checkoutMod) {
+            throw "O Discord ja carrega $identity, mas este checkout e $checkoutMod. Preservei o mod existente; use -Source do checkout correto."
+        }
     }
     $permanent = Select-Persistence
 
@@ -1513,9 +1550,14 @@ function Show-Status($root) {
     }
     Write-Host ''
 }
-
 function Select-Target($root) {
-    if (-not $root) { return (Install-Mod (Show-ModChoice)) }
+    if (-not $root) {
+        $installed = @(Get-InjectionIdentities | Select-Object -Unique)
+        if ($installed.Count -gt 0) {
+            throw "Detectei $($installed -join ', ') no Discord, mas nao encontrei o checkout fonte. Nenhum mod foi substituido; use -Source apontando para o checkout correto."
+        }
+        return (Install-Mod (Show-ModChoice))
+    }
     if ($Yes) { return $root }
 
     $name = Split-Path -Leaf $root
@@ -1538,6 +1580,7 @@ function Select-Target($root) {
         default { return $root }
     }
 }
+
 
 # =============================================================== Tor legado
 
@@ -1611,7 +1654,7 @@ function Select-Persistence {
 function Wait-DiscordExit($root) {
     Write-Host ''
     Write-Ok 'Discord aberto com o GoLiveBypass.'
-    Write-Warn 'Deixe esta janela aberta. Quando voce fechar o Discord, eu desfaco a injecao.'
+    Write-Warn 'Deixe esta janela aberta. Quando voce fechar o Discord, removo apenas o plugin GoLiveBypass.'
     Write-Host '  Se fechar esta janela antes, rode: .\GoLiveBypass-Installer.ps1 -Mode Uninstall' -ForegroundColor DarkGray
 
     try {
@@ -1623,45 +1666,30 @@ function Wait-DiscordExit($root) {
         }
 
         if (-not (Get-Process -Name $DiscordNames -ErrorAction SilentlyContinue)) {
-            Write-Warn 'O Discord nao abriu em 90s. Vou desfazer a injecao agora.'
+            Write-Warn 'O Discord nao abriu em 90s. Vou remover apenas o GoLiveBypass agora.'
         } else {
             while (Get-Process -Name $DiscordNames -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }
             Write-Host ''
-            Write-Step 'Discord fechado, desfazendo a injecao'
+            Write-Step 'Discord fechado, removendo apenas o plugin GoLiveBypass'
         }
     } finally {
-        # finally para que Ctrl+C tambem desfaca, em vez de deixar o Discord injetado.
-        Push-Location -LiteralPath $root
-        try {
-            & pnpm uninject
-            if ($LASTEXITCODE -ne 0) { Write-Warn 'O pnpm uninject falhou. Rode "pnpm uninject" na pasta do mod.' }
-            else { Write-Ok 'Discord restaurado.' }
-        } finally { Pop-Location }
+        Remove-PluginSource $root
+        Write-Ok 'GoLiveBypass removido; Vencord/Equicord preservado.'
     }
 }
 
 function Invoke-RestoreEverything {
     $root = Find-Checkout
     if ($root) {
-        $target = Join-Path $root "src\userplugins\$PluginDirName"
-        if (Test-Path -LiteralPath $target) {
-            Write-Step "Removendo $target"
-            Remove-Item -LiteralPath $target -Recurse -Force
-        }
-
+        Remove-PluginSource $root
         Stop-Discord
-        Push-Location -LiteralPath $root
-        try {
-            Write-Step 'Desfazendo a injecao'
-            & pnpm uninject
-        } finally { Pop-Location }
     } else {
         Write-Warn 'Nao achei o fonte do mod, entao so posso parar por aqui.'
     }
 
     Remove-Tor
     Write-Host ''
-    Write-Ok 'Tudo restaurado. Seu Discord voltou ao normal.'
+    Write-Ok 'GoLiveBypass removido; Vencord/Equicord e o Discord foram preservados.'
 }
 
 function Show-MainMenu {
@@ -1674,7 +1702,7 @@ function Show-MainMenu {
             'Verificar atualizacoes do plugin',
             'Atualizar o plugin',
             'Remover so o plugin (o mod continua)',
-            'Restaurar tudo (remove o plugin e desfaz a injecao)',
+            'Restaurar tudo (remove o plugin; preserva o mod)',
             'Sair'
         )
         switch ($tui) {
@@ -1694,7 +1722,7 @@ function Show-MainMenu {
     Write-Host '    [2] Verificar atualizacoes do plugin' -ForegroundColor Cyan
     Write-Host '    [3] Atualizar o plugin' -ForegroundColor Green
     Write-Host '    [4] Remover so o plugin (o mod continua)' -ForegroundColor Yellow
-    Write-Host '    [5] Restaurar tudo (remove o plugin e desfaz a injecao)' -ForegroundColor Red
+    Write-Host '    [5] Restaurar tudo (remove o plugin; preserva o mod)' -ForegroundColor Red
     Write-Host '    [0] Sair' -ForegroundColor Gray
     Write-Host ''
 

@@ -679,16 +679,18 @@ function Get-InstalledMod {
     }
     return $null
 }
-function Get-InjectionIdentities {
-    foreach ($resources in Get-DiscordResources) {
-        $injected = Get-InjectedPath $resources
-        if (-not $injected) { continue }
-        if ($injected -match 'equibop') { 'Equicord' }
-        elseif ($injected -match 'equicord') { 'Equicord' }
-        elseif ($injected -match 'vesktop') { 'Vencord' }
-        elseif ($injected -match 'vencord') { 'Vencord' }
-        elseif ($injected -match 'legcord') { 'Legcord' }
-        else { 'desconhecido' }
+
+function Test-TargetInjectedFromCheckout($root, $resources) {
+    if (-not $root -or -not $resources) { return $false }
+    $injected = Get-InjectedPath $resources
+    if (-not $injected) { return $false }
+    try {
+        $normalizedRoot = [IO.Path]::GetFullPath($root).TrimEnd('\', '/')
+        $normalizedInjected = [IO.Path]::GetFullPath($injected)
+        return $normalizedInjected.Equals($normalizedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            $normalizedInjected.StartsWith("$normalizedRoot\", [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
     }
 }
 
@@ -765,8 +767,7 @@ function Find-Checkout {
 function Test-InjectedFromCheckout($root) {
     if (-not $root) { return $false }
     foreach ($resources in Get-DiscordResources) {
-        $injected = Get-InjectedPath $resources
-        if ($injected -and $injected.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if (Test-TargetInjectedFromCheckout $root $resources) { return $true }
     }
     return $false
 }
@@ -1303,6 +1304,13 @@ function Remove-PluginSource($root) {
     }
 }
 
+function Format-InjectionDetail($value) {
+    $text = (@($value) | ForEach-Object { [string]$_ }) -join ' '
+    $text = ($text -replace '\s+', ' ').Trim()
+    if ($text.Length -gt 600) { return $text.Substring(0, 600) + '...' }
+    return $text
+}
+
 function Invoke-Injection($root, $targets) {
     if (-not $root) { throw 'Caminho do checkout invalido para injetar o mod.' }
     Push-Location -LiteralPath $root
@@ -1331,15 +1339,26 @@ function Invoke-Injection($root, $targets) {
             # injector nao achar a instalacao e toda instalacao nova pela linha de
             # comando falhar (relato 1.1.11-beta.1).
             $loc = Split-Path -Parent (Split-Path -Parent $t.Resources)
-            & pnpm run inject -- --location $loc
-            if ($LASTEXITCODE -ne 0) {
-                # Nem todo pnpm come o -- : cai no caminho de sempre (o instalador
-                # do mod pergunta) — espelho do run_inject do .sh.
-                & pnpm inject
-                if ($LASTEXITCODE -ne 0) {
-                    $falha = $true
-                    $detalhes.Add("$($t.Flavour): pnpm inject saiu com codigo $LASTEXITCODE ($($t.Resources))")
-                }
+            $saida = @()
+            $excecao = $null
+            try {
+                $saida = @(& pnpm run inject --location $loc 2>&1)
+            } catch {
+                $excecao = $_.Exception.Message
+            }
+            $confirmado = Test-TargetInjectedFromCheckout $root $t.Resources
+            $detalhe = Format-InjectionDetail @($saida, $excecao)
+            if (-not $confirmado) {
+                $falha = $true
+                $motivo = "pos-condicao nao confirmada (exit=$LASTEXITCODE)"
+                if ($detalhe) { $motivo += ": $detalhe" }
+                $detalhes.Add("$($t.Flavour): $motivo")
+                continue
+            }
+            if ($excecao -or $LASTEXITCODE -ne 0) {
+                $motivo = "injecao confirmada pela pos-condicao apesar de exit=$LASTEXITCODE"
+                if ($detalhe) { $motivo += ": $detalhe" }
+                Write-Warn "$($t.Flavour): $motivo"
             }
         }
         if ($falha) {
@@ -1375,12 +1394,6 @@ function Invoke-Install($root) {
     # argumento ao parametro Path", que nao diz nada a quem esta instalando.
     if (-not $root -or -not (Test-Path -LiteralPath $root)) {
         throw 'Nao consegui preparar a pasta do Equicord/Vencord. Rode de novo, ou use -Source "C:\caminho\do\Equicord" apontando para um checkout que voce ja tenha.'
-    }
-    $checkoutMod = Get-CheckoutMod $root
-    foreach ($identity in @(Get-InjectionIdentities | Select-Object -Unique)) {
-        if ($identity -and $identity -ne $checkoutMod) {
-            throw "O Discord ja carrega $identity, mas este checkout e $checkoutMod. Preservei o mod existente; use -Source do checkout correto."
-        }
     }
     $permanent = Select-Persistence
 
@@ -1551,13 +1564,7 @@ function Show-Status($root) {
     Write-Host ''
 }
 function Select-Target($root) {
-    if (-not $root) {
-        $installed = @(Get-InjectionIdentities | Select-Object -Unique)
-        if ($installed.Count -gt 0) {
-            throw "Detectei $($installed -join ', ') no Discord, mas nao encontrei o checkout fonte. Nenhum mod foi substituido; use -Source apontando para o checkout correto."
-        }
-        return (Install-Mod (Show-ModChoice))
-    }
+    if (-not $root) { return (Install-Mod (Show-ModChoice)) }
     if ($Yes) { return $root }
 
     $name = Split-Path -Leaf $root

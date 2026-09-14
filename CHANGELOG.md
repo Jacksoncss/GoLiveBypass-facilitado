@@ -4,6 +4,13 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Instalador Windows: injeção e fonte ausente
+
+- A injeção oficial verifica o stub de cada alvo selecionado, em vez de confiar no exit code do `pnpm`; a chamada não passa o separador extra e limita detalhes de falha.
+- Sem checkout fonte válido, detectar Vencord ou Equicord no Discord não bloqueia mais a escolha/download explícito de um mod. Nenhuma fonte ambígua ou distribuição instalada é aceita como checkout.
+
 ## [2.0.6-beta-15] - 2026-09-13
 
 ### Plugin: relato manual de bug pelo Discord

@@ -211,6 +211,16 @@ try {
     $env:LOCALAPPDATA = $origLocalAppData
 }
 
+Write-Host "`n-- 2.5 Descoberta e injecao segura de mod --" -ForegroundColor Yellow
+$selectTargetStart = $installerContent.IndexOf('function Select-Target')
+$selectTargetBody = $installerContent.Substring($selectTargetStart, 700)
+Assert-Equal ($selectTargetBody -match 'Detectei .*nao encontrei o checkout fonte') $false "Fonte ausente nao bloqueia mod detectado"
+Assert-Equal ($selectTargetBody -match 'Install-Mod \(Show-ModChoice\)') $true "Fonte ausente oferece download explicito"
+Assert-Equal ($installerContent -match 'function Test-TargetInjectedFromCheckout') $true "Injecao verifica estado por alvo"
+Assert-Equal ($installerContent -match '& pnpm run inject --location \$loc') $true "Injecao nao passa separador -- extra"
+Assert-Equal ($installerContent -match '& pnpm run inject -- --location') $false "Fallback de argumento antigo removido"
+Assert-Equal ($installerContent -match '& pnpm inject') $false "Fallback cego por exit code removido"
+
 Write-Host "`n========================================================" -ForegroundColor Cyan
 Write-Host " 3. Wait-AntesDeFechar / Test-JanelaTransitoria" -ForegroundColor Cyan
 Write-Host "========================================================" -ForegroundColor Cyan

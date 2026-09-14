@@ -55,11 +55,17 @@ $installerShouldReport = ${function:Test-ShouldReport}
 $installerWaitAntesDeFechar = ${function:Wait-AntesDeFechar}
 $installerTestJanela = ${function:Test-JanelaTransitoria}
 
-# Carrega funcoes do standalone
-$standaloneContent = Get-Content -LiteralPath $standalonePath -Raw
-$idx2 = $standaloneContent.IndexOf("Write-Host ''`nWrite-Host '  GoLiveBypass standalone'")
-if ($idx2 -lt 0) { $idx2 = $standaloneContent.IndexOf("Write-Host ''`r`nWrite-Host '  GoLiveBypass standalone'") }
-$truncatedStandalone = $standaloneContent.Substring(0, $idx2)
+# O standalone mantido está pausado por um `exit 1` top-level antes das funções.
+# Dot-sourcear esse recorte sem remover somente esse bloqueio encerra o próprio
+# harness antes de Get-InjectionState existir. Remova a primeira ocorrência em
+# uma cópia temporária; o CLI real nunca é executado e exits condicionais ficam
+# intactos para não mascarar outros caminhos.
+$standalonePrefix = $standaloneContent.Substring(0, $idx2)
+$topLevelExit = [regex]::Match($standalonePrefix, '(?m)^[ \t]*exit 1[ \t]*(?:\r?\n|$)')
+if ($topLevelExit.Success) {
+    $standalonePrefix = $standalonePrefix.Remove($topLevelExit.Index, $topLevelExit.Length)
+}
+$truncatedStandalone = $standalonePrefix
 $tempStandalone = Join-Path ([System.IO.Path]::GetTempPath()) "test-temp-standalone.ps1"
 Set-Content -LiteralPath $tempStandalone -Value $truncatedStandalone -Encoding UTF8
 . $tempStandalone

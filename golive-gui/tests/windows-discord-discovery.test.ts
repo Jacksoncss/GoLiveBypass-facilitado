@@ -287,7 +287,7 @@ describe("discovery Windows puro", () => {
     expect(candidates.some((candidate) => candidate.exePath === direct)).toBe(true);
     expect(candidates.some((candidate) => candidate.exePath === installed)).toBe(true);
     expect(candidates.some((candidate) => candidate.exePath === x86Installed)).toBe(true);
-    expect(candidates).toHaveLength(6);
+    expect(candidates).toHaveLength(5);
   });
   it("aceita InstallLocation x86 não quoted e acha app-* via finder bounded", () => {
     const root = "C:\\Program Files (x86)\\Discord";

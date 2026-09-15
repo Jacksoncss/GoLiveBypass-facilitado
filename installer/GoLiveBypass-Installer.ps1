@@ -781,7 +781,7 @@ function Find-Checkout {
     if ($Source) {
         Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'source'; candidate_count = 1 }
         if (Test-ModCheckout $Source) {
-            Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'source'; path_present = $true; channel = $script:SelectedChannel }
+            Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'source'; path_present = $true }
             return $Source
         }
         Write-InstallerEvent 'warn' 'installer.checkout_rejected' 'detect' @{ candidate_kind = 'source'; reason_code = 'SOURCE_NOT_A_CHECKOUT' }
@@ -791,7 +791,7 @@ function Find-Checkout {
     Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'injection' }
     $root = Find-CheckoutFromInjection
     if ($root) {
-        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'injection'; path_present = $true; channel = $script:SelectedChannel }
+        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'injection'; path_present = $true }
         Write-Ok "Achei pelo Discord: $root"
         return $root
     }
@@ -799,7 +799,7 @@ function Find-Checkout {
     Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'disk' }
     $root = Find-CheckoutOnDisk
     if ($root) {
-        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'disk'; path_present = $true; channel = $script:SelectedChannel }
+        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'disk'; path_present = $true }
         Write-Ok "Achei no disco: $root"
         return $root
     }

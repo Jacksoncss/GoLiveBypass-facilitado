@@ -159,6 +159,12 @@ if ($content -match 'Stable e a opcao recomendada' -and $content -match 'Beta e 
 } else { Bad "mensagens de canal ausentes" }
 if ($content -match 'CheckUpdate.*pode persistir.*sem baixar ZIP') { Ok "CheckUpdate documenta persistencia sem download" } else { Bad "documentacao CheckUpdate desatualizada" }
 if ($content -match "installer\.selected.*channel" -and $content -match "installer\.completed.*channel") { Ok "eventos selected/completed incluem canal" } else { Bad "eventos selected/completed sem canal" }
+$detectBlock = [regex]::Match($content, 'function Find-Checkout[\s\S]*?function Test-InjectedFromCheckout').Value
+if ($detectBlock -notmatch "installer\.selected.*detect.*channel" -and
+    $content -match "installer\.selected.*preparing.*channel" -and
+    $content -match "installer\.completed.*channel") {
+    Ok "settings beta nao cria canal falso no detect; preparing/completed mantem canal"
+} else { Bad "canal aparece falso no detect ou falta apos selecao" }
 if ($content -match 'Get-PluginReleaseCandidates' -and $content -match 'releases\?per_page=30' -and $content -notmatch 'Get-PluginReleaseCandidates[\s\S]{0,3000}releases/latest') {
     Ok "selecao de canal nao usa /releases/latest"
 } else { Bad "selecao de canal usa endpoint latest" }

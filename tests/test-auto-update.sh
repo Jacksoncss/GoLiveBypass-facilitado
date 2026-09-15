@@ -248,6 +248,13 @@ if grep -E "installer\\.selected.*channel" "$REPO/installer/golivebypass-install
 else
     bad "eventos selected/completed sem canal"
 fi
+detect_events=$(sed -n '/^find_checkout() {/,/^}/p' "$REPO/installer/golivebypass-installer.sh")
+if ! printf '%s\n' "$detect_events" | grep -E "installer\\.selected.*channel" >/dev/null 2>&1 &&
+   grep -E "installer\\.selected.*preparing.*channel|installer\\.completed.*channel" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1; then
+    ok "settings beta nao cria canal falso no detect; preparing/completed mantem canal"
+else
+    bad "canal aparece falso no detect ou falta apos selecao"
+fi
 if grep -F 'pode persistir o canal, sem baixar ZIP' "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
    grep -F 'pode persistir o canal, sem baixar ZIP' "$REPO/installer/GoLiveBypass-Installer.ps1" >/dev/null 2>&1; then
     ok "CheckUpdate documenta persistencia sem download"

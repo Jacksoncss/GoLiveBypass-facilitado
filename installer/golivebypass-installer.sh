@@ -1043,7 +1043,7 @@ find_checkout() {
     if [ -n "$SOURCE" ]; then
         installer_log info installer.checkout_candidate detect candidate_kind source candidate_count 1
         if is_checkout "$SOURCE"; then
-            installer_log info installer.selected detect candidate_kind source path_present true channel "$CHANNEL"
+            installer_log info installer.selected detect candidate_kind source path_present true
             printf '%s\n' "$SOURCE"; return 0
         fi
         installer_log warn installer.checkout_rejected detect candidate_kind source reason_code SOURCE_NOT_A_CHECKOUT
@@ -1052,14 +1052,14 @@ find_checkout() {
 
     installer_log info installer.checkout_candidate detect candidate_kind injection
     if root="$(checkout_from_injection)"; then
-        installer_log info installer.selected detect candidate_kind injection path_present true channel "$CHANNEL"
+        installer_log info installer.selected detect candidate_kind injection path_present true
         ok "Achei pelo Discord: $root"
         printf '%s\n' "$root"; return 0
     fi
 
     installer_log info installer.checkout_candidate detect candidate_kind disk
     if root="$(checkout_on_disk)"; then
-        installer_log info installer.selected detect candidate_kind disk path_present true channel "$CHANNEL"
+        installer_log info installer.selected detect candidate_kind disk path_present true
         ok "Achei no disco: $root"
         printf '%s\n' "$root"; return 0
     fi

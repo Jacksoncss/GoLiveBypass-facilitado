@@ -1892,7 +1892,7 @@ function Invoke-ChangeChannel($root) {
 }
 
 function Show-MainMenu {
-    while ($true) {
+    :menuLoop while ($true) {
         $root = Find-Checkout
         Show-Status $root
 
@@ -1910,7 +1910,7 @@ function Show-MainMenu {
                 1 { Invoke-Install $root; return }
                 2 { Invoke-CheckUpdate; return }
                 3 { Invoke-Update; return }
-                4 { Invoke-ChangeChannel $root; continue }
+                4 { Invoke-ChangeChannel $root; continue menuLoop }
                 5 { Invoke-Uninstall; return }
                 6 { Invoke-RestoreEverything; return }
                 default { Write-Host '  Ate mais.' -ForegroundColor DarkGray; return }
@@ -1932,7 +1932,7 @@ function Show-MainMenu {
             '1' { Invoke-Install $root; return }
             '2' { Invoke-CheckUpdate; return }
             '3' { Invoke-Update; return }
-            '4' { Invoke-ChangeChannel $root; continue }
+            '4' { Invoke-ChangeChannel $root; continue menuLoop }
             '5' { Invoke-Uninstall; return }
             '6' { Invoke-RestoreEverything; return }
             default { Write-Host '  Ate mais.' -ForegroundColor DarkGray; return }

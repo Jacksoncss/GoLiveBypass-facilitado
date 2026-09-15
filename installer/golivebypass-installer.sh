@@ -26,7 +26,8 @@
 printf '\nGoLiveBypass para Equicord/Vencord — escolha seu canal de atualizacoes.\n' >&2
 printf '        Stable e a opcao recomendada: canal mais previsivel, somente releases estaveis.\n' >&2
 printf '        Beta e opcional: canal de testes; voce ajuda a comunidade ao testar, encontrar\n' >&2
-printf '        e corrigir erros antes da versao estavel. Nenhum canal promete estabilidade.\n' >&2
+printf '        e corrigir erros antes da versao estavel. O sistema ainda nao e estavel; nenhum canal promete estabilidade.\n' >&2
+printf '        Ao testar, encontrar e corrigir erros, relate em https://github.com/bezumiya/GoLiveBypass/issues.\n' >&2
 printf '        O standalone continua separado e nao e alterado por este instalador.\n\n' >&2
 
 # So construcoes POSIX: roda em dash, bash, zsh, ksh e busybox ash.

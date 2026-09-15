@@ -243,8 +243,9 @@ else
     bad "mensagens de canal ausentes"
 fi
 if [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-9 2.0.0-beta-10")" = "-1" ] &&
-   [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-10 2.0.0-beta-9")" = "1" ]; then
-    ok "SemVer ordena beta-9 antes de beta-10"
+   [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-10 2.0.0-beta-11")" = "-1" ] &&
+   [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-11 2.0.0-beta-10")" = "1" ]; then
+    ok "SemVer prova beta-9 < beta-10 < beta-11"
 else
     bad "SemVer beta com dois digitos incorreto"
 fi
@@ -252,8 +253,9 @@ FIXTURE="$(mktemp -d)"
 cat > "$FIXTURE/releases.json" <<'EOF'
 [
   {"draft":true,"prerelease":true,"tag_name":"v9.9.9-beta-99","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/draft"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/draft.sha"}]},
-  {"draft":false,"prerelease":true,"tag_name":"v2.1.0-beta-9","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/b9"}]},
+  {"draft":false,"prerelease":true,"tag_name":"v2.1.0-beta-9","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/b9"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/b9.sha"}]},
   {"draft":false,"prerelease":true,"tag_name":"v2.1.0-beta-10","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/b10"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/b10.sha"}]},
+  {"draft":false,"prerelease":true,"tag_name":"v2.1.0-beta-11","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/b11"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/b11.sha"}]},
   {"draft":false,"prerelease":false,"tag_name":"v2.0.0","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/stable"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/stable.sha"}]},
   {"draft":false,"prerelease":false,"tag_name":"v2.2.0","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/no-sha"}]}
 ]
@@ -271,21 +273,28 @@ if [ "$(printf '%s\n' "$stable_release" | sed -n '1p')" = "2.0.0" ]; then
 else
     bad "selecao stable de release incorreta"
 fi
-if [ "$(printf '%s\n' "$beta_release" | sed -n '1p')" = "2.1.0-beta-10" ]; then
-    ok "beta considera stable/prerelease e ordena beta-9 antes de beta-10"
+if [ "$(printf '%s\n' "$beta_release" | sed -n '1p')" = "2.1.0-beta-11" ]; then
+    ok "beta considera stable/prerelease e prova beta-9 < beta-10 < beta-11"
 else
     bad "selecao beta ou ordem SemVer incorreta"
 fi
 if ! grep -F '/releases/latest' "$FIXTURE/curl.log" >/dev/null 2>&1; then ok "selecao de canal nao usa /releases/latest"; else bad "selecao usou endpoint latest"; fi
-initial_install_body=$(sed -n '/^install_plugin_source() {/,/^build_mod() {/p' "$REPO/installer/golivebypass-installer.sh")
-if printf '%s\n' "$initial_install_body" | grep -F 'version="$(printf' >/dev/null 2>&1 &&
-   printf '%s\n' "$initial_install_body" | grep -F 'zip="$(printf' >/dev/null 2>&1 &&
-   printf '%s\n' "$initial_install_body" | grep -F 'sha="$(printf' >/dev/null 2>&1 &&
-   printf '%s\n' "$initial_install_body" | grep -F 'do_update_from_zip "$root" "$zip" "$version" "$sha"' >/dev/null 2>&1 &&
-   ! printf '%s\n' "$initial_install_body" | grep -E 'url=.*github_plugin_release|tag=.*url' >/dev/null 2>&1; then
-    ok "instalacao inicial desempacota release em zip/SHA sem URL multiline"
+INITIAL_HARNESS="$FIXTURE/initial-install.sh"
+{
+    printf '%s\n' 'set -eu' 'PLUGIN_DIR_NAME=goLiveBypass' 'PLUGIN_SOURCE=""' "SCRIPT_DIR=\"$FIXTURE/empty\"" 'CHANNEL=beta'
+    printf '%s\n' 'step() { :; }' 'fail() { printf "%s\n" "$1" >&2; return 1; }' 'copy_plugin_from_repo() { fail "unexpected local source"; }'
+    printf '%s\n' 'github_plugin_release() { printf "%s\n" "2.1.0-beta-11" "https://fake/b11.zip" "https://fake/b11.sha" "1"; }'
+    printf '%s\n' 'do_update_from_zip() { printf "%s\n" "$@" > "$1/initial-call"; }'
+    sed -n '/^install_plugin_source() {/,/^}/p' "$REPO/installer/golivebypass-installer.sh"
+} > "$INITIAL_HARNESS"
+INITIAL_ROOT="$FIXTURE/initial-root"
+mkdir -p "$INITIAL_ROOT"
+sh -c '. "$1"; install_plugin_source "$2"' sh "$INITIAL_HARNESS" "$INITIAL_ROOT"
+expected_initial=$(printf '%s\n' "$INITIAL_ROOT" "https://fake/b11.zip" "2.1.0-beta-11" "https://fake/b11.sha")
+if [ "$(cat "$INITIAL_ROOT/initial-call")" = "$expected_initial" ]; then
+    ok "instalacao inicial passa zip e SHA da mesma release"
 else
-    bad "instalacao inicial ainda usa contrato antigo de URL unica"
+    bad "instalacao inicial nao desempacota contrato da release"
 fi
 rm -rf "$FIXTURE"
 rm -f "$HARNESS"

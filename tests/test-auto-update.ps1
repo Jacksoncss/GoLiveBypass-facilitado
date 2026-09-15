@@ -192,6 +192,30 @@ if ((Compare-Version '2.0.0-beta-9' '2.0.0-beta-10') -lt 0 -and
 } else { Bad "ordem SemVer ou no-downgrade incorreta" }
 
 $settingsRoot = Join-Path ([IO.Path]::GetTempPath()) ("golive-channel-" + [guid]::NewGuid().ToString('N'))
+$archiveRoot = Join-Path ([IO.Path]::GetTempPath()) ("golive-archive-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $archiveRoot 'goLiveBypass') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $archiveRoot 'goLiveBypass\manifest.json') -Value '{"name":"GoLiveBypass","version":"1.9.9"}'
+$badZip = Join-Path $archiveRoot 'bad.zip'
+Compress-Archive -Path (Join-Path $archiveRoot 'goLiveBypass') -DestinationPath $badZip -Force
+$badHash = (Get-FileHash -LiteralPath $badZip -Algorithm SHA256).Hash.ToLowerInvariant()
+$updateRoot = Join-Path $archiveRoot 'Equicord'
+New-Item -ItemType Directory -Path (Join-Path $updateRoot 'src\userplugins\goLiveBypass') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $updateRoot 'src\userplugins\goLiveBypass\manifest.json') -Value '{"name":"GoLiveBypass","version":"1.0.0"}'
+$script:fakeDownloadZip = $badZip
+$script:fakeDownloadSha = $badHash
+function Invoke-WebRequest {
+    param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing, [int]$TimeoutSec)
+    if ($OutFile) { Copy-Item -LiteralPath $script:fakeDownloadZip -Destination $OutFile -Force; return }
+    return [pscustomobject]@{ Content = "$script:fakeDownloadSha  plugin.zip" }
+}
+try {
+    Invoke-UpdateFromZip $updateRoot 'https://fake/plugin.zip' '2.0.0'
+    Bad "zip com manifest divergente foi aceito"
+} catch {
+    $kept = Get-Content -LiteralPath (Join-Path $updateRoot 'src\userplugins\goLiveBypass\manifest.json') -Raw
+    if ($kept -match '"version":"1.0.0"') { Ok "manifest divergente e rejeitado antes de substituir target" } else { Bad "target foi substituido antes da validacao do manifest" }
+}
+Remove-Item $archiveRoot -Recurse -Force
 $env:APPDATA = $settingsRoot
 New-Item -ItemType Directory -Path (Join-Path $settingsRoot 'Equicord\settings') -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $settingsRoot 'Equicord\settings\settings.json') -Value '{"autoUpdate":false,"other":{"keep":true}}'

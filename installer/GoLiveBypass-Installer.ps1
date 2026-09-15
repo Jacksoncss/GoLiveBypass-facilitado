@@ -47,7 +47,8 @@ Write-Host ''
 Write-Host '  GoLiveBypass para Equicord/Vencord — escolha seu canal de atualizacoes.' -ForegroundColor Cyan
 Write-Host '         Stable e a opcao recomendada: canal mais previsivel, somente releases estaveis.' -ForegroundColor DarkGray
 Write-Host '         Beta e opcional: canal de testes; voce ajuda a comunidade ao testar, encontrar' -ForegroundColor DarkGray
-Write-Host '         e corrigir erros antes da versao estavel. Nenhum canal promete estabilidade.' -ForegroundColor DarkGray
+Write-Host '         e corrigir erros antes da versao estavel. O sistema ainda nao e estavel; nenhum canal promete estabilidade.' -ForegroundColor DarkGray
+Write-Host '         Ao testar, encontrar e corrigir erros, relate em https://github.com/bezumiya/GoLiveBypass/issues.' -ForegroundColor DarkGray
 Write-Host '         O standalone continua separado e nao e alterado por este instalador.' -ForegroundColor DarkGray
 Write-Host ''
 
@@ -2204,6 +2205,11 @@ function Invoke-UpdateFromZip($root, $zipUrl, $expectedVersion, $shaUrl = $null)
     if (-not $extracted -or $extracted.Name -ne $PluginDirName) {
         Remove-CaminhoSilencioso $tempDir
         throw 'Zip nao tem a pasta esperada (goLiveBypass/).'
+    }
+    $extractedVersion = Get-InstalledPluginVersion $extracted.FullName
+    if (-not $extractedVersion -or (Compare-Version $extractedVersion $expectedVersion) -ne 0) {
+        Remove-CaminhoSilencioso $tempDir
+        throw "Manifest do plugin nao corresponde a release $expectedVersion."
     }
     $target = Join-Path $root "src\userplugins\$PluginDirName"
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }

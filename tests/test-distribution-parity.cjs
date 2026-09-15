@@ -175,23 +175,23 @@ test("instalador Windows distribui stability.ts", () => {
     assert.match(windowsInstaller, /goLiveBypass\/stability\.ts/);
 });
 
-test("instalador Windows libera explicitamente a linha beta", () => {
+test("instalador Windows explica canais stable/beta sem prometer estabilidade", () => {
     const banner = windowsInstaller.slice(0, windowsInstaller.indexOf("$ErrorActionPreference"));
-    assert.match(banner, /\[BETA\]/);
-    assert.match(banner, /canal beta WireGuard/);
-    assert.doesNotMatch(banner, /temporariamente fora do ar/);
+    assert.match(banner, /ValidateSet\('stable', 'beta'\)/);
+    assert.match(banner, /Stable e a opcao recomendada/);
+    assert.match(banner, /Beta e opcional/);
+    assert.match(banner, /sistema ainda nao e estavel/);
+    assert.match(banner, /GoLiveBypass\/issues/);
     assert.doesNotMatch(banner, /Nenhuma instalacao foi realizada/);
 });
 
-test("instalador Linux libera explicitamente a linha beta", () => {
+test("instalador Linux explica canais stable/beta sem prometer estabilidade", () => {
     const banner = linuxInstaller.slice(0, linuxInstaller.indexOf("\nset -eu"));
-    assert.match(banner, /\[BETA\]/);
-    assert.match(banner, /canal beta WireGuard/);
-    assert.match(banner, /nao e estavel/);
+    assert.match(banner, /Stable e a opcao recomendada/);
+    assert.match(banner, /Beta e opcional/);
+    assert.match(banner, /sistema ainda nao e estavel/);
     assert.match(banner, /GoLiveBypass\/issues/);
-    // O aviso e convite a reportar bug, nao bloqueio: sem saida antecipada.
     assert.doesNotMatch(banner, /^\s*exit\b/m);
-    assert.doesNotMatch(banner, /temporariamente fora do ar/);
     assert.doesNotMatch(banner, /Nenhuma instalacao foi realizada/);
 });
 

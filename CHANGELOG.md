@@ -26,7 +26,7 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Corrige o shim Windows do `pnpm`: `Invoke-Pnpm` resolve um executável/entrypoint real, captura o código de saída de forma determinística (incluindo `exit=-1` quando o shim lança exceção) e é usado em `Test-Pnpm`, `Build-Mod` e `Remove-PluginSource`.
 - A pós-condição agora é verificada por Discord escolhido, com evento canônico `installer.inject`; `exit=-1` com a injeção confirmada vira apenas warning, enquanto ausência da pós-condição bloqueia o fluxo.
 - Os caminhos Linux deixam de passar o separador `--` extra ao `pnpm`; os detalhes da injeção continuam limitados e redigidos.
-- Esta correção sucede o incidente do beta-17 (archive sem `bug-report.ts`/`vpn-snapshot-worker.ts`) e a guarda de distribuição do beta-18; beta-19 inclui ambas as proteções e permanece prerelease do canal beta, nunca `latest`.
+- O ZIP público beta-19 auditado contém `stability.ts`, `vpn-types.ts` e os demais módulos exigidos. O instalador agora valida a árvore copiada (arquivos obrigatórios presentes e não vazios) antes de chamar `pnpm build`; uma fonte local/checkout parcial falha explicitamente, sem aceitar módulo stale ou fallback vazio. Limitação: a reprodução original com `pnpm 11.22.0` e o checkout Windows do usuário não está disponível neste host Linux.
 
 ## [2.0.6-beta-18] - 2026-09-14
 

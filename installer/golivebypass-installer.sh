@@ -1364,6 +1364,18 @@ stop_discord() {
 # Fontes uma a uma (checkout local ao lado do script ou raw.githubusercontent). E o caminho
 # de reserva: o main pode estar atras da tag da linha beta — foi o caso da vpn-linux.ts, que
 # so existia no zip — e ai a lista PLUGIN_FILES pede arquivo que o main ainda nao tem.
+validate_plugin_source_tree() {
+    local target="$1" file leaf candidate
+    [ -n "$target" ] || fail "Destino invalido para a fonte do plugin."
+    for file in $PLUGIN_FILES; do
+        leaf="$(basename "$file")"
+        candidate="$target/$leaf"
+        [ -f "$candidate" ] || fail "Arquivo obrigatorio do plugin ausente: $leaf."
+        [ -s "$candidate" ] || fail "Arquivo obrigatorio do plugin vazio: $leaf."
+    done
+    return 0
+}
+
 copy_plugin_from_repo() {
     local root="$1" target="$1/src/userplugins/$PLUGIN_DIR_NAME" file
     step "Instalando o plugin em $target"
@@ -1384,6 +1396,10 @@ copy_plugin_from_repo() {
             repo_file "$file" > "$target/$(basename "$file")"
         fi
     done
+
+    # Nunca compilar uma arvore parcial: um arquivo ausente ou vazio deve interromper a
+    # instalacao explicitamente, em vez de reutilizar um modulo stale no destino.
+    validate_plugin_source_tree "$target"
 
     # `&&` sozinho como ultima linha deixaria a funcao com o codigo de saida do teste, e sob
     # `set -e` uma pasta vazia derrubaria o instalador inteiro.

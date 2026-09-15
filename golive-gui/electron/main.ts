@@ -35,8 +35,7 @@ import { validateWgConfContent } from "./wg-validator";
 import * as proton from "./proton";
 import { ProtonOptimizationCoordinator } from "./proton-optimization";
 import { restoreBypassOnStartup, type StartupOptimizationResult } from "./startup-restore";
-import { findWindowsDiscordInstall } from "./windows-discord-install";
-import { collectWindowsDiscoveryPowerShell, collectWindowsDiscoverySnapshot, createWindowsDiscoveryCache, rootsForEnvironment, toPublicWindowsDiscoveryInstall, type WindowsDiscoverySnapshotCollectors } from "./windows-discord-discovery";
+import { collectWindowsDiscoveryPowerShell, collectWindowsDiscoverySnapshot, createWindowsDiscoveryCache, rootsForEnvironment, toPublicWindowsDiscoveryInstall, type WindowsDiscoveryEnvironment, type WindowsDiscoverySnapshotCollectors } from "./windows-discord-discovery";
 import { waitForProcessRunning, waitForProcessStopped, type ProcessProbeState } from "./wait-condition";
 import { TUNNEL_STARTUP_SETTLE_MS, waitForTunnelStartupSettle } from "./tunnel-startup";
 import { linuxPreflightRepairable, parseLinuxPreflight, linuxPreflightMessage, type LinuxPreflight } from "./linux-preflight";
@@ -270,10 +269,8 @@ const windowsDiscoveryCollectors: WindowsDiscoverySnapshotCollectors = {
   },
 };
 
-const windowsDiscoveryCache = createWindowsDiscoveryCache({
-  platform: () => process.platform,
-  nowMs: () => Date.now(),
-  readEnv: () => ({
+function readWindowsDiscoveryEnvironment(): WindowsDiscoveryEnvironment {
+  return {
     LOCALAPPDATA: process.env.LOCALAPPDATA,
     APPDATA: process.env.APPDATA,
     USERPROFILE: process.env.USERPROFILE,
@@ -282,7 +279,12 @@ const windowsDiscoveryCache = createWindowsDiscoveryCache({
     ProgramFiles: process.env.ProgramFiles,
     "ProgramFiles(x86)": process.env["ProgramFiles(x86)"],
     ProgramW6432: process.env.ProgramW6432,
-  }),
+  };
+}
+const windowsDiscoveryCache = createWindowsDiscoveryCache({
+  platform: () => process.platform,
+  nowMs: () => Date.now(),
+  readEnv: readWindowsDiscoveryEnvironment,
   rootsForEnv: rootsForEnvironment,
   collectFresh: (env, roots) => collectWindowsDiscoverySnapshot(env, windowsDiscoveryCollectors, Date.now(), roots),
 });
@@ -876,23 +878,29 @@ function logWindowsDiscoveryHealth(sourceFailure: string | undefined): void {
     if (!match) continue;
     const origem = match[1] as "process" | "registry";
     const code = match[2];
-    const status = code === "partial" || code === "PROCESS_LIMIT" || code === "UNINSTALL_LIMIT" || code === "REGISTRY_PARTIAL"
-      ? "partial"
-      : code === "error" || code === "REGISTRY_UNAVAILABLE" || code === "CIM_UNAVAILABLE"
-        ? "error"
-        : null;
-    if (!status) continue;
+    const isBounded = boundedCodes.has(code);
+    const status = code === "partial" || isBounded ? "partial" : "error";
     discordscan.scanFonte(origem, status, {
-      truncated: boundedCodes.has(code),
+      truncated: isBounded,
       errorCode: /^[A-Z][A-Z0-9_]*$/.test(code) ? code : undefined,
     });
   }
 }
 
+function logWindowsDiscoveryRoots(env: WindowsDiscoveryEnvironment): void {
+  for (const root of rootsForEnvironment(env)) {
+    for (const flavour of ALL_APPS) {
+      const rootPath = path.win32.join(root, flavour);
+      discordscan.scanRaiz(rootPath, diskFs.existsSync(rootPath), flavour);
+    }
+  }
+}
+
 
 function getWinDiscordInstalls(options: WindowsDiscoveryReadOptions = {}): DiscordInstall[] {
-  const localAppData = process.env.LOCALAPPDATA;
-  discordscan.scanInicio("win32", localAppData);
+  const env = readWindowsDiscoveryEnvironment();
+  discordscan.scanInicio("win32", env.LOCALAPPDATA);
+  logWindowsDiscoveryRoots(env);
   const snapshot = withNoAsar(() => windowsDiscoveryCache.read(options));
   logWindowsDiscoveryHealth(snapshot.sourceFailure);
   for (const candidate of snapshot.installs) {

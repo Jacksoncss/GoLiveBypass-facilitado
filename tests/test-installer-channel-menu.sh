@@ -27,28 +27,29 @@ tui_is_interactive() { [ "$TUI_MODE" = tui ]; }
 tui_menu() { printf '%s\n' "$TUI_CHOICE"; }
 get_persisted_channel() { if [ -f "$TUI_LOG" ]; then cat "$TUI_LOG"; else printf '%s\n' stable; fi; }
 persist_channel() { printf '%s\n' "$2" > "$TUI_LOG"; }
-download() { download_calls=$((download_calls + 1)); }
+install_plugin_source() { install_calls=$((install_calls + 1)); }
+do_update_from_zip() { update_calls=$((update_calls + 1)); }
 build_mod() { build_calls=$((build_calls + 1)); }
 inject_mod() { inject_calls=$((inject_calls + 1)); }
-download_calls=0; build_calls=0; inject_calls=0
+install_calls=0; update_calls=0; build_calls=0; inject_calls=0
 ok() { :; }
 warn() { :; }
 EOF
 
 # A escolha beta grava e a confirmação relê o valor realmente persistido.
-printf '2\n' | TUI_LOG="$TMP/beta.log" CALL_LOG="$TMP/beta-calls.log" sh -c '. "$1"; TUI_LOG="$TUI_LOG"; CALL_LOG="$CALL_LOG"; change_channel_menu "$2"; printf "%s %s %s\n" "$download_calls" "$build_calls" "$inject_calls" > "$CALL_LOG"' sh "$TMP/change.sh" "$TMP/checkout"
+printf '2\n' | TUI_LOG="$TMP/beta.log" CALL_LOG="$TMP/beta-calls.log" sh -c '. "$1"; TUI_LOG="$TUI_LOG"; CALL_LOG="$CALL_LOG"; change_channel_menu "$2"; printf "%s %s %s %s\n" "$install_calls" "$update_calls" "$build_calls" "$inject_calls" > "$CALL_LOG"' sh "$TMP/change.sh" "$TMP/checkout"
 [ "$(cat "$TMP/beta.log")" = beta ]
 # O ramo TUI também persiste a escolha sem executar ações do instalador.
 rm -f "$TMP/tui.log"
 TUI_MODE=tui TUI_CHOICE=2 TUI_LOG="$TMP/tui.log" sh -c '. "$1"; TUI_LOG="$TUI_LOG"; TUI_MODE=tui; TUI_CHOICE=2; change_channel_menu "$2"' sh "$TMP/change.sh" "$TMP/checkout"
 [ "$(cat "$TMP/tui.log")" = beta ]
-[ "$(cat "$TMP/beta-calls.log")" = "0 0 0" ]
+[ "$(cat "$TMP/beta-calls.log")" = "0 0 0 0" ]
 
 # Cancelar não grava e não executa efeitos colaterais.
 rm -f "$TMP/cancel.log"
-printf '0\n' | TUI_LOG="$TMP/cancel.log" CALL_LOG="$TMP/cancel-calls.log" sh -c '. "$1"; TUI_LOG="$TUI_LOG"; CALL_LOG="$CALL_LOG"; change_channel_menu "$2"; printf "%s %s %s\n" "$download_calls" "$build_calls" "$inject_calls" > "$CALL_LOG"' sh "$TMP/change.sh" "$TMP/checkout"
+printf '0\n' | TUI_LOG="$TMP/cancel.log" CALL_LOG="$TMP/cancel-calls.log" sh -c '. "$1"; TUI_LOG="$TUI_LOG"; CALL_LOG="$CALL_LOG"; change_channel_menu "$2"; printf "%s %s %s %s\n" "$install_calls" "$update_calls" "$build_calls" "$inject_calls" > "$CALL_LOG"' sh "$TMP/change.sh" "$TMP/checkout"
 [ ! -e "$TMP/cancel.log" ]
-[ "$(cat "$TMP/cancel-calls.log")" = "0 0 0" ]
+[ "$(cat "$TMP/cancel-calls.log")" = "0 0 0 0" ]
 
 # Sem checkout, a opção informa o próximo passo e não grava configuração ambígua.
 rm -f "$TMP/no-checkout.log"

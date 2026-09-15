@@ -11,7 +11,7 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - A preferência é persistida separadamente em `plugins.GoLiveBypass.updateChannel` no `settings.json` do Equicord/Vencord, preservando `autoUpdate` e as demais chaves; as configurações da GUI e do standalone não são tocadas.
 - Checagens e instalações escolhem a maior versão SemVer válida do canal, exigem release publicada com ZIP e SHA-256, rejeitam metadata inconsistente e nunca fazem downgrade. `--check-update`/`-Mode CheckUpdate` consultam a API sem baixar o ZIP, mas podem persistir a preferência de canal após uma operação válida.
 - Como o canal selecionado exige um ZIP e seu SHA-256 da mesma release, uma release sem esses assets agora falha de forma explícita e não cai silenciosamente em `RepoRaw`; use `--plugin-source`/`-PluginSource` somente quando quiser uma fonte local explícita.
-- O menu principal agora oferece `Mudar canal de atualizacoes` com submenu Stable/Beta/Cancelar. A troca salva imediatamente e retorna ao menu sem instalar, atualizar, compilar, injetar ou reiniciar; sem checkout, mostra como preparar um mod primeiro e não grava configuração ambígua.
+- O menu principal agora oferece `Mudar canal de atualizacoes` com submenu Stable/Beta/Cancelar. A troca salva imediatamente e retorna ao menu sem instalar, atualizar, compilar, injetar ou reiniciar; sem checkout, mostra como preparar um mod primeiro e não grava configuração ambígua. No fallback textual, `uninstall`/`restore` passam de `[4]`/`[5]` para `[5]`/`[6]`.
 
 
 ### Instalador Windows: injeção e fonte ausente

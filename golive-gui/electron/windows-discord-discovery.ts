@@ -847,7 +847,7 @@ function collectShortcutLinks(
   if (!vendorDepth) return candidates;
 
   for (const vendor of vendors.slice(0, 64)) {
-    const names = readShortcutNames(vendor);
+    const names = readShortcutNames(vendor, deps);
     let vendorCount = 0;
     for (const name of names) {
       if (!/\.lnk$/i.test(name) || vendorCount++ >= 64) continue;

@@ -1239,6 +1239,20 @@ function Copy-PluginHelper($target) {
         Remove-CaminhoSilencioso $temporary
     }
 }
+function Assert-PluginSourceTree($target) {
+    if (-not $target) { throw 'Destino invalido para a fonte do plugin.' }
+    foreach ($file in $PluginFiles) {
+        $leaf = Split-Path -Leaf $file
+        $candidate = Join-Path $target $leaf
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Arquivo obrigatorio do plugin ausente: $leaf."
+        }
+        $item = Get-Item -LiteralPath $candidate
+        if ($item.Length -le 0) {
+            throw "Arquivo obrigatorio do plugin vazio: $leaf."
+        }
+    }
+}
 
 function Copy-PluginFromRepo($root) {
     if (-not $root) { throw 'Caminho do checkout invalido para copiar o plugin.' }
@@ -1269,16 +1283,20 @@ function Copy-PluginFromRepo($root) {
         }
 
         $local = Join-Path $sourceBase $leaf
-        if (-not (Test-Path -LiteralPath $local)) { throw "Nao achei $leaf em $PluginSource." }
+        if (-not (Test-Path -LiteralPath $local -PathType Leaf)) { throw "Nao achei $leaf em $PluginSource." }
         Copy-Item -LiteralPath $local -Destination (Join-Path $target $leaf) -Force
     }
 
+    # Nunca compilar uma arvore parcial: um arquivo ausente ou vazio deve interromper a
+    # instalacao explicitamente, em vez de reutilizar um modulo stale no destino.
+    Assert-PluginSourceTree $target
     Copy-PluginHelper $target
 
     if ($PluginSource -and -not [string]::IsNullOrWhiteSpace($PluginSource)) {
         Write-Warn "Plugin copiado de $PluginSource, e nao do GitHub."
     }
 }
+
 
 # De onde vem o plugin instalado. O zip da release e a fonte normal: e o mesmo artefato que
 # o updater do proprio plugin instala, com SHA-256 publicado ao lado, e a tag entrega a linha

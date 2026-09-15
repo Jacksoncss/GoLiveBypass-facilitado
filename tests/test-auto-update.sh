@@ -277,6 +277,16 @@ else
     bad "selecao beta ou ordem SemVer incorreta"
 fi
 if ! grep -F '/releases/latest' "$FIXTURE/curl.log" >/dev/null 2>&1; then ok "selecao de canal nao usa /releases/latest"; else bad "selecao usou endpoint latest"; fi
+initial_install_body=$(sed -n '/^install_plugin_source() {/,/^build_mod() {/p' "$REPO/installer/golivebypass-installer.sh")
+if printf '%s\n' "$initial_install_body" | grep -F 'version="$(printf' >/dev/null 2>&1 &&
+   printf '%s\n' "$initial_install_body" | grep -F 'zip="$(printf' >/dev/null 2>&1 &&
+   printf '%s\n' "$initial_install_body" | grep -F 'sha="$(printf' >/dev/null 2>&1 &&
+   printf '%s\n' "$initial_install_body" | grep -F 'do_update_from_zip "$root" "$zip" "$version" "$sha"' >/dev/null 2>&1 &&
+   ! printf '%s\n' "$initial_install_body" | grep -E 'url=.*github_plugin_release|tag=.*url' >/dev/null 2>&1; then
+    ok "instalacao inicial desempacota release em zip/SHA sem URL multiline"
+else
+    bad "instalacao inicial ainda usa contrato antigo de URL unica"
+fi
 rm -rf "$FIXTURE"
 rm -f "$HARNESS"
 echo

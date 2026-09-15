@@ -215,6 +215,18 @@ try {
     $kept = Get-Content -LiteralPath (Join-Path $updateRoot 'src\userplugins\goLiveBypass\manifest.json') -Raw
     if ($kept -match '"version":"1.0.0"') { Ok "manifest divergente e rejeitado antes de substituir target" } else { Bad "target foi substituido antes da validacao do manifest" }
 }
+Set-Content -LiteralPath (Join-Path $archiveRoot 'goLiveBypass\manifest.json') -Value '{"name":"GoLiveBypass","version":"2.0.0"}'
+$goodZip = Join-Path $archiveRoot 'good.zip'
+Compress-Archive -Path (Join-Path $archiveRoot 'goLiveBypass') -DestinationPath $goodZip -Force
+$script:fakeDownloadZip = $goodZip
+$script:fakeDownloadSha = (Get-FileHash -LiteralPath $goodZip -Algorithm SHA256).Hash.ToLowerInvariant()
+try {
+    Invoke-UpdateFromZip $updateRoot 'https://fake/plugin.zip' '2.0.0'
+    $accepted = Get-Content -LiteralPath (Join-Path $updateRoot 'src\userplugins\goLiveBypass\manifest.json') -Raw
+    if ($accepted -match '"version":"2.0.0"') { Ok "manifest correspondente e aceito antes de substituir target" } else { Bad "zip valido nao foi instalado" }
+} catch {
+    Bad "manifest correspondente foi rejeitado: $($_.Exception.Message)"
+}
 Remove-Item $archiveRoot -Recurse -Force
 $env:APPDATA = $settingsRoot
 New-Item -ItemType Directory -Path (Join-Path $settingsRoot 'Equicord\settings') -Force | Out-Null

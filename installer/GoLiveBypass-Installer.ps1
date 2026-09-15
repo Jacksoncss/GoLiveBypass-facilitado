@@ -2023,7 +2023,8 @@ function Compare-Version($installed, $latest) {
     }
     return 0
 }
-# use /releases/latest here: it hides beta and cannot prove the required assets.
+# Consulta a coleção /releases?per_page=30; não usa /releases/latest, pois o
+# endpoint latest oculta prereleases e não fornece o contrato completo de assets.
 function Get-PluginReleaseCandidates([string]$channel = $script:SelectedChannel) {
     try {
         $headers = @{ 'User-Agent' = 'GoLiveBypass-Installer'; 'Accept' = 'application/vnd.github+json' }
@@ -2206,8 +2207,13 @@ function Invoke-UpdateFromZip($root, $zipUrl, $expectedVersion, $shaUrl = $null)
         Remove-CaminhoSilencioso $tempDir
         throw 'Zip nao tem a pasta esperada (goLiveBypass/).'
     }
-    $extractedVersion = Get-InstalledPluginVersion $extracted.FullName
-    if (-not $extractedVersion -or (Compare-Version $extractedVersion $expectedVersion) -ne 0) {
+    $manifestPath = Join-Path $extracted.FullName 'manifest.json'
+    $extractedVersion = $null
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($manifest.PSObject.Properties['version']) { $extractedVersion = [string]$manifest.version }
+    } catch { }
+    if (-not $extractedVersion -or -not (ConvertTo-PluginVersion $extractedVersion) -or (Compare-Version $extractedVersion $expectedVersion) -ne 0) {
         Remove-CaminhoSilencioso $tempDir
         throw "Manifest do plugin nao corresponde a release $expectedVersion."
     }

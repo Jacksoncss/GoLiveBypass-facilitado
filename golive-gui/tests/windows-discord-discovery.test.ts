@@ -115,6 +115,7 @@ describe("discovery Windows puro", () => {
     expect(normalizeWindowsDiscoveryPath(`${executable},0`, "displayIcon")).toBe(executable);
     expect(normalizeWindowsDiscoveryPath(`"${executable}",0`, "displayIcon")).toBe(executable);
     expect(normalizeWindowsDiscoveryPath(`"${executable}"`, "value")).toBe(executable);
+    expect(normalizeWindowsDiscoveryPath(executable, "process")).toBe(executable);
   });
   it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {
     expect(parseWindowsDiscoveryCommand(
@@ -153,6 +154,17 @@ describe("discovery Windows puro", () => {
     expect(validateWindowsProcessExecutable(exe, "Discord", fs)).toBe(exe);
   });
 
+  it("rejeita args sem aspas mesmo quando o último argumento termina em .exe", () => {
+    const command = "C:\\Discord\\Update.exe --processStart Discord.exe";
+    expect(parseWindowsDiscoveryCommand(command)).toEqual({
+      executable: "C:\\Discord\\Update.exe",
+      args: ["--processStart", "Discord.exe"],
+    });
+    expect(normalizeWindowsDiscoveryPath(command, "process")).toBeNull();
+    expect(normalizeWindowsDiscoveryPath(command, "value")).toBeNull();
+    expect(normalizeWindowsDiscoveryPath(`${command},0`, "displayIcon")).toBeNull();
+  });
+
   it("rejeita caminho relativo, UNC, ADS, argumentos, flavour falso e arquivo não regular", () => {
     const fs = fakeFs(["C:\\Discord\\Discord.exe"]);
     expect(normalizeWindowsDiscoveryPath("Discord.exe", "process")).toBeNull();
@@ -163,7 +175,6 @@ describe("discovery Windows puro", () => {
     expect(validateWindowsExecutable("C:\\Discord\\Discord.exe", "Discord", fakeFs([]))).toBeNull();
     expect(validateWindowsProcessExecutable("C:\\Custom\\Discord.exe", "Discord", fs)).toBeNull();
   });
-
   it("deduplica somente exePath, respeita precedência e preserva roots do mesmo flavour", () => {
     const stable = "C:\\One\\Discord.exe";
     const other = "D:\\Two\\Discord.exe";

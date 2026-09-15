@@ -278,17 +278,28 @@ export function parseWindowsDiscoveryCommand(raw: string): WindowsDiscoveryComma
 function extractPathToken(raw: string, context: "process" | "value" | "displayIcon"): string | null {
   const input = raw.trim();
   if (!input) return null;
-  if (context === "displayIcon") {
-    const quoted = input.match(/^"([^"\r\n]+)"(?:,0)?$/i);
-    if (quoted) return quoted[1];
-    const unquoted = input.match(/^(.+?\.exe),0$/i);
-    if (unquoted) return unquoted[1].trim();
+  const commandInput = context === "displayIcon" && /,0$/i.test(input)
+    ? input.slice(0, -2).trimEnd()
+    : input;
+  const command = parseWindowsDiscoveryCommand(commandInput);
+  if (!command) return null;
+  if (command.args.length === 0) return command.executable;
+  // A raw ExecutablePath/DisplayIcon may be an unquoted path containing spaces.
+  // Treat it as one token only when every remainder is visibly a path segment;
+  // command arguments (including an option ending in .exe) remain rejected.
+  if (
+    !commandInput.includes('"') &&
+    /\.exe$/i.test(commandInput) &&
+    command.args.every((arg) =>
+      /[\\/]/.test(arg) &&
+      !/^[A-Za-z]:[\\/]/.test(arg) &&
+      !arg.startsWith("-") &&
+      !arg.startsWith("/"),
+    )
+  ) {
+    return commandInput;
   }
-  if (input.startsWith('"')) {
-    const quoted = input.match(/^"([^"\r\n]+)"$/);
-    return quoted?.[1] ?? null;
-  }
-  return input;
+  return null;
 }
 
 export function normalizeWindowsDiscoveryPath(

@@ -32,20 +32,20 @@ Hoje `golive-gui/electron/main.ts:getWinDiscordInstalls()` só testa essas raíz
 - Adicionar inventário completo de MSIX/AppX nesta primeira versão.
 - Exigir validação Authenticode ou introduzir uma dependência externa para ler registro, processos ou atalhos.
 
-## Arquitetura: pipeline Windows bounded
+# Arquitetura: pipeline Windows bounded
 
 `getWinDiscordInstalls()` continuará sendo a porta de entrada síncrona usada pela GUI. Internamente, a descoberta será um pipeline de handlers independentes, todos limitados a fontes conhecidas:
 
-1. **Raízes fixas atuais e raízes conhecidas de Program Files**: preserva as raízes sob `%LOCALAPPDATA%` e adiciona somente combinações estáticas sob `%ProgramFiles%` e `%ProgramFiles(x86)%`:
-   `%ProgramFiles%\<flavour>`, `%ProgramFiles%\Programs\<flavour>`, `%ProgramFiles(x86)%\<flavour>` e `%ProgramFiles(x86)%\Programs\<flavour>`.
+1. **Raízes fixas atuais e raízes conhecidas de Program Files**: preserva as raízes sob `%LOCALAPPDATA%` e adiciona somente combinações estáticas sob `%ProgramFiles%`, `%ProgramFiles(x86)%` e `%ProgramW6432%` quando este último existir e for diferente dos demais:
+   `%ProgramFiles%\<flavour>`, `%ProgramFiles%\Programs\<flavour>`, `%ProgramFiles(x86)%\<flavour>`, `%ProgramFiles(x86)%\Programs\<flavour>`, `%ProgramW6432%\<flavour>` e `%ProgramW6432%\Programs\<flavour>`.
    Cada diretório é consultado diretamente. O handler chama o finder existente, que só examina o executável direto e subpastas `app-*` imediatas.
 2. **Processo em execução**: uma coleta PowerShell única consulta `Win32_Process` somente para os seis nomes de imagem allowlistados e devolve `ExecutablePath`. O handler transforma caminhos válidos em instalações mesmo quando nenhum root conhecido existe.
-3. **Registro**: a mesma coleta PowerShell lê `App Paths` e entradas relevantes de `Uninstall` em `HKCU`, `HKLM` e a visão `WOW6432Node`. `DisplayIcon` e `InstallLocation` são apenas indícios; cada caminho passa pelo mesmo validador e, quando é uma raiz, pelo finder bounded.
-4. **Handlers/adapters**: cada fonte tem um adapter separado que converte sua saída para um candidato comum (`root`, `process`, `registry` ou `shortcut`), sem fazer spawn, iniciar cliente ou modificar o sistema. O parser PowerShell é puro em relação à decisão de validade; filesystem e resolução de atalho são dependências injetáveis.
-5. **Atalhos conhecidos**: `shell.readShortcutLink()` é usado somente em diretórios de atalhos do usuário e comuns: Start Menu do usuário, Start Menu comum, Desktop do usuário e Public Desktop. A enumeração é de um nível, limitada e filtrada por nomes dos flavours. Não há busca recursiva.
+3. **Registro**: a mesma coleta PowerShell lê `App Paths`, URL handlers e entradas relevantes de `Uninstall` em `HKCU`, `HKLM` e a visão `WOW6432Node`. O valor DEFAULT de `App Paths`/URL handler, `DisplayIcon` e `InstallLocation` são apenas indícios; cada caminho passa pelo mesmo validador e, quando é uma raiz, pelo finder bounded.
+4. **Handlers/adapters**: cada fonte tem um adapter separado que converte sua saída para um candidato comum (`root`, `process`, `registry` ou `shortcut`), sem fazer spawn, iniciar cliente ou modificar o sistema. O parser do JSON PowerShell é independente do adapter de atalhos; filesystem e resolução de atalho são dependências injetáveis.
+5. **Atalhos conhecidos**: `shell.readShortcutLink()` é um adapter separado, não parte do stdout PowerShell. Ele usa exatamente quatro raízes: `%APPDATA%\Microsoft\Windows\Start Menu\Programs`, `%ProgramData%\Microsoft\Windows\Start Menu\Programs`, `%USERPROFILE%\Desktop` e `%PUBLIC%\Desktop`. Em cada raiz de Start Menu são permitidos links diretos (`dir\*.lnk`) e exatamente um subnível vendor (`dir\*\*.lnk`); não há segundo subnível nem recursão. A enumeração é filtrada por flavour e limitada a no máximo 64 links por raiz e 64 por subdiretório vendor.
 6. **Validação, deduplicação e retorno**: os handlers entregam candidatos; o pipeline valida, deduplica, registra metadados de origem e devolve a mesma forma consumida por `main.ts`.
 
-A chamada continua sob `withNoAsar()`, usando `original-fs` (`diskFs`) para tratar caminhos reais do Windows. `resources` será derivado como a pasta `resources` ao lado de `exePath`; sua existência não é requisito de descoberta e nenhum `app.asar` é consultado.
+Os argumentos de atalhos são lidos somente em memória para decidir o candidato; nunca são executados, persistidos ou registrados no log. A chamada continua sob `withNoAsar()`, usando `original-fs` (`diskFs`) para tratar caminhos reais do Windows. `resources` será derivado como a pasta `resources` ao lado de `exePath`; sua existência não é requisito de descoberta e nenhum `app.asar` é consultado.
 
 ## Contrato do coletor PowerShell — `schema=1`
 
@@ -64,7 +64,8 @@ A saída stdout será JSON compacto no formato:
         "pid": 1234,
         "path": "C:\\Program Files\\Discord\\app-1.0.0\\Discord.exe"
       }
-    ]
+    ],
+    "truncated": false
   },
   "registry": {
     "status": "partial",
@@ -72,12 +73,20 @@ A saída stdout será JSON compacto no formato:
       {
         "hive": "hkcu",
         "kind": "app-paths",
+        "value": "\"C:\\Program Files\\Discord\\Discord.exe\"",
+        "flavourHint": "Discord"
+      },
+      {
+        "hive": "hklm",
+        "kind": "uninstall",
+        "value": "",
         "flavourHint": "Discord",
         "displayIcon": "C:\\Program Files\\Discord\\Update.exe,0",
         "installLocation": "C:\\Program Files\\Discord"
       }
     ],
-    "truncated": false
+    "truncated": true,
+    "errorCode": "UNINSTALL_LIMIT"
   }
 }
 ```
@@ -85,14 +94,20 @@ A saída stdout será JSON compacto no formato:
 Os campos são definidos assim:
 
 - `schema` é inteiro e deve ser exatamente `1`; versões desconhecidas são rejeitadas.
-- Cada bloco tem `status`: `ok`, `empty`, `partial` ou `error`. `empty` é uma resposta normal, inclusive quando nenhum processo está executando.
+- Cada bloco tem `status`: `ok`, `empty`, `partial` ou `error`, e `truncated: boolean`. `empty` é uma resposta normal, inclusive quando nenhum processo está executando. `partial` é obrigatório quando um teto de coleta é atingido; `error` representa falha daquele bloco.
 - `process.rows` contém somente `name`, `pid` e `path`. `CommandLine`, argumentos e stdout/stderr de processos nunca são coletados nem retornados.
-- `registry.rows` contém apenas `hive`, `kind`, `flavourHint`, `displayIcon` e `installLocation`. O coletor pode ler propriedades cruas para formar a resposta, mas elas ficam em memória e não vão para o logger.
-- `errorCode` é um código estável, como `CIM_UNAVAILABLE`, `REGISTRY_UNAVAILABLE`, `TIMEOUT` ou `JSON_SERIALIZATION_FAILED`; exceções e mensagens com caminhos não saem do coletor.
-- As listas são forçadas com `@(...)`, pois o PowerShell 5.1 serializa uma lista de um elemento como objeto. O parser TypeScript aceita a forma resultante somente depois de normalizá-la para array.
-- Há limite de registros (por exemplo, 64 candidatos por bloco). Se o limite for alcançado, o bloco vira `partial` e marca `truncated=true`; o restante do pipeline continua.
+- `registry.rows` contém `hive`, `kind`, `value` e, quando aplicável, `flavourHint`, `displayIcon` e `installLocation`. `kind` é exatamente um de `app-paths`, `uninstall` ou `url-handler`.
+- Para `app-paths` e `url-handler`, `value` é o valor DEFAULT da chave. Para `uninstall`, `value` também representa o DEFAULT da subchave e `displayIcon`/`installLocation` permanecem disponíveis. O coletor não envia uma propriedade `Path` separada.
+- `flavourHint` de `app-paths` e `url-handler` só pode ser derivado de um mapeamento constante de nomes de executável/chaves e esquemas URL conhecidos. Em `uninstall`, ele só pode ser derivado de `DisplayName` allowlistado ou de um caminho cujo flavour seja inequívoco; texto arbitrário não escolhe flavour.
+- `errorCode` é um código estável por bloco, como `CIM_UNAVAILABLE`, `REGISTRY_UNAVAILABLE`, `UNINSTALL_LIMIT`, `TIMEOUT` ou `JSON_SERIALIZATION_FAILED`; exceções e mensagens com caminhos não saem do coletor.
+- As listas são forçadas com `@(...)`, pois o PowerShell 5.1 serializa uma lista de um elemento como objeto. O parser TypeScript normaliza a forma resultante para array antes da validação.
+- O limite de processo é 64 rows. O limite de `Uninstall` é 128 subchaves por hive/root consultado; o bloco marca `partial` e `truncated=true` ao atingir o teto. Os limites de App Paths e URL handlers também são fixos e pequenos. O restante do pipeline continua.
 
-O bloco de processo usa um filtro CIM limitado aos nomes literais `Discord.exe`, `DiscordPTB.exe`, `DiscordCanary.exe`, `Vesktop.exe`, `Equibop.exe` e `Legcord.exe`, seguido de `Select-Object Name,ProcessId,ExecutablePath`. O bloco de registro consulta `App Paths` para esses seis executáveis e percorre somente os subitens dos três roots `Uninstall` conhecidos, filtrando propriedades por marca ou caminho de flavour. Um erro em um bloco não impede a produção do outro.
+O bloco de processo usa um filtro CIM limitado aos nomes literais `Discord.exe`, `DiscordPTB.exe`, `DiscordCanary.exe`, `Vesktop.exe`, `Equibop.exe` e `Legcord.exe`, seguido de `Select-Object Name,ProcessId,ExecutablePath`. O bloco de registro consulta App Paths e URL handlers conhecidos e percorre somente até 128 subchaves por cada root `Uninstall` de `HKCU`, `HKLM` e `WOW6432Node`, filtrando por `DisplayName` allowlistado e por campos que apontem para os flavours. Ler essas três visões é uma consulta de registro bounded, não um filtro de rede nem uma inspeção irrestrita da máquina. Um erro em um bloco não impede a produção do outro.
+
+O código de saída também é parte do contrato: JSON válido, inclusive vazio ou parcial, sai com código `0`. Código diferente de zero fica reservado para falha catastrófica (PowerShell indisponível, falha de serialização ou impossibilidade de produzir JSON) e é mapeado para `errorCode`; ausência de linhas nunca usa código de erro.
+
+O parser extrai executáveis sem executar comandos: de `value` de App Paths/URL handler ou `displayIcon`, remove somente aspas externas e o sufixo final `,0`, e lê o primeiro token de executável. Para URL handler, o primeiro token pode ser `Update.exe` somente quando os tokens seguintes contiverem exatamente `--processStart <flavour>.exe`; nesse caso o parser deriva a raiz do updater e chama o finder bounded. Para `InstallLocation`, o parser passa a raiz diretamente ao finder. Todos os caminhos resultantes passam pelo validador comum.
 
 ## Validação, flavour, dedupe e precedência
 
@@ -103,8 +118,8 @@ O parser TypeScript e o normalizador de caminho aplicarão as mesmas regras a pr
 3. Exigir caminho absoluto com letra de drive e extensão `.exe`.
 4. Canonicalizar separadores/case para comparação, verificar `existsSync` e `statSync().isFile()` e, quando disponível, resolver `realpath` antes da deduplicação.
 5. Derivar o flavour exclusivamente do basename, comparado case-insensitively com a allowlist. `flavourHint` do registro pode orientar a busca de uma raiz, mas não substitui o basename e, se divergir de um executável direto, o candidato é rejeitado.
-6. `Update.exe` não é um candidato Discord. Quando registro ou atalho apontar para ele, o handler só poderá extrair uma raiz bounded e procurar o `<flavour>.exe` direto ou em `app-*` imediato.
-7. Para processo, aceitar o caminho somente quando o executável existir e tiver layout conhecido: `app-<versão>` abaixo de uma pasta do flavour ou executável direto em pasta do flavour com `resources`. Isso reduz falsos positivos de processos homônimos sem introduzir assinatura binária.
+6. `Update.exe` não é um candidato Discord. Quando registro ou atalho apontar para ele, o handler só poderá extrair uma raiz bounded e procurar o `<flavour>.exe` direto ou em `app-*` imediato. Argumentos nunca são executados.
+7. Para processo, aceitar o caminho somente quando o executável existir, tiver basename allowlistado e cumprir **parent `app-*`** (por exemplo, `D:\MyDiscord\app-1.0.10\Discord.exe`) **ou for executável direto com `resources` ao lado**. Não é necessário que um ancestral tenha o nome do flavour.
 8. Para uma instalação válida, `appDir=dirname(exePath)`, `resources=join(appDir, "resources")` e `exePath` permanecem absolutos. A validade não depende de `app.asar`.
 
 A precedência para o mesmo `exePath` canonicalizado é:
@@ -114,22 +129,25 @@ A precedência para o mesmo `exePath` canonicalizado é:
 3. registro;
 4. atalhos.
 
-Somente o mesmo executável é deduplicado. Instalações distintas, inclusive clientes/flavours distintos ou duas raízes distintas, continuam retornando como hoje para que os consumidores iniciem todos os clientes descobertos. A origem de maior precedência fica em `detectedBy` apenas para diagnóstico; ela não altera o contrato funcional do candidato.
+Somente o mesmo executável é deduplicado. Roots distintos do mesmo flavour e executáveis distintos do mesmo flavour são preservados. Sem uma UI nova de escolha, a semântica atual permanece: todos os installs retornados são iniciados pelos consumidores. A origem de maior precedência fica em `detectedBy` apenas para diagnóstico; ela não altera o contrato funcional do candidato.
 
 ## Cache, timeout e falhas parciais
 
-A API pública permanece síncrona porque `getWinDiscordInstalls()` é chamada por ativação, status, restauração, failover e diagnóstico. O snapshot de descoberta terá cache curto de três a cinco segundos para `getStatus()` e watchdogs. Uma chamada PowerShell no máximo ocorrerá por TTL; não haverá retry síncrono no mesmo scan. A alteração de `LOCALAPPDATA`, `ProgramFiles` ou `ProgramFiles(x86)` invalida o snapshot. As transições que precisam de uma lista confiável pedirão `forceRefresh` antes de começar.
+A API pública permanece síncrona porque `getWinDiscordInstalls()` é chamada por ativação, status, restauração, failover e diagnóstico. O TTL único do snapshot de descoberta é **exatamente quatro segundos**. Um snapshot pode ficar stale por no máximo **oito segundos**, mas stale só pode ser usado por `getStatus()` e watchdogs; nenhum lifecycle (ativação, desativação, restauração, troca de rota ou rollback) pode usar stale. Uma chamada PowerShell no máximo ocorrerá por TTL; não haverá retry síncrono no mesmo scan.
 
-As raízes fixas e validações de arquivos são bounded e executadas diretamente. O coletor PowerShell tem timeout de três segundos. Atalhos são limitados a um nível e, por diretório, a no máximo 64 links filtrados; um shortcut malformado é ignorado individualmente. O pipeline não paralisa a GUI esperando uma busca aberta.
+A chave do cache inclui plataforma e todos os roots/env que influenciam a descoberta: `LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `PUBLIC`, `ProgramData`, `ProgramFiles`, `ProgramFiles(x86)` e `ProgramW6432`. Qualquer mudança de valor, inclusive `ProgramW6432` passar a ser igual/diferente de outro root, invalida o snapshot. As transições que precisam de uma lista confiável pedem `forceRefresh`, sempre antes de ativação, desativação, `restore-internet`, troca manual de rota, otimização/troca Proton, failover e cada rollback.
+
+As raízes fixas e validações de arquivos são bounded e executadas diretamente. O coletor PowerShell tem timeout de três segundos. Atalhos são limitados a um nível direto ou exatamente um subnível vendor e a no máximo 64 links por raiz e 64 por subdiretório vendor; um shortcut malformado é ignorado individualmente. O pipeline não paralisa a GUI esperando uma busca aberta.
 
 Falhas são tratadas assim:
 
-- `status=empty` ou exit code que significa “nenhuma linha” é uma resposta normal.
+- `status=empty` e código `0` com zero rows são respostas normais.
 - Falha de CIM, falta de permissão ou `ExecutablePath=null` não vira candidato e não é registrada como processo parado.
-- Timeout, erro de execução, JSON inválido ou bloco `error` preserva candidatos das outras fontes.
-- Um snapshot externo válido ainda dentro da janela de stale pode ser reutilizado quando a consulta nova falhar; candidatos são sempre revalidados antes de spawn.
-- Uma fonte que retorna zero não apaga instalações retornadas por outra fonte.
+- Timeout, código não-zero, JSON inválido ou bloco `error` preserva candidatos das outras fontes. Código não-zero é mapeado para `errorCode` estável e não para “nenhuma instalação”.
+- Um snapshot stale (até oito segundos) pode ser usado somente por status/watchdog. Lifecycle usa refresh obrigatório e, em falha, somente resultados frescos das fontes que responderam; nunca usa stale para montar perfil, AllowedApps, spawn, restauração ou rollback.
+- Uma fonte que retorna zero não apaga instalações retornadas por outra.
 - Se o resultado final for zero, mantém-se `scan.resultado total=0`, `ativacao.sem_discord` e a mensagem atual `Nenhum Discord encontrado.`. O diagnóstico adicional informa se as fontes estavam vazias ou indisponíveis, sem transformar erro parcial em ausência comprovada.
+
 
 ## Integração com os consumidores atuais
 
@@ -145,12 +163,13 @@ A revalidação de `existsSync/stat` imediatamente antes do spawn cobre a corrid
 
 ### Desativação, restauração e rollbacks
 
-Qualquer fluxo que possa matar o cliente deve capturar e reter o snapshot antes de `killDiscord()`:
+Qualquer fluxo que possa matar o cliente deve pedir `forceRefresh`, capturar e reter o snapshot fresco antes de `killDiscord()`:
 
-- `deactivateAll()` já captura `installs` antes do kill e reutiliza essa lista após restaurar a rede.
-- `restore-internet` deve capturar `installs` antes do kill quando `hadWireSock` for verdadeiro e reutilizar a lista no `startDiscordAndConfirm()`. Não pode chamar descoberta baseada em processo somente depois de matar o processo.
-- `applyProtonRouteResult()` deve reutilizar no rollback a variável capturada antes da troca, em vez de fazer um segundo scan depois de `killDiscord()`.
-- `applyProtonFailoverCandidate()` deve manter o snapshot capturado antes da mudança de rota; os caminhos de falha não podem perder um cliente encontrado apenas pelo processo.
+- `deactivateAll()` deve pedir refresh, capturar `installs` antes do kill e reutilizar essa lista após restaurar a rede.
+- `restore-internet` deve pedir refresh, capturar `installs` antes do kill quando `hadWireSock` for verdadeiro e reutilizar a lista no `startDiscordAndConfirm()`. Não pode chamar descoberta baseada em processo somente depois de matar o processo.
+- A troca manual/otimização Proton deve pedir refresh antes de matar o cliente. `applyProtonRouteResult()` deve reutilizar no rollback a variável capturada antes da troca, em vez de fazer um segundo scan depois de `killDiscord()`.
+- `applyProtonFailoverCandidate()` deve pedir refresh antes de qualquer troca que possa encerrar o cliente e manter o snapshot capturado antes da mudança de rota; os caminhos de falha/rollback não podem perder um cliente encontrado apenas pelo processo.
+- Cada rollback de ativação, restauração ou troca de rota deve usar um snapshot fresco capturado antes do kill correspondente; nunca pode usar o snapshot stale de status/watchdog.
 - O caminho de startup que chama ativação herda a captura anterior ao kill; nenhuma persistência de caminho process-only em settings é necessária.
 
 A lista pode conter `resources` derivado inexistente ou não gravável. `discord-scope-proof` e o espelhamento de logs continuam best-effort e log-only; falhar ao copiar um probe em `Program Files` não deve impedir WireSock, spawn ou rollback. O marker de sessão continua sendo usado como hoje e não autoriza alterações no cliente.
@@ -166,26 +185,25 @@ O contrato de `windowsAllowedAppPaths()`/`AllowedApps` permanece inalterado nest
 - permitido: `source`, `status`, `flavour`, `detected_by`, contagem, `truncated` e códigos estáveis de erro;
 - proibido: `CommandLine`, argumentos de atalhos, stdout/stderr do PowerShell, chaves de registro completas, PID desnecessário e `ExecutablePath` bruto;
 - `scan.raiz` e `scan.install` existentes devem receber caminho já sanitizado ou um identificador de categoria/hash antes de chamar `logger.info`, pois não usam diretamente o pipeline de `logger.logEvent` com redaction por chave;
+- se essa sanitização alterar o formato ou o conteúdo observável de `scan.raiz`/`scan.install`, registrar a mudança no `CHANGELOG.md` junto com a implementação;
 - se um caminho for necessário para diagnóstico, substituir o diretório de perfil por `<usuario>`, remover componentes customizados e limitar o valor; preferir um hash curto não reversível operacionalmente;
-- mensagens de erro devem usar `errorCode` e `clipLogText` depois de remover caminhos, nunca a exceção completa.
 
 A redação de `bugreport.ts` continua como segunda barreira, mas não é a primeira linha de proteção. Nenhum dado do registro, shortcut ou processo deve chegar ao log para depender dessa segunda etapa.
 
 ## Testes permanentes e smoke Windows
 
-A implementação deverá manter os testes atuais de `windows-discord-install.test.ts` e acrescentar comportamento observável para:
-
 1. raízes diretas de Program Files e `app-*` imediato, sem exigir `app.asar`;
 2. processo externo com `ExecutablePath` válido para cada flavour;
 3. processo com path nulo, basename falso, caminho relativo, UNC, ADS ou arquivo ausente;
 4. parser `schema=1` com array de zero/um item, JSON inválido, erro de bloco e resposta truncada;
-5. registro App Paths/Uninstall com `DisplayIcon` entre aspas e `,0`, `InstallLocation`, `Update.exe` stale e valores malformados;
-6. atalhos target direto, target `Update.exe` com `--processStart` allowlistado e links quebrados;
-7. deduplicação case-insensitive e precedência processo > raiz > registro > atalho, preservando instalações distintas;
+5. registro App Paths/URL handler/Uninstall com `value` DEFAULT, `DisplayIcon` entre aspas e `,0`, `InstallLocation`, `DisplayName` allowlistado, `Update.exe` stale e valores malformados;
+6. atalhos target direto, target `Update.exe` com `--processStart` allowlistado, argumentos apenas em memória e links quebrados;
+7. deduplicação case-insensitive e precedência processo > raiz > registro > atalho, preservando roots distintos do mesmo flavour;
 8. limite de enumeração e ausência de `readdir` recursivo/varredura de volume;
-9. cache, refresh, timeout e preservação de candidatos em falha parcial;
+9. cache com TTL exatamente 4s, stale máximo 8s somente em status/watchdog, forceRefresh obrigatório em lifecycle e invalidação por todos os roots/env, incluindo `ProgramW6432`;
 10. snapshot capturado antes de `killDiscord()` e reutilizado em restore/rollback;
-11. logs sem caminho bruto, command line, args de atalho ou stdout do coletor.
+11. logs sem caminho bruto, command line, args de atalho ou stdout do coletor;
+12. teste de integração do builder: o `exePath` absoluto produzido pelo discovery deve chegar sem alteração à entrada de `windowsAllowedAppPaths()` (e continuar sendo parte do resultado expandido atual), sem alterar o contrato de `AllowedApps`.
 
 O smoke test Windows deve usar uma VM/disposição descartável e cobrir: instalação real fora de `%LOCALAPPDATA%` em Program Files sem processo executando; mesma instalação aberta e descoberta por `ExecutablePath`; ativação WireSock e confirmação de `AllowedApps` conforme o contrato existente; desativação/restore; troca de rota com rollback; e uma instalação sem registro/atalho que só seja reconhecida enquanto está em execução. O smoke não deve pesquisar volumes nem modificar registro/atalhos do sistema fora da operação já testada.
 

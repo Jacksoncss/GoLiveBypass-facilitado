@@ -9,6 +9,8 @@
 #
 # Uso:
 #   ./golivebypass-installer.sh
+#   ./golivebypass-installer.sh --channel stable
+#   ./golivebypass-installer.sh --channel beta --update
 #   ./golivebypass-installer.sh --source ~/Equicord
 #   ./golivebypass-installer.sh --plugin-source ~/GoLiveBypass/goLiveBypass
 #   ./golivebypass-installer.sh --mod vencord --yes
@@ -19,22 +21,13 @@
 # Obrigado ao Vithor (https://github.com/Vith0r), que escreveu o primeiro instalador do
 # GoLiveBypass e abriu o caminho para este aqui.
 
-# A instalacao volta a funcionar, mas a linha WireGuard do plugin ainda e beta: sai antes
-# de baixar ou alterar qualquer cliente para ninguem achar que comprou um produto estavel.
-# Sempre em stderr — o stdout e o contrato de --check-update/--update (quem integra le
-# "plugin:"/"remote:"/"resultado:"), e um aviso no meio quebraria essa leitura.
-# O standalone NAO entra aqui: ele tem bloqueio proprio em
-# standalone/golivebypass-standalone.sh e este instalador nao encosta nele.
-printf '\n[BETA] GoLiveBypass para Equicord/Vencord — canal beta WireGuard.\n' >&2
-printf '        Este instalador entrega a versao beta atual do plugin; resultados podem mudar.\n' >&2
-printf '        O sistema ainda nao e estavel e so chega la com gente testando: cada bug\n' >&2
-printf '        reportado vira uma issue e encurta o caminho. Ao falhar, copie a saida\n' >&2
-printf '        acima ou abra o log local (installer.log na pasta GoLiveBypass) e abra\n' >&2
-printf '        o relato voce mesmo em\n' >&2
-printf '        https://github.com/bezumiya/GoLiveBypass/issues\n' >&2
-printf '        No Linux a parte menos testada e a ativacao do tunel, que pede autorizacao\n' >&2
-printf '        no pkexec/polkit — a validacao atual parou nesse ponto.\n' >&2
-printf '        O standalone continua indisponivel e nao e alterado por este instalador.\n\n' >&2
+# A instalacao usa stable por padrao; beta e sempre opt-in. Sempre em stderr — o
+# stdout e o contrato de --check-update/--update.
+printf '\nGoLiveBypass para Equicord/Vencord — escolha seu canal de atualizacoes.\n' >&2
+printf '        Stable e a opcao recomendada: canal mais previsivel, somente releases estaveis.\n' >&2
+printf '        Beta e opcional: canal de testes; voce ajuda a comunidade ao testar, encontrar\n' >&2
+printf '        e corrigir erros antes da versao estavel. Nenhum canal promete estabilidade.\n' >&2
+printf '        O standalone continua separado e nao e alterado por este instalador.\n\n' >&2
 
 # So construcoes POSIX: roda em dash, bash, zsh, ksh e busybox ash.
 # (sem pipefail de proposito: o status de pipeline e o do ultimo comando, como manda o POSIX)
@@ -84,6 +77,8 @@ SOURCE=""
 # antes de publicar. Sem isto o instalador sempre traz o que esta no repositorio, e um teste
 # feito assim mede a versao errada sem avisar.
 PLUGIN_SOURCE=""
+CHANNEL="stable"
+CHANNEL_EXPLICIT=0
 ASSUME_YES=0
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
@@ -675,6 +670,14 @@ while [ $# -gt 0 ]; do
         --restore) MODE="restore" ;;
         --check-update) MODE="check-update" ;;
         --update) MODE="update" ;;
+        --channel)
+            CHANNEL="${2:-}"
+            case "$CHANNEL" in
+                stable|beta) CHANNEL_EXPLICIT=1 ;;
+                *) fail "Canal invalido: use --channel stable ou --channel beta." ;;
+            esac
+            shift
+            ;;
         --mod) MOD="${2:-}"; shift ;;
         --source) SOURCE="${2:-}"; shift ;;
         --plugin-source) PLUGIN_SOURCE="${2:-}"; shift ;;
@@ -1409,35 +1412,27 @@ copy_plugin_from_repo() {
     return 0
 }
 
-# De onde vem o plugin instalado. O zip da release e a fonte normal: e o mesmo artefato que
-# o updater do proprio plugin instala, com SHA-256 publicado ao lado, e a tag entrega a
-# linha beta inteira (o main pode nao ter todas as fontes dela). Tres casos caem nas fontes
-# uma a uma: --plugin-source, um checkout do repositorio ao lado do script e, por ultimo, a
-# release inalcancavel (rede ou rate limit do GitHub).
+# De onde vem o plugin instalado. A release validada pelo canal e a fonte normal.
 install_plugin_source() {
-    local root="$1" url tag
-
+    local root="$1" release version zip sha
     if [ -n "$PLUGIN_SOURCE" ]; then
         copy_plugin_from_repo "$root"
         return 0
     fi
-
     if [ -f "$SCRIPT_DIR/../$PLUGIN_DIR_NAME/index.tsx" ]; then
         step "Usando o checkout do repositorio que esta ao lado do instalador"
         copy_plugin_from_repo "$root"
         return 0
     fi
-
-    if url=$(github_plugin_release 2>/dev/null) && [ -n "$url" ]; then
-        tag=${url%/*}; tag=${tag##*/}; tag=${tag#v}
-        step "Instalando o plugin da release v$tag"
-        do_update_from_zip "$root" "$url" "$tag"
-        return 0
+    release="$(github_plugin_release "$CHANNEL" 2>/dev/null || true)"
+    version="$(printf '%s\n' "$release" | sed -n '1p')"
+    zip="$(printf '%s\n' "$release" | sed -n '2p')"
+    sha="$(printf '%s\n' "$release" | sed -n '3p')"
+    if [ -z "$version" ] || [ -z "$zip" ] || [ -z "$sha" ]; then
+        fail "Nao encontrei uma release $CHANNEL valida com zip e SHA-256. Verifique a conexao ou use --plugin-source com uma fonte local."
     fi
-
-    warn "Nao consegui consultar a release do plugin (rede ou rate limit do GitHub)."
-    warn "Caindo no download arquivo a arquivo da branch main."
-    copy_plugin_from_repo "$root"
+    step "Instalando o plugin da release $version (canal $CHANNEL)"
+    do_update_from_zip "$root" "$zip" "$version" "$sha"
 }
 
 build_mod() {
@@ -1988,25 +1983,60 @@ mod_settings_file() {
     printf '%s\n' "$HOME/.config/$mod/settings/settings.json"
 }
 
+get_persisted_channel() {
+    local root="$1" file
+    file="$(mod_settings_file "$root")"
+    [ -f "$file" ] || return 1
+    GLB_FILE="$file" node -e '
+        const fs = require("fs");
+        try {
+            const s = JSON.parse(fs.readFileSync(process.env.GLB_FILE, "utf8"));
+            const c = s?.plugins?.GoLiveBypass?.updateChannel;
+            if (c === "stable" || c === "beta") process.stdout.write(c);
+            else process.exit(1);
+        } catch { process.exit(1); }
+    ' 2>/dev/null
+}
+
+select_update_channel() {
+    local root="$1" persisted choice
+    if [ "$CHANNEL_EXPLICIT" -eq 1 ]; then
+        printf '%s\n' "$CHANNEL"
+        return 0
+    fi
+    persisted="$(get_persisted_channel "$root" || true)"
+    if [ "$ASSUME_YES" -eq 1 ] || ! tui_is_interactive; then
+        printf '%s\n' "${persisted:-stable}"
+        return 0
+    fi
+    printf '\n  Canal de atualizacoes do plugin:\n' >&2
+    printf '    [1] Stable (recomendado)\n' >&2
+    printf '        Canal mais previsivel, somente releases estaveis.\n' >&2
+    printf '    [2] Beta (opt-in)\n' >&2
+    printf '        Canal de testes; voce ajuda a comunidade ao testar, encontrar e corrigir erros antes da versao estavel.\n' >&2
+    printf '        Nenhum canal promete estabilidade.\n' >&2
+    printf '  Escolha [1]: ' >&2
+    IFS= read -r choice || choice=""
+    case "$choice" in 2) CHANNEL="beta" ;; *) CHANNEL="stable" ;; esac
+    printf '%s\n' "$CHANNEL"
+}
+
 set_plugin_settings() {
     local root="$1"
     local file
     file="$(mod_settings_file "$root")"
     mkdir -p "$(dirname "$file")"
 
-    GLB_FILE="$file" node -e '
+    GLB_FILE="$file" GLB_CHANNEL="$CHANNEL" node -e '
         const fs = require("fs");
         const file = process.env.GLB_FILE;
-
+        const channel = process.env.GLB_CHANNEL;
         let settings = {};
         if (fs.existsSync(file)) {
             const raw = fs.readFileSync(file, "utf8");
             if (raw.trim() !== "") {
-                try {
-                    settings = JSON.parse(raw);
-                } catch (error) {
-                    // Nunca reescrever por cima de um arquivo ilegivel: isso apagaria todos os
-                    // plugins da pessoa.
+                try { settings = JSON.parse(raw); }
+                catch (error) {
                     const backup = file + ".bak-" + Date.now();
                     fs.copyFileSync(file, backup);
                     console.error("ilegivel, copia em " + backup);
@@ -2014,15 +2044,43 @@ set_plugin_settings() {
                 }
             }
         }
-
-        const plugin = settings.plugins && settings.plugins.GoLiveBypass ? settings.plugins.GoLiveBypass : {};
+        if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
+        if (!settings.plugins || Array.isArray(settings.plugins) || typeof settings.plugins !== "object") settings.plugins = {};
+        const existing = settings.plugins.GoLiveBypass;
+        const plugin = existing && !Array.isArray(existing) && typeof existing === "object" ? existing : {};
         plugin.enabled = true;
         if (plugin.excludedCountries === undefined) plugin.excludedCountries = "BR";
-
-        settings.plugins = settings.plugins || {};
+        if (channel === "stable" || channel === "beta") plugin.updateChannel = channel;
         settings.plugins.GoLiveBypass = plugin;
-        fs.writeFileSync(file, JSON.stringify(settings, null, 4));
-    ' && step "Plugin ativado em $file" || warn "Nao mexi no $file. Ative o GoLiveBypass na mao em Configuracoes > Plugins."
+        fs.writeFileSync(file, JSON.stringify(settings, null, 4) + "\n");
+    ' && step "Plugin ativado em $file (canal $CHANNEL)" || warn "Nao mexi no $file. Ative o GoLiveBypass na mao em Configuracoes > Plugins."
+}
+
+persist_channel() {
+    local root="$1" channel="$2" file
+    case "$channel" in stable|beta) ;; *) return 1 ;; esac
+    file="$(mod_settings_file "$root")"
+    mkdir -p "$(dirname "$file")"
+    GLB_FILE="$file" GLB_CHANNEL="$channel" node -e '
+        const fs = require("fs");
+        const file = process.env.GLB_FILE;
+        const channel = process.env.GLB_CHANNEL;
+        let settings = {};
+        if (fs.existsSync(file)) {
+            const raw = fs.readFileSync(file, "utf8");
+            if (raw.trim()) {
+                try { settings = JSON.parse(raw); }
+                catch { process.exit(2); }
+            }
+        }
+        if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
+        if (!settings.plugins || Array.isArray(settings.plugins) || typeof settings.plugins !== "object") settings.plugins = {};
+        const plugin = settings.plugins.GoLiveBypass && typeof settings.plugins.GoLiveBypass === "object" && !Array.isArray(settings.plugins.GoLiveBypass)
+            ? settings.plugins.GoLiveBypass : {};
+        plugin.updateChannel = channel;
+        settings.plugins.GoLiveBypass = plugin;
+        fs.writeFileSync(file, JSON.stringify(settings, null, 4) + "\n");
+    ' || { warn "Nao consegui persistir o canal em $file; o arquivo permaneceu intacto."; return 1; }
 }
 
 show_status() {
@@ -2181,121 +2239,87 @@ GITHUB_REPO="bezumiya/GoLiveBypass"
 GITHUB_API="https://api.github.com/repos/$GITHUB_REPO"
 GITHUB_UA="GoLiveBypass-Installer"
 
-# Parseia a tag da release mais recente e devolve o numero de versao (sem "v")
-# e o asset zip do userplugin. Falha silenciosa (RC=1, stdout vazio) quando:
-#   - sem rede
-#   - rate limit
-#   - release sem o asset esperado
-github_latest_release() {
-    local json version tag zip_browser=""
+# Busca a coleção de releases e seleciona a maior SemVer válida do canal.
+# A seleção exige release publicada, tag coerente, zip e SHA-256 publicados.
+github_release_candidates() {
+    local channel="${1:-$CHANNEL}" json_file
+    json_file="$(mktemp 2>/dev/null)" || return 1
     if have curl; then
-        json=$(curl -fsSL -H "User-Agent: $GITHUB_UA" -H "Accept: application/vnd.github+json" "$GITHUB_API/releases/latest" 2>/dev/null) || return 1
+        curl -fsSL -H "User-Agent: $GITHUB_UA" -H "Accept: application/vnd.github+json" "$GITHUB_API/releases?per_page=30" >"$json_file" 2>/dev/null || { rm -f "$json_file"; return 1; }
     elif have wget; then
-        json=$(wget -qO- --header="User-Agent: $GITHUB_UA" --header="Accept: application/vnd.github+json" "$GITHUB_API/releases/latest" 2>/dev/null) || return 1
+        wget -qO "$json_file" --header="User-Agent: $GITHUB_UA" --header="Accept: application/vnd.github+json" "$GITHUB_API/releases?per_page=30" 2>/dev/null || { rm -f "$json_file"; return 1; }
     else
-        return 1
+        rm -f "$json_file"; return 1
     fi
-
-    # tag_name vem como "v1.1.8"; o manifest usa "1.1.8"
-    tag=$(printf '%s' "$json" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v?[0-9][^"]*"' | head -1 | sed 's/.*"v\?\([0-9][^"]*\)".*/\1/')
-    [ -n "$tag" ] || return 1
-
-    # Procura o asset do userplugin (zip). Se nao tiver nesta release, saida limpa
-    # para o instalador dizer "release existe, mas sem o asset do userplugin".
-    zip_browser=$(printf '%s' "$json" | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*goLiveBypass-vencord[^"]*\.zip"' | head -1 | sed 's/.*"\(http[^"]*\)".*/\1/')
-
-    # O printf para stdout: tag e url separados por \n, sem ruido.
-    printf '%s\n%s\n' "$tag" "$zip_browser"
-    return 0
+    GLB_RELEASE_FILE="$json_file" node - "$channel" <<'NODE'
+const fs = require("fs");
+const channel = process.argv[2];
+let releases;
+try { releases = JSON.parse(fs.readFileSync(process.env.GLB_RELEASE_FILE, "utf8")); } catch { process.exit(1); }
+if (!Array.isArray(releases)) process.exit(1);
+const rx = /^[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+function parse(value) {
+  const m = rx.exec(String(value ?? "")); if (!m) return null;
+  if ([m[1],m[2],m[3]].some(v => v.length > 1 && v[0] === "0")) return null;
+  let pre = m[4] ? m[4].split(".") : [];
+  if (pre.length === 1) { const legacy = /^beta-([0-9]+)$/.exec(pre[0]); if (legacy) pre=["beta",legacy[1]]; }
+  if (pre.some(v => /^\d+$/.test(v) && v.length > 1 && v[0] === "0")) return null;
+  return { core: [BigInt(m[1]),BigInt(m[2]),BigInt(m[3])], pre, normalized: `${m[1]}.${m[2]}.${m[3]}${pre.length ? "-"+pre.join("-") : ""}` };
+}
+function cmp(a,b) {
+  for (let i=0;i<3;i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+  if (!a.pre.length || !b.pre.length) return a.pre.length === b.pre.length ? 0 : (a.pre.length ? -1 : 1);
+  for (let i=0;i<Math.max(a.pre.length,b.pre.length);i++) {
+    if (i >= a.pre.length) return -1; if (i >= b.pre.length) return 1;
+    const x=a.pre[i], y=b.pre[i], xn=/^\d+$/.test(x), yn=/^\d+$/.test(y);
+    const c=xn&&yn ? (BigInt(x)<BigInt(y)?-1:BigInt(x)>BigInt(y)?1:0) : xn!==yn ? (xn?-1:1) : (x<y?-1:x>y?1:0);
+    if (c) return c;
+  }
+  return 0;
+}
+let best = null;
+for (const r of releases) {
+  if (!r || r.draft !== false || typeof r.tag_name !== "string" || typeof r.prerelease !== "boolean") continue;
+  const v=parse(r.tag_name); if (!v) continue;
+  const pre=v.pre.length>0;
+  if (r.prerelease !== pre) continue;
+  if (channel === "stable" && pre) continue;
+  const assets=Array.isArray(r.assets)?r.assets:[];
+  const zip=assets.find(a=>a && a.name==="goLiveBypass-vencord.zip");
+  const sha=assets.find(a=>a && a.name==="goLiveBypass-vencord.zip.sha256");
+  if (!zip || !sha || typeof zip.browser_download_url !== "string" || typeof sha.browser_download_url !== "string" ||
+      !/^https:\/\//.test(zip.browser_download_url) || !/^https:\/\//.test(sha.browser_download_url)) continue;
+  const c={version:v.normalized,zip:zip.browser_download_url,sha:sha.browser_download_url,pre};
+  if (!best || cmp(parse(c.version),parse(best.version))>0) best=c;
+}
+if (best) process.stdout.write(`${best.version}\n${best.zip}\n${best.sha}\n${best.pre ? "1" : "0"}\n`);
+NODE
+    local status=$?
+    rm -f "$json_file"
+    return "$status"
 }
 
-# URL do zip do userplugin na release que serve a INSTALACAO: a mais recente publicada que
-# tenha o asset, prerelease incluida. A consulta nao pode ser /releases/latest (que esconde
-# prerelease, e a linha atual do plugin e beta) nem "primeiro tag_name da listagem" (um
-# rascunho sem asset desalinharia tag e zip). A API devolve as releases da mais nova para a
-# mais antiga e nao lista rascunhos para quem nao tem acesso de escrita, entao o primeiro
-# asset do userplugin da lista e o da release mais nova que realmente tem o pacote — e a tag
-# sai da propria URL dele.
-github_plugin_release() {
-    local json zip_browser
-    if have curl; then
-        json=$(curl -fsSL -H "User-Agent: $GITHUB_UA" -H "Accept: application/vnd.github+json" "$GITHUB_API/releases?per_page=30" 2>/dev/null) || return 1
-    elif have wget; then
-        json=$(wget -qO- --header="User-Agent: $GITHUB_UA" --header="Accept: application/vnd.github+json" "$GITHUB_API/releases?per_page=30" 2>/dev/null) || return 1
-    else
-        return 1
-    fi
+github_latest_release() { github_release_candidates "${1:-$CHANNEL}"; }
+github_plugin_release() { github_release_candidates "${1:-$CHANNEL}"; }
 
-    zip_browser=$(printf '%s' "$json" | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*goLiveBypass-vencord[^"]*\.zip"' | head -1 | sed 's/.*"\(http[^"]*\)".*/\1/')
-    [ -n "$zip_browser" ] || return 1
-
-    printf '%s\n' "$zip_browser"
-    return 0
-}
-
-# Le a versao do manifest.json que esta dentro de $1 (pasta do plugin
-# ja copiado para o checkout). Devolve string vazia se nao existir.
 installed_plugin_version() {
     local target="$1/manifest.json"
+    if [ ! -f "$target" ]; then target="$1/src/userplugins/$PLUGIN_DIR_NAME/manifest.json"; fi
     [ -f "$target" ] || return 0
     grep -oE '"version"[[:space:]]*:[[:space:]]*"[0-9][^"]*"' "$target" 2>/dev/null | head -1 | sed 's/.*"\([0-9][^"]*\)".*/\1/'
 }
 
-# Compara duas versoes semver. Saida:
-#   -1 se installed < latest  (precisa atualizar)
-#    0 se installed = latest
-#   +1 se installed > latest  (downgrade - nao atualizar)
-# Usa sort -V (GNU coreutils; presente em todas as distros testadas).
-# Em caso de formato malformado, devolve -1 (assume desatualizado).
 compare_version() {
-    local installed="$1" latest="$2"
-    # A API/manifest normalmente ja entregam sem o prefixo, mas arquivos
-    # antigos e testes locais podem conservar o "v" da tag. Normalizar antes
-    # da igualdade e do sort evita update fantasma e downgrade invertido.
-    case "$installed" in [vV]*) installed=${installed#?} ;; esac
-    case "$latest" in [vV]*) latest=${latest#?} ;; esac
-    # Sem informacao do GitHub: considera "sem atualizacao" (0). Sem isso, a
-    # falta de rede (que zera latest) mostraria "atualizacao disponivel".
+    local installed="$1" latest="$2" result
     [ -n "$latest" ] || { echo "0"; return; }
-    # Sem versao local conhecida: assume que vale a pena conferir o que tem.
     [ -n "$installed" ] || { echo "-1"; return; }
-    [ "$installed" = "$latest" ] && { echo "0"; return; }
-
-    local installed_core="${installed%%-*}" installed_pre="" latest_core="${latest%%-*}" latest_pre=""
-    case "$installed" in *-*) installed_pre="${installed#*-}" ;; esac
-    case "$latest" in *-*) latest_pre="${latest#*-}" ;; esac
-
-    if [ "$installed_core" != "$latest_core" ]; then
-        local lowest
-        lowest=$(printf '%s
-%s
-' "$installed_core" "$latest_core" | sort -V | head -1)
-        if [ "$lowest" = "$latest_core" ]; then
-            echo "1"   # installed > latest
-        else
-            echo "-1"  # installed < latest
-        fi
-        return
-    fi
-
-    # Mesma versao base: um sufixo de pre-release (-beta.N) sempre conta como
-    # mais antigo que a mesma base sem sufixo, nunca como um componente extra
-    # (sort -V sozinho, sem separar o sufixo, tratava beta.N como mais novo).
-    if [ -n "$installed_pre" ] && [ -z "$latest_pre" ]; then echo "-1"; return; fi
-    if [ -z "$installed_pre" ] && [ -n "$latest_pre" ]; then echo "1"; return; fi
-    if [ -n "$installed_pre" ] && [ -n "$latest_pre" ]; then
-        local lowest_pre
-        lowest_pre=$(printf '%s
-%s
-' "$installed_pre" "$latest_pre" | sort -V | head -1)
-        if [ "$lowest_pre" = "$latest_pre" ]; then
-            echo "1"
-        else
-            echo "-1"
-        fi
-        return
-    fi
-    echo "0"
+    result=$(GLB_INSTALLED="$installed" GLB_LATEST="$latest" node -e '
+const rx=/^[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+function p(s){const m=rx.exec(s||"");if(!m||[m[1],m[2],m[3]].some(v=>v.length>1&&v[0]==="0"))return null;let pre=m[4]?m[4].split("."):[];if(pre.length===1){const x=/^beta-([0-9]+)$/.exec(pre[0]);if(x)pre=["beta",x[1]];}if(pre.some(v=>/^\d+$/.test(v)&&v.length>1&&v[0]==="0"))return null;return{c:m.slice(1,4).map(BigInt),p:pre};}
+function c(a,b){for(let i=0;i<3;i++)if(a.c[i]!==b.c[i])return a.c[i]<b.c[i]?-1:1;if(!a.p.length||!b.p.length)return a.p.length===b.p.length?0:(a.p.length?-1:1);for(let i=0;i<Math.max(a.p.length,b.p.length);i++){if(i>=a.p.length)return-1;if(i>=b.p.length)return 1;let x=a.p[i],y=b.p[i],xn=/^\d+$/.test(x),yn=/^\d+$/.test(y),z=xn&&yn?(BigInt(x)<BigInt(y)?-1:BigInt(x)>BigInt(y)?1:0):xn!==yn?(xn?-1:1):(x<y?-1:x>y?1:0);if(z)return z;}return 0;}
+const a=p(process.env.GLB_INSTALLED),b=p(process.env.GLB_LATEST);process.stdout.write(!b?"0":!a?"-2":String(c(a,b)));
+') || { echo "-2"; return; }
+    echo "$result"
 }
 
 # Faz backup do plugin atual antes de sobrescrever. Mantem so os 3 mais recentes
@@ -2326,173 +2350,134 @@ backup_plugin() {
 # --check-update: imprime o status e sai. NUNCA baixa nada. Usado por
 # integracoes externas (GUI, cron) e pelo proprio instalador.
 do_check_update() {
-    local installed root latest_release latest_tag latest_zip cmp
-
+    local installed root latest_release latest_tag latest_zip latest_sha cmp
     root="$(find_checkout 2>/dev/null || true)"
     if [ -z "$root" ]; then
-        # Sem checkout descoberto: nao conseguimos saber o que esta instalado.
         printf 'plugin: %snao encontrado%s (rode uma vez para instalar)\n' "$C_YELLOW" "$C_OFF"
         return 0
     fi
-
+    CHANNEL="$(select_update_channel "$root")"
     installed=$(installed_plugin_version "$root")
     if [ -z "$installed" ]; then
-        # Plugin copiado sem manifest.json - instalacao muito antiga.
         printf 'plugin: %sinstalado (versao desconhecida)%s\n' "$C_YELLOW" "$C_OFF"
     else
-        printf 'plugin: instalado (%sv%s%s)\n' "$C_DIM" "$installed" "$C_OFF"
+        printf 'plugin: instalado (v%s)\n' "$installed"
     fi
-
-    if ! latest_release=$(github_latest_release 2>/dev/null); then
-        # Sem rede, rate limit, etc. Nao falhamos o comando: o usuario tem info local.
-        printf 'remote: %snao consegui consultar (rede ou rate limit)%s\n' "$C_DIM" "$C_OFF"
+    if ! latest_release=$(github_latest_release "$CHANNEL" 2>/dev/null); then
+        printf 'remote: %snao consegui consultar (rede, timeout ou JSON invalido)%s\n' "$C_DIM" "$C_OFF"
         return 0
     fi
-
-    latest_tag=$(printf '%s' "$latest_release" | head -1)
-    latest_zip=$(printf '%s' "$latest_release" | tail -n +2 | head -1)
-
+    latest_tag=$(printf '%s\n' "$latest_release" | sed -n '1p')
+    latest_zip=$(printf '%s\n' "$latest_release" | sed -n '2p')
+    latest_sha=$(printf '%s\n' "$latest_release" | sed -n '3p')
+    [ -n "$latest_tag" ] || { printf 'remote: nenhuma release %s valida com zip e SHA-256\n' "$CHANNEL"; return 0; }
+    persist_channel "$root" "$CHANNEL" || true
+    printf 'canal: %s\n' "$CHANNEL"
+    printf 'remote: %s\n' "$latest_tag"
     if [ -z "$installed" ]; then
-        # Nao sabemos o que esta instalado: dizemos que ha update e deixamos o
-        # usuario decidir.
-        printf 'remote: %sv%s%s disponivel\n' "$C_DIM" "$latest_tag" "$C_OFF"
         printf 'resultado: %sversao local desconhecida - rode --update para alinhar%s\n' "$C_YELLOW" "$C_OFF"
         return 0
     fi
-
     cmp=$(compare_version "$installed" "$latest_tag")
     case "$cmp" in
-        0)  printf 'remote: %sv%s%s\n' "$C_DIM" "$latest_tag" "$C_OFF"
-            printf 'resultado: %svoce esta na versao mais recente%s\n' "$C_GREEN" "$C_OFF" ;;
-        1)  printf 'remote: %sv%s%s\n' "$C_DIM" "$latest_tag" "$C_OFF"
-            printf 'resultado: %sversao local mais nova que a release (fork?)%s\n' "$C_DIM" "$C_OFF" ;;
-        -1) printf 'remote: %sv%s%s disponivel\n' "$C_DIM" "$latest_tag" "$C_OFF"
-            printf 'resultado: %shá versao nova - rode sem --check-update para atualizar%s\n' "$C_YELLOW" "$C_OFF" ;;
+        0) printf 'resultado: %svoce esta na versao mais recente%s\n' "$C_GREEN" "$C_OFF" ;;
+        1) printf 'resultado: %sversao local mais nova que a release (nenhum downgrade)%s\n' "$C_DIM" "$C_OFF" ;;
+        -1) printf 'resultado: %sha versao nova - rode --update para atualizar%s\n' "$C_YELLOW" "$C_OFF" ;;
+        *) printf 'resultado: %sversao local invalida; nenhum update seguro%s\n' "$C_YELLOW" "$C_OFF" ;;
     esac
     return 0
 }
 
-# --update: faz o trabalho. Reusa do_update_from_zip (o mesmo caminho da instalacao a partir
-# da release), mas primeiro roda o backup e a validacao de SHA-256 quando baixar de um zip.
 do_update() {
-    local installed root latest_release latest_tag latest_zip cmp
-
+    local installed root latest_release latest_tag latest_zip latest_sha cmp
     root="$(find_checkout 2>/dev/null || true)"
-    if [ -z "$root" ]; then
-        fail "Nao achei o checkout do mod. Rode o instalador uma vez (sem --update) para descobrir."
-    fi
-
+    [ -n "$root" ] || fail "Nao achei o checkout do mod. Rode o instalador uma vez (sem --update) para descobrir."
+    CHANNEL="$(select_update_channel "$root")"
     installed=$(installed_plugin_version "$root")
-    if ! latest_release=$(github_latest_release 2>/dev/null); then
-        fail "Nao consegui consultar a release mais recente (rede ou rate limit do GitHub)."
+    if [ -f "$root/src/userplugins/$PLUGIN_DIR_NAME/manifest.json" ] && [ -z "$installed" ]; then
+        fail "A versao instalada do plugin e invalida; nenhum update seguro foi aplicado."
     fi
-    latest_tag=$(printf '%s' "$latest_release" | head -1)
-    latest_zip=$(printf '%s' "$latest_release" | tail -n +2 | head -1)
-
+    if ! latest_release=$(github_latest_release "$CHANNEL" 2>/dev/null); then
+        fail "Nao consegui consultar releases do canal $CHANNEL (rede, timeout ou JSON invalido)."
+    fi
+    latest_tag=$(printf '%s\n' "$latest_release" | sed -n '1p')
+    latest_zip=$(printf '%s\n' "$latest_release" | sed -n '2p')
+    latest_sha=$(printf '%s\n' "$latest_release" | sed -n '3p')
+    [ -n "$latest_tag" ] || fail "Nao encontrei release $CHANNEL valida com zip e SHA-256."
     if [ -n "$installed" ]; then
         cmp=$(compare_version "$installed" "$latest_tag")
+        [ "$cmp" != "-2" ] || fail "A versao instalada do plugin e invalida; nenhum downgrade ou update foi feito."
         if [ "$cmp" = "0" ]; then
-            ok "Voce ja esta na v$latest_tag (a mais recente)."
+            persist_channel "$root" "$CHANNEL" || true
+            ok "Voce ja esta na versao $latest_tag (canal $CHANNEL)."
             return 0
         fi
         if [ "$cmp" = "1" ]; then
-            warn "Versao local (v$installed) e mais nova que a release (v$latest_tag)."
-            if [ "$ASSUME_YES" -eq 0 ] && tui_is_interactive; then
-                local ans
-                ans=$(tui_confirm "Atualizar mesmo assim? (downgrade)" "N")
-                [ "$ans" = "Y" ] || { warn "Atualizacao cancelada."; return 0; }
-            fi
+            persist_channel "$root" "$CHANNEL" || true
+            warn "Versao local (v$installed) e mais nova; nenhum downgrade foi feito."
+            return 0
         fi
     fi
-
     step "Fazendo backup do plugin atual"
     backup_plugin "$root" || warn "Backup nao foi possivel, mas sigo adiante."
-
-    # Caminho 1: ha zip do userplugin. Baixa, valida SHA-256, extrai.
-    if [ -n "$latest_zip" ]; then
-        do_update_from_zip "$root" "$latest_zip" "$latest_tag"
-    else
-        # Caminho 2 (fallback): a release nao tem o asset do userplugin
-        # (versao muito antiga, ou alguem publicou a tag na mao). Usa o REPO_RAW
-        # como antes, que sempre funciona.
-        warn "Release v$latest_tag nao tem o zip do userplugin. Caindo no download via REPO_RAW."
-        copy_plugin_from_repo "$root"
-    fi
-
-    # Recompila e re-injeta para a nova versao pegar
+    do_update_from_zip "$root" "$latest_zip" "$latest_tag" "$latest_sha"
     ensure_toolchain 0
     build_mod "$root"
-    if ! injected_from_checkout "$root"; then
-        inject_mod "$root"
-    fi
-
+    if ! injected_from_checkout "$root"; then inject_mod "$root"; fi
+    persist_channel "$root" "$CHANNEL" || true
     printf '\n'
-    ok "Atualizado para v$latest_tag. Reinicie o Discord para carregar a nova versao."
+    ok "Atualizado para $latest_tag (canal $CHANNEL). Reinicie o Discord para carregar a nova versao."
 }
 
-# Baixa o zip do userplugin, valida SHA-256, extrai por cima do plugin atual.
+# Baixa o zip do userplugin, valida SHA-256 publicado e extrai por cima.
 do_update_from_zip() {
-    local root="$1" zip_url="$2" expected_version="$3"
+    local root="$1" zip_url="$2" expected_version="$3" sha_url="${4:-}"
     local tmpdir zipfile sha_actual sha_expected
-
     step "Baixando $zip_url"
     tmpdir=$(mktemp -d 2>/dev/null) || fail "Nao consegui criar pasta temporaria."
     zipfile="$tmpdir/plugin.zip"
-
     if have curl; then
-        curl -fsSL -o "$zipfile" "$zip_url" || fail "Download do zip falhou."
+        curl -fsSL -o "$zipfile" "$zip_url" || { rm -rf "$tmpdir"; fail "Download do zip falhou."; }
     elif have wget; then
-        wget -qO "$zipfile" "$zip_url" || fail "Download do zip falhou."
+        wget -qO "$zipfile" "$zip_url" || { rm -rf "$tmpdir"; fail "Download do zip falhou."; }
     else
-        fail "Preciso de curl ou wget para baixar."
+        rm -rf "$tmpdir"; fail "Preciso de curl ou wget para baixar."
     fi
-
-    # Conferir SHA-256 contra o asset companion (.sha256). Se o .sha256 nao
-    # existir (release muito antiga), falhamos fechado: executar codigo sem
-    # conferir hash e o pior jeito de acabar.
-    step "Validando SHA-256"
-    sha_expected=$(download_text "${zip_url}.sha256" 2>/dev/null | awk '{print $1}' | head -1)
-    if [ -z "$sha_expected" ]; then
+    [ -n "$sha_url" ] || sha_url="${zip_url}.sha256"
+    sha_expected=$(download_text "$sha_url" 2>/dev/null | awk '{print $1}' | head -1 | tr '[:upper:]' '[:lower:]')
+    if ! printf '%s\n' "$sha_expected" | grep -Eq '^[0-9a-fA-F]{64}$'; then
         rm -rf "$tmpdir"
-        fail "Release sem arquivo .sha256 (asset companion). Sem hash, sem update."
+        fail "Release sem SHA-256 valido. Sem hash, sem update."
     fi
     sha_actual=$(sha256sum "$zipfile" 2>/dev/null | awk '{print $1}')
     if [ "$sha_actual" != "$sha_expected" ]; then
-        rm -rf "$tmpdir"
-        fail "SHA-256 nao confere: esperado $sha_expected, obtido $sha_actual."
+        rm -rf "$tmpdir"; fail "SHA-256 nao confere: esperado $sha_expected, obtido $sha_actual."
     fi
     ok "SHA-256 confere"
+    mkdir -p "$tmpdir/extract"
 
     step "Extraindo o plugin em $root/src/userplugins/$PLUGIN_DIR_NAME"
+    local extracted actual_version
+    if have unzip; then
+        unzip -oq "$zipfile" -d "$tmpdir/extract" || { rm -rf "$tmpdir"; fail "Extracao falhou."; }
+    elif tar -xf "$zipfile" -C "$tmpdir/extract" 2>/dev/null; then
+        :
+    else
+        rm -rf "$tmpdir"; fail "Preciso de unzip ou tar para extrair (nem um estao disponiveis)."
+    fi
+    extracted=$(find "$tmpdir/extract" -mindepth 1 -maxdepth 1 -type d | head -1)
+    if [ -z "$extracted" ] || [ "$(basename "$extracted")" != "$PLUGIN_DIR_NAME" ]; then
+        rm -rf "$tmpdir"; fail "Zip nao tem a pasta esperada (goLiveBypass/)."
+    fi
+    actual_version="$(installed_plugin_version "$extracted")"
+    if [ -z "$actual_version" ] || [ "$(compare_version "$actual_version" "$expected_version")" != "0" ]; then
+        rm -rf "$tmpdir"; fail "Manifest do plugin nao corresponde a release $expected_version."
+    fi
+    validate_plugin_source_tree "$extracted" || { rm -rf "$tmpdir"; fail "Zip do plugin incompleto."; }
     local target="$root/src/userplugins/$PLUGIN_DIR_NAME"
     rm -rf "$target"
     mkdir -p "$target"
-
-    # unzip -o sobrescreve sem perguntar; -q silencia output
-    if have unzip; then
-        unzip -oq "$zipfile" -d "$tmpdir/extract" || { rm -rf "$tmpdir"; fail "Extracao falhou."; }
-        # O zip contem uma pasta raiz chamada goLiveBypass/; movemos o conteudo
-        local extracted
-        extracted=$(find "$tmpdir/extract" -mindepth 1 -maxdepth 1 -type d | head -1)
-        if [ -z "$extracted" ]; then
-            rm -rf "$tmpdir"
-            fail "Zip nao tem a pasta esperada (goLiveBypass/)."
-        fi
-        # Copia o conteudo, nao a pasta em si
-        cp -R "$extracted"/. "$target"/ || { rm -rf "$tmpdir"; fail "Copia falhou."; }
-    else
-        # Sem unzip, fallback usando tar (que em geral tambem extrai zip)
-        if tar -xf "$zipfile" -C "$tmpdir/extract" 2>/dev/null; then
-            local extracted
-            extracted=$(find "$tmpdir/extract" -mindepth 1 -maxdepth 1 -type d | head -1)
-            [ -n "$extracted" ] || { rm -rf "$tmpdir"; fail "Zip malformado."; }
-            cp -R "$extracted"/. "$target"/ || { rm -rf "$tmpdir"; fail "Copia falhou."; }
-        else
-            rm -rf "$tmpdir"
-            fail "Preciso de unzip ou tar para extrair (nem um estao disponiveis)."
-        fi
-    fi
-
+    cp -R "$extracted"/. "$target"/ || { rm -rf "$tmpdir"; fail "Copia falhou."; }
     rm -rf "$tmpdir"
     ok "Plugin extraido"
 }
@@ -2510,6 +2495,7 @@ do_install() {
     local root="${1:-}" installed_kind
     installer_log info installer.detect.started detect mode install
     root="$(select_target "$root")"
+    CHANNEL="$(select_update_channel "$root")"
     local checkout_identity identity
     checkout_identity="$(checkout_mod "$root")"
     installer_log info installer.discord_detected detect discord_count "$(discord_installs | wc -l | tr -d ' ')"

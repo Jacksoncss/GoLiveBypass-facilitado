@@ -150,6 +150,76 @@ $count = (Get-ChildItem $backupDir -Directory).Count
 if ($count -le 3) { Ok "Backup-Plugin retem <=3 backups (encontrou $count)" } else { Bad "Backup-Plugin tem $count backups (esperado <=3)" }
 Remove-Item $root -Recurse -Force
 
+# 8. Canais, SemVer, assets e persistencia
+Write-Host ""
+Write-Host "== 8. Canais stable/beta e persistencia =="
+if ($content -match "ValidateSet\('stable', 'beta'\)") { Ok "parametro -Channel aceita stable/beta" } else { Bad "parametro -Channel ausente" }
+if ($content -match 'Stable e a opcao recomendada' -and $content -match 'Beta e opcional' -and $content -match 'ajuda a comunidade') {
+    Ok "mensagens de canal sao claras e encorajadoras"
+} else { Bad "mensagens de canal ausentes" }
+if ($content -match 'Get-PluginReleaseCandidates' -and $content -match 'releases\?per_page=30' -and $content -notmatch 'Get-PluginReleaseCandidates[\s\S]{0,3000}releases/latest') {
+    Ok "selecao de canal nao usa /releases/latest"
+} else { Bad "selecao de canal usa endpoint latest" }
+
+function Invoke-RestMethod {
+    param([string]$Uri, [hashtable]$Headers, [int]$TimeoutSec)
+    return @(
+        [pscustomobject]@{ draft = $true; prerelease = $true; tag_name = 'v9.9.9-beta-1'; assets = @(
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip'; browser_download_url = 'https://fake/draft.zip' },
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip.sha256'; browser_download_url = 'https://fake/draft.sha' }
+        ) },
+        [pscustomobject]@{ draft = $false; prerelease = $true; tag_name = 'v2.1.0-beta-10'; assets = @(
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip'; browser_download_url = 'https://fake/b10.zip' },
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip.sha256'; browser_download_url = 'https://fake/b10.sha' }
+        ) },
+        [pscustomobject]@{ draft = $false; prerelease = $false; tag_name = 'v2.0.0'; assets = @(
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip'; browser_download_url = 'https://fake/stable.zip' },
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip.sha256'; browser_download_url = 'https://fake/stable.sha' }
+        ) },
+        [pscustomobject]@{ draft = $false; prerelease = $false; tag_name = 'v3.0.0'; assets = @(
+            [pscustomobject]@{ name = 'goLiveBypass-vencord.zip.sha256'; browser_download_url = 'https://fake/no-zip.sha' }
+        ) }
+    )
+}
+$stable = Get-PluginReleaseForChannel stable
+$beta = Get-PluginReleaseForChannel beta
+if ($stable.Version -eq '2.0.0') { Ok "stable ignora beta/draft/missing SHA" } else { Bad "stable selecionou release incorreta" }
+if ($beta.Version -eq '2.1.0-beta-10') { Ok "beta seleciona maior SemVer mesmo com lista embaralhada" } else { Bad "beta selecionou release incorreta" }
+if ((Compare-Version '2.0.0-beta-9' '2.0.0-beta-10') -lt 0 -and
+    (Compare-Version '2.0.0-beta-10' '2.0.0-beta-9') -gt 0 -and
+    (Compare-Version '2.0.0' '2.0.0-beta-10') -gt 0) {
+    Ok "SemVer beta-9/beta-10 e stable sem downgrade"
+} else { Bad "ordem SemVer ou no-downgrade incorreta" }
+
+$settingsRoot = Join-Path ([IO.Path]::GetTempPath()) ("golive-channel-" + [guid]::NewGuid().ToString('N'))
+$env:APPDATA = $settingsRoot
+New-Item -ItemType Directory -Path (Join-Path $settingsRoot 'Equicord\settings') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $settingsRoot 'Equicord\settings\settings.json') -Value '{"autoUpdate":false,"other":{"keep":true}}'
+$fakeCheckout = Join-Path $settingsRoot 'Equicord'
+New-Item -ItemType Directory -Path (Join-Path $fakeCheckout 'src\utils') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $fakeCheckout 'package.json') -Value '{"name":"Equicord"}'
+Set-Content -LiteralPath (Join-Path $fakeCheckout 'src\utils\types.ts') -Value 'type T = string'
+Set-UpdateChannelPreference $fakeCheckout beta | Out-Null
+$merged = Get-Content -LiteralPath (Join-Path $settingsRoot 'Equicord\settings\settings.json') -Raw | ConvertFrom-Json
+if ($merged.autoUpdate -eq $false -and $merged.other.keep -and $merged.plugins.GoLiveBypass.updateChannel -eq 'beta') {
+    Ok "merge persiste updateChannel e preserva outras configuracoes"
+} else { Bad "merge de settings perdeu configuracoes" }
+Set-Content -LiteralPath (Join-Path $settingsRoot 'Equicord\settings\settings.json') -Value '{invalid'
+$beforeInvalid = Get-Content -LiteralPath (Join-Path $settingsRoot 'Equicord\settings\settings.json') -Raw
+Set-UpdateChannelPreference $fakeCheckout stable | Out-Null
+$afterInvalid = Get-Content -LiteralPath (Join-Path $settingsRoot 'Equicord\settings\settings.json') -Raw
+if ($beforeInvalid -eq $afterInvalid) { Ok "settings JSON invalido permanece intacto" } else { Bad "settings invalido foi sobrescrito" }
+
+$script:webRequests = 0
+function Invoke-WebRequest { $script:webRequests++ }
+$Source = $fakeCheckout
+$Channel = 'beta'
+$script:ChannelExplicit = $true
+$Yes = $true
+Invoke-CheckUpdate | Out-Null
+if ($script:webRequests -eq 0) { Ok "-Mode CheckUpdate nao baixa zip" } else { Bad "-Mode CheckUpdate fez download" }
+Remove-Item $settingsRoot -Recurse -Force
+
 # Resultado
 Write-Host ""
 Write-Host "== Resultado: $pass ok, $fail falhas =="

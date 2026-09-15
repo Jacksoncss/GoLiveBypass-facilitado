@@ -6,6 +6,8 @@
 
     Uso:
       .\GoLiveBypass-Installer.ps1
+      .\GoLiveBypass-Installer.ps1 -Channel stable
+      .\GoLiveBypass-Installer.ps1 -Channel beta -Mode Update
       .\GoLiveBypass-Installer.ps1 -Source "C:\caminho\do\Equicord"
       .\GoLiveBypass-Installer.ps1 -PluginSource "C:\caminho\do\GoLiveBypass\goLiveBypass"
       .\GoLiveBypass-Installer.ps1 -Mod Equicord -Yes
@@ -32,18 +34,23 @@ param(
     # e um teste feito assim mede a versao errada sem avisar.
     [string] $PluginSource = '',
 
+    [ValidateSet('stable', 'beta')]
+    [string] $Channel = 'stable',
+
     [switch] $Yes
 )
 
+$script:ChannelExplicit = $PSBoundParameters.ContainsKey('Channel')
+$script:SelectedChannel = $Channel
+
 Write-Host ''
-Write-Host '  [BETA] GoLiveBypass para Equicord/Vencord — canal beta WireGuard.' -ForegroundColor Yellow
-Write-Host '         Este instalador entrega a versao beta atual do plugin; resultados podem mudar.' -ForegroundColor DarkGray
-Write-Host '         O sistema ainda nao e estavel e so chega la com gente testando: cada bug reportado' -ForegroundColor DarkGray
-Write-Host '         vira uma issue e encurta o caminho. Se algo falhar, copie a saida acima ou' -ForegroundColor DarkGray
-Write-Host '         abra o installer.log da pasta GoLiveBypass e relate voce mesmo em' -ForegroundColor DarkGray
-Write-Host '         https://github.com/bezumiya/GoLiveBypass/issues.' -ForegroundColor DarkGray
-Write-Host '         O standalone continua separado, indisponivel e nao e alterado por este instalador.' -ForegroundColor DarkGray
+Write-Host '  GoLiveBypass para Equicord/Vencord — escolha seu canal de atualizacoes.' -ForegroundColor Cyan
+Write-Host '         Stable e a opcao recomendada: canal mais previsivel, somente releases estaveis.' -ForegroundColor DarkGray
+Write-Host '         Beta e opcional: canal de testes; voce ajuda a comunidade ao testar, encontrar' -ForegroundColor DarkGray
+Write-Host '         e corrigir erros antes da versao estavel. Nenhum canal promete estabilidade.' -ForegroundColor DarkGray
+Write-Host '         O standalone continua separado e nao e alterado por este instalador.' -ForegroundColor DarkGray
 Write-Host ''
+
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -1217,17 +1224,16 @@ function Copy-PluginHelper($target) {
         }
     }
 
-    # 2. O helper e binario e nao pode ser obtido por raw.githubusercontent.com. Quando o
-    # instalador baixa as fontes da main, busca o helper x64 da beta mais recente e valida
-    # o SHA-256 publicado antes de grava-lo no userplugin.
+    # 2. O helper e binario e nao pode ser obtido por raw.githubusercontent.com.
+    # O canal escolhido decide a release do helper quando a fonte local nao o traz.
     $asset = Get-LatestBetaHelperAsset
     if (-not $asset) {
-        throw 'Nao encontrei o helper proton-confgen da beta. Use um pacote de release ou -PluginSource com bin\win32-x64\proton-confgen.exe.'
+        throw "Nao encontrei o helper proton-confgen do canal $script:SelectedChannel. Use um pacote de release ou -PluginSource com bin\win32-x64\proton-confgen.exe."
     }
 
     $temporary = Join-Path $env:TEMP ("golivebypass-proton-confgen-{0}.exe" -f ([guid]::NewGuid().ToString('N')))
     try {
-        Write-Step "Baixando helper Proton da beta $($asset.Tag)"
+        Write-Step "Baixando helper Proton do canal $script:SelectedChannel ($($asset.Tag))"
         Invoke-WebRequest -Uri $asset.Url -OutFile $temporary -UseBasicParsing -TimeoutSec 60
         $actual = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actual -ne $asset.Sha256) {
@@ -1298,11 +1304,7 @@ function Copy-PluginFromRepo($root) {
 }
 
 
-# De onde vem o plugin instalado. O zip da release e a fonte normal: e o mesmo artefato que
-# o updater do proprio plugin instala, com SHA-256 publicado ao lado, e a tag entrega a linha
-# beta inteira (o main pode nao ter todas as fontes dela — foi o caso da vpn-linux.ts, que so
-# existia no zip). Tres casos caem nas fontes uma a uma: -PluginSource, um checkout do
-# repositorio ao lado do script e, por ultimo, a release inalcancavel (rede ou rate limit).
+# De onde vem o plugin instalado. A fonte normal e uma release validada pelo canal.
 function Install-PluginSource($root) {
     if ($PluginSource -and -not [string]::IsNullOrWhiteSpace($PluginSource)) {
         Copy-PluginFromRepo $root
@@ -1318,21 +1320,13 @@ function Install-PluginSource($root) {
         }
     }
 
-    $release = Get-PluginInstallRelease
-    if ($release -and $release.AssetUrl) {
-        Write-Step "Instalando o plugin da release v$($release.Tag)"
-        Invoke-UpdateFromZip $root $release.AssetUrl $release.Tag
-        # O zip ja traz o helper do Windows, mas quem manda e o helper da release validado
-        # contra o SHA-256 publicado (mesma garantia do #260).
-        Copy-PluginHelper (Join-Path $root "src\userplugins\$PluginDirName")
-        return
+    $release = Get-PluginInstallRelease $script:SelectedChannel
+    if (-not $release) {
+        throw "Nao encontrei uma release $script:SelectedChannel valida com goLiveBypass-vencord.zip e SHA-256. Verifique a conexao ou use -PluginSource com uma fonte local."
     }
-
-    Write-Warn 'Nao consegui consultar a release do plugin (rede ou rate limit do GitHub).'
-    Write-Warn 'Caindo no download arquivo a arquivo da branch main.'
-    Copy-PluginFromRepo $root
+    Write-Step "Instalando o plugin da release $($release.Version) (canal $script:SelectedChannel)"
+    Invoke-UpdateFromZip $root $release.AssetUrl $release.Version $release.ShaUrl
 }
-
 function Build-Mod($root) {
     if (-not $root) { throw 'Caminho do checkout invalido para compilar o mod.' }
     $script:InstallerPhase = 'build'
@@ -1467,6 +1461,7 @@ function Invoke-Install($root) {
     if (-not $root -or -not (Test-Path -LiteralPath $root)) {
         throw 'Nao consegui preparar a pasta do Equicord/Vencord. Rode de novo, ou use -Source "C:\caminho\do\Equicord" apontando para um checkout que voce ja tenha.'
     }
+    [void](Select-UpdateChannel $root)
     $permanent = Select-Persistence
 
     Install-Toolchain $false
@@ -1565,10 +1560,72 @@ function Get-ModSettingsFile($root) {
     #   SETTINGS_FILE = DATA_DIR\settings\settings.json
     $mod = Get-CheckoutMod $root
 
+
     $override = [Environment]::GetEnvironmentVariable("$($mod.ToUpper())_USER_DATA_DIR")
     if ($override) { return (Join-Path $override 'settings\settings.json') }
 
     return (Join-Path $env:APPDATA "$mod\settings\settings.json")
+}
+function Get-PersistedUpdateChannel($root) {
+    if (-not $root) { return $null }
+    $file = Get-ModSettingsFile $root
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    try {
+        $settings = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+        $value = $settings.plugins.GoLiveBypass.updateChannel
+        if ($value -eq 'stable' -or $value -eq 'beta') { return [string]$value }
+    } catch { }
+    return $null
+}
+
+function Set-UpdateChannelPreference($root, [string]$channel) {
+    if (-not $root -or $channel -notin @('stable', 'beta')) { return $false }
+    $file = Get-ModSettingsFile $root
+    $settings = $null
+    if (Test-Path -LiteralPath $file -PathType Leaf) {
+        try { $settings = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json }
+        catch {
+            Write-Warn "Nao consegui ler $file; a preferencia do canal nao foi alterada."
+            return $false
+        }
+    }
+    if ($null -eq $settings -or $settings -is [array] -or $settings -is [string]) { $settings = [pscustomobject]@{} }
+    if (-not $settings.PSObject.Properties['plugins'] -or $null -eq $settings.plugins -or $settings.plugins -is [array] -or $settings.plugins -is [string]) {
+        $settings | Add-Member -NotePropertyName plugins -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    $plugin = if ($settings.plugins.PSObject.Properties['GoLiveBypass'] -and $settings.plugins.GoLiveBypass -isnot [array] -and $settings.plugins.GoLiveBypass -isnot [string]) {
+        $settings.plugins.GoLiveBypass
+    } else { [pscustomobject]@{} }
+    $plugin | Add-Member -NotePropertyName updateChannel -NotePropertyValue $channel -Force
+    $settings.plugins | Add-Member -NotePropertyName GoLiveBypass -NotePropertyValue $plugin -Force
+    try {
+        Save-Text $file ($settings | ConvertTo-Json -Depth 100)
+        return $true
+    } catch {
+        Write-Warn "Nao consegui salvar a preferencia do canal em $file."
+        return $false
+    }
+}
+
+function Select-UpdateChannel($root) {
+    if ($script:ChannelExplicit) { $script:SelectedChannel = $Channel; return $Channel }
+    $persisted = Get-PersistedUpdateChannel $root
+    $interactive = $false
+    try { $interactive = -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected } catch { }
+    if ($Yes -or -not $interactive) {
+        $script:SelectedChannel = if ($persisted) { $persisted } else { 'stable' }
+        return $script:SelectedChannel
+    }
+    Write-Host ''
+    Write-Host '  Canal de atualizacoes do plugin:' -ForegroundColor White
+    Write-Host '    [1] Stable (recomendado)' -ForegroundColor Green
+    Write-Host '        Canal mais previsivel, somente releases estaveis.' -ForegroundColor DarkGray
+    Write-Host '    [2] Beta (opt-in)' -ForegroundColor Yellow
+    Write-Host '        Canal de testes; voce ajuda a comunidade ao testar, encontrar e corrigir erros antes da versao estavel.' -ForegroundColor DarkGray
+    Write-Host '        Nenhum canal promete estabilidade.' -ForegroundColor DarkGray
+    $choice = Read-Escolha '  Escolha [1]'
+    $script:SelectedChannel = if ($choice -eq '2') { 'beta' } else { 'stable' }
+    return $script:SelectedChannel
 }
 
 function Set-PluginSettings($root) {
@@ -1603,9 +1660,12 @@ function Set-PluginSettings($root) {
         $plugin | Add-Member -NotePropertyName excludedCountries -NotePropertyValue 'BR' -Force
     }
 
+    if ($script:SelectedChannel -in @('stable', 'beta')) {
+        $plugin | Add-Member -NotePropertyName updateChannel -NotePropertyValue $script:SelectedChannel -Force
+    }
     $settings.plugins | Add-Member -NotePropertyName GoLiveBypass -NotePropertyValue $plugin -Force
 
-    Save-Text $file ($settings | ConvertTo-Json -Depth 10)
+    Save-Text $file ($settings | ConvertTo-Json -Depth 100)
 
     $written = $null
     try { $written = (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json).plugins.GoLiveBypass } catch { }
@@ -1837,10 +1897,12 @@ function Get-LatestBetaHelperAsset {
         $apiHeaders = @{ 'User-Agent' = 'GoLiveBypass-Installer'; 'Accept' = 'application/vnd.github+json' }
         $releases = Invoke-RestMethod -Uri "$GitHubApi/releases?per_page=20" -Headers $apiHeaders -TimeoutSec 15
         foreach ($release in @($releases)) {
-            if ($release.draft -or -not $release.prerelease) { continue }
-
-            $sha256 = $null
-            $asset = $null
+            if ($release.draft) { continue }
+            $releaseVersion = ConvertTo-PluginVersion $release.tag_name
+            if (-not $releaseVersion) { continue }
+            $releaseIsBeta = $releaseVersion.Pre.Count -gt 0
+            if (($script:SelectedChannel -eq 'stable' -and $releaseIsBeta) -or
+                ($script:SelectedChannel -eq 'beta' -and -not $releaseIsBeta)) { continue }
 
             # 1. Preferir proton-confgen-manifest.json para nome canonico e hash SHA-256
             $manifestAsset = @($release.assets) |
@@ -1899,106 +1961,128 @@ function Get-LatestBetaHelperAsset {
     return $null
 }
 
-# Release que serve a INSTALACAO do plugin: a mais recente publicada que tenha o zip do
-# userplugin e o .sha256 ao lado, prerelease incluida. A linha atual do plugin e beta e
-# /releases/latest (usado pelo -Mode CheckUpdate/Update, que seguem o canal estavel) esconde
-# prerelease — por isso a listagem aqui. A API devolve da mais nova para a mais antiga e nao
-# lista rascunhos para quem nao tem acesso de escrita, entao a primeira release com o asset e
-# a mais nova que realmente tem pacote publicado. Falha silenciosa: quem chama cai no RepoRaw.
-function Get-PluginInstallRelease {
+# Release candidates are selected from the API collection for both channels. Never
+function ConvertTo-PluginVersion($value) {
+    if ($null -eq $value) { return $null }
+    $text = ([string]$value).Trim()
+    $match = [regex]::Match($text, '^[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')
+    if (-not $match.Success) { return $null }
+    foreach ($part in @($match.Groups[1].Value, $match.Groups[2].Value, $match.Groups[3].Value)) {
+        if ($part.Length -gt 1 -and $part.StartsWith('0')) { return $null }
+    }
+    $identifiers = @()
+    if ($match.Groups[4].Success) {
+        $pre = $match.Groups[4].Value
+        $legacy = [regex]::Match($pre, '^beta[.-]([0-9]+)$')
+        if ($legacy.Success) {
+            if ($legacy.Groups[1].Value.Length -gt 1 -and $legacy.Groups[1].Value.StartsWith('0')) { return $null }
+            $identifiers = @('beta', $legacy.Groups[1].Value)
+        } else {
+            $identifiers = @($pre -split '\.')
+            foreach ($identifier in $identifiers) {
+                if ($identifier -match '^[0-9]+$' -and $identifier.Length -gt 1 -and $identifier.StartsWith('0')) { return $null }
+            }
+        }
+    }
+    [pscustomobject]@{
+        Major = [System.Numerics.BigInteger]::Parse($match.Groups[1].Value)
+        Minor = [System.Numerics.BigInteger]::Parse($match.Groups[2].Value)
+        Patch = [System.Numerics.BigInteger]::Parse($match.Groups[3].Value)
+        Pre = $identifiers
+        Normalized = "$($match.Groups[1].Value).$($match.Groups[2].Value).$($match.Groups[3].Value)" + $(if ($identifiers.Count) { "-$($identifiers -join '-')" } else { '' })
+    }
+}
+
+function Compare-Version($installed, $latest) {
+    $a = ConvertTo-PluginVersion $installed
+    $b = ConvertTo-PluginVersion $latest
+    if (-not $b) { return 0 }
+    if (-not $a) { return -1 }
+    foreach ($name in @('Major', 'Minor', 'Patch')) {
+        if ($a.$name -lt $b.$name) { return -1 }
+        if ($a.$name -gt $b.$name) { return 1 }
+    }
+    if ($a.Pre.Count -eq 0 -and $b.Pre.Count -eq 0) { return 0 }
+    if ($a.Pre.Count -eq 0) { return 1 }
+    if ($b.Pre.Count -eq 0) { return -1 }
+    $count = [Math]::Max($a.Pre.Count, $b.Pre.Count)
+    for ($i = 0; $i -lt $count; $i++) {
+        if ($i -ge $a.Pre.Count) { return -1 }
+        if ($i -ge $b.Pre.Count) { return 1 }
+        $left = [string]$a.Pre[$i]; $right = [string]$b.Pre[$i]
+        $leftNumeric = $left -match '^[0-9]+$'; $rightNumeric = $right -match '^[0-9]+$'
+        if ($leftNumeric -and $rightNumeric) {
+            $cmp = [System.Numerics.BigInteger]::Compare([System.Numerics.BigInteger]::Parse($left), [System.Numerics.BigInteger]::Parse($right))
+        } elseif ($leftNumeric -ne $rightNumeric) {
+            $cmp = if ($leftNumeric) { -1 } else { 1 }
+        } else {
+            $cmp = [string]::CompareOrdinal($left, $right)
+        }
+        if ($cmp -ne 0) { return $(if ($cmp -lt 0) { -1 } else { 1 }) }
+    }
+    return 0
+}
+# use /releases/latest here: it hides beta and cannot prove the required assets.
+function Get-PluginReleaseCandidates([string]$channel = $script:SelectedChannel) {
     try {
         $headers = @{ 'User-Agent' = 'GoLiveBypass-Installer'; 'Accept' = 'application/vnd.github+json' }
         $releases = Invoke-RestMethod -Uri "$GitHubApi/releases?per_page=30" -Headers $headers -TimeoutSec 15
         foreach ($release in @($releases)) {
-            if ($release.draft) { continue }
-            $asset = @($release.assets) |
-                Where-Object { $_.name -match '^goLiveBypass-vencord.*\.zip$' } |
-                Select-Object -First 1
-            if (-not $asset) { continue }
-            $shaAsset = @($release.assets) |
-                Where-Object { $_.name -eq "$($asset.name).sha256" } |
-                Select-Object -First 1
-            if (-not $shaAsset) { continue }
-            return [PSCustomObject]@{
-                Tag = ($release.tag_name -replace '^v', '')
-                AssetUrl = $asset.browser_download_url
+            if (-not $release -or -not $release.PSObject.Properties['draft'] -or $release.draft -ne $false -or -not $release.tag_name) { continue }
+            $version = ConvertTo-PluginVersion $release.tag_name
+            if (-not $version) { continue }
+            $isPrerelease = $version.Pre.Count -gt 0
+            if (-not $release.PSObject.Properties['prerelease'] -or $release.prerelease -isnot [bool] -or [bool]$release.prerelease -ne $isPrerelease) { continue }
+            if ($channel -eq 'stable' -and $isPrerelease) { continue }
+            $zip = @($release.assets) | Where-Object { $_.name -eq 'goLiveBypass-vencord.zip' } | Select-Object -First 1
+            $sha = @($release.assets) | Where-Object { $_.name -eq 'goLiveBypass-vencord.zip.sha256' } | Select-Object -First 1
+            if (-not $zip -or -not $sha) { continue }
+            if ($zip.browser_download_url -notmatch '^https://') { continue }
+            if ($sha.browser_download_url -notmatch '^https://') { continue }
+            [pscustomobject]@{
+                Tag = $version.Normalized
+                Version = $version.Normalized
+                AssetUrl = [string]$zip.browser_download_url
+                ShaUrl = [string]$sha.browser_download_url
+                Prerelease = [bool]$isPrerelease
+                Release = $release
             }
         }
     } catch {
-        return $null
+        return
     }
-    return $null
 }
 
-# Consulta a release mais recente. Devolve um objeto com .Tag e .AssetUrl
-# (pode ser $null para qualquer um). RC=0 mesmo se a consulta falhou: o
-# --check-update nao pode derrubar o instalador por falta de rede.
-function Get-LatestRelease {
-    try {
-        $headers = @{ 'User-Agent' = 'GoLiveBypass-Installer'; 'Accept' = 'application/vnd.github+json' }
-        $release = Invoke-RestMethod -Uri "$GitHubApi/releases/latest" -Headers $headers -TimeoutSec 15
-    } catch {
-        return $null
+function Get-PluginReleaseForChannel([string]$channel = $script:SelectedChannel) {
+    $best = $null
+    foreach ($candidate in @(Get-PluginReleaseCandidates $channel)) {
+        if (-not $best -or (Compare-Version $best.Version $candidate.Version) -lt 0) { $best = $candidate }
     }
+    return $best
+}
 
-    $tag = $null
-    if ($release.PSObject.Properties['tag_name'] -and $release.tag_name) {
-        # tag_name vem como "v1.1.8"; o manifest usa "1.1.8" (sem o v)
-        $tag = $release.tag_name -replace '^v', ''
-    }
+function Get-PluginInstallRelease([string]$channel = $script:SelectedChannel) {
+    return Get-PluginReleaseForChannel $channel
+}
 
-    $zip = $null
-    foreach ($a in $release.assets) {
-        if ($a.name -like 'goLiveBypass-vencord*.zip') {
-            $zip = $a.browser_download_url
-            break
-        }
-    }
-
-    return [PSCustomObject]@{ Tag = $tag; AssetUrl = $zip }
+# The update check intentionally uses the same fully validated release object as install/update.
+function Get-LatestRelease([string]$channel = $script:SelectedChannel) {
+    return Get-PluginReleaseForChannel $channel
 }
 
 # Le a versao do manifest.json em $root/src/userplugins/$PluginDirName.
-# Devolve $null se nao existir.
 function Get-InstalledPluginVersion($root) {
     if (-not $root) { return $null }
     $manifest = Join-Path $root "src\userplugins\$PluginDirName\manifest.json"
     if (-not (Test-Path -LiteralPath $manifest)) { return $null }
     try {
         $j = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
-        if ($j.PSObject.Properties['version'] -and $j.version) { return [string]$j.version }
+        $version = if ($j.PSObject.Properties['version']) { [string]$j.version } else { $null }
+        if (ConvertTo-PluginVersion $version) { return $version }
     } catch {}
     return $null
 }
 
-# Compara duas versoes semver. Retorna -1/0/+1.
-# [version] casts lidam com 1.2.3 mas nao com "1.2.3-beta" - usamos o tipo
-# apenas para a parte numerica.
-function Compare-Version($installed, $latest) {
-    if (-not $latest) { return 0 }   # sem informacao do GitHub: sem atualizacao
-    if (-not $installed) { return -1 }  # sem versao local: vale conferir
-
-    $local = [string]$installed -replace '^[vV]', ''
-    $remote = [string]$latest -replace '^[vV]', ''
-    $localDash = $local.IndexOf('-')
-    $remoteDash = $remote.IndexOf('-')
-    $localCore = if ($localDash -ge 0) { $local.Substring(0, $localDash) } else { $local }
-    $localPre = if ($localDash -ge 0) { $local.Substring($localDash + 1) } else { '' }
-    $remoteCore = if ($remoteDash -ge 0) { $remote.Substring(0, $remoteDash) } else { $remote }
-    $remotePre = if ($remoteDash -ge 0) { $remote.Substring($remoteDash + 1) } else { '' }
-
-    $a = [version]$localCore
-    $b = [version]$remoteCore
-    if ($b -gt $a) { return -1 }
-    if ($b -lt $a) { return  1 }
-
-    # Mesma versao base: um sufixo de pre-release (-beta.N) sempre conta como
-    # mais antigo que a mesma base sem sufixo, nunca como versao igual.
-    if ($localPre -and -not $remotePre) { return -1 }
-    if (-not $localPre -and $remotePre) { return 1 }
-    if ($localPre -and $remotePre) { return [string]::Compare($localPre, $remotePre, [System.StringComparison]::Ordinal) }
-    return 0
-}
 
 # Faz backup do plugin atual em $root/src/userplugins/.$PluginDirName.bak/
 # com timestamp YYYYMMDDHHMMSS, mantendo so os 3 mais recentes.
@@ -2023,127 +2107,88 @@ function Backup-Plugin($root) {
     }
 }
 
-# --check-update: imprime o status e sai. NUNCA baixa nada.
+# --check-update: consulta canal selecionado e nunca baixa.
 function Invoke-CheckUpdate {
     $root = Find-Checkout
     if (-not $root) {
-        Write-Host "  plugin: " -NoNewline
-        Write-Host "nao encontrado" -ForegroundColor Yellow -NoNewline
-        Write-Host " (rode uma vez para instalar)"
+        Write-Host "  plugin: nao encontrado (rode uma vez para instalar)"
         return
     }
-
+    $channel = Select-UpdateChannel $root
     $installed = Get-InstalledPluginVersion $root
-    if ($installed) {
-        Write-Host "  plugin: instalado (" -NoNewline
-        Write-Host "v$installed" -ForegroundColor DarkGray -NoNewline
-        Write-Host ")"
-    } else {
-        Write-Host "  plugin: " -NoNewline
-        Write-Host "instalado (versao desconhecida)" -ForegroundColor Yellow
-    }
-
-    $release = Get-LatestRelease
-    if (-not $release -or -not $release.Tag) {
-        Write-Host "  remote: " -NoNewline
-        Write-Host "nao consegui consultar (rede ou rate limit)" -ForegroundColor DarkGray
+    if ($installed) { Write-Host "  plugin: instalado (v$installed)" }
+    else { Write-Host "  plugin: instalado (versao desconhecida)" -ForegroundColor Yellow }
+    $release = Get-LatestRelease $channel
+    if (-not $release) {
+        Write-Host "  remote: nenhuma release $channel valida com zip e SHA-256 (rede, rate limit ou asset ausente)" -ForegroundColor DarkGray
         return
     }
-
-    Write-Host "  remote: " -NoNewline
-        Write-Host "v$($release.Tag)" -ForegroundColor DarkGray
-
+    [void](Set-UpdateChannelPreference $root $channel)
+    Write-Host "  canal: $channel"
+    Write-Host "  remote: $($release.Version)"
     if (-not $installed) {
-        Write-Host "  resultado: " -NoNewline
-        Write-Host "versao local desconhecida - rode --update para alinhar" -ForegroundColor Yellow
+        Write-Host "  resultado: versao local desconhecida - rode -Mode Update para alinhar" -ForegroundColor Yellow
         return
     }
-
-    $cmp = Compare-Version $installed $release.Tag
-    switch ($cmp) {
-        0  { Write-Host "  resultado: " -NoNewline
-        Write-Host "voce esta na versao mais recente" -ForegroundColor Green }
-        1  { Write-Host "  resultado: " -NoNewline
-        Write-Host "versao local mais nova que a release (fork?)" -ForegroundColor DarkGray }
-        -1 { Write-Host "  resultado: " -NoNewline
-        Write-Host "ha versao nova - rode sem --check-update para atualizar" -ForegroundColor Yellow }
+    switch (Compare-Version $installed $release.Version) {
+        0  { Write-Host "  resultado: voce esta na versao mais recente" -ForegroundColor Green }
+        1  { Write-Host "  resultado: versao local mais nova que a release (nenhum downgrade)" -ForegroundColor DarkGray }
+        -1 { Write-Host "  resultado: ha versao nova - rode -Mode Update para atualizar" -ForegroundColor Yellow }
     }
 }
 
-# --update: faz o trabalho. Baixa o zip, valida SHA-256, extrai.
+# --update: baixa somente o zip da release validada do canal e nunca faz downgrade.
 function Invoke-Update {
     $root = Find-Checkout
     if (-not $root) { throw "Nao achei o checkout do mod. Rode o instalador uma vez (sem --update) para descobrir." }
-
+    $channel = Select-UpdateChannel $root
     $installed = Get-InstalledPluginVersion $root
-    $release = Get-LatestRelease
-    if (-not $release -or -not $release.Tag) { throw "Nao consegui consultar a release mais recente (rede ou rate limit do GitHub)." }
-
-    if ($installed) {
-        $cmp = Compare-Version $installed $release.Tag
-        if ($cmp -eq 0) {
-            Write-Ok "Voce ja esta na v$($release.Tag) (a mais recente)."
-            return
-        }
-        if ($cmp -eq 1) {
-            Write-Warn "Versao local (v$installed) e mais nova que a release (v$($release.Tag))."
-            if (-not $Yes -and $Host.UI.RawUI) {
-                $ans = Read-Escolha "  Atualizar mesmo assim? (S/N)"
-                if ($ans -ne 'S' -and $ans -ne 's') { Write-Warn 'Atualizacao cancelada.'; return }
-            }
-        }
+    if (-not $installed -and (Test-Path -LiteralPath (Join-Path $root "src\userplugins\$PluginDirName\manifest.json"))) {
+        throw "A versao instalada do plugin e invalida; nenhum update seguro foi aplicado."
     }
-
+    $release = Get-LatestRelease $channel
+    if (-not $release) { throw "Nao encontrei uma release $channel valida com zip e SHA-256; nenhum update foi aplicado." }
+    if ($installed -and (Compare-Version $installed $release.Version) -ge 0) {
+        [void](Set-UpdateChannelPreference $root $channel)
+        if ((Compare-Version $installed $release.Version) -eq 0) { Write-Ok "Voce ja esta na versao $($release.Version) (canal $channel)." }
+        else { Write-Warn "Versao local (v$installed) e mais nova; nenhum downgrade foi feito." }
+        return
+    }
     Write-Step "Fazendo backup do plugin atual"
     Backup-Plugin $root
-
-    if ($release.AssetUrl) {
-        Invoke-UpdateFromZip $root $release.AssetUrl $release.Tag
-    } else {
-        # Fallback: a release nao tem o asset do userplugin
-        Write-Warn "Release v$($release.Tag) nao tem o zip do userplugin. Caindo no download via RepoRaw."
-        Copy-PluginFromRepo $root
-    }
-
+    Invoke-UpdateFromZip $root $release.AssetUrl $release.Version $release.ShaUrl
     Build-Mod $root
     if (-not (Test-InjectedFromCheckout $root)) { Invoke-Injection $root @((Get-PatchTargets) | Where-Object { $_.Tipo -eq 'O' }) }
-
+    [void](Set-UpdateChannelPreference $root $channel)
     Write-Host ''
-    Write-Ok "Atualizado para v$($release.Tag). Reinicie o Discord para carregar a nova versao."
+    Write-Ok "Atualizado para $($release.Version) (canal $channel). Reinicie o Discord para carregar a nova versao."
 }
 
-# Baixa o zip do userplugin, valida SHA-256 e extrai. Serve a instalacao (Install-PluginSource)
-# e o -Mode Update; o destino e sempre src\userplugins\<plugin>, nunca o dist do mod.
-function Invoke-UpdateFromZip($root, $zipUrl, $expectedVersion) {
+# Baixa o zip do userplugin, valida SHA-256 e extrai. O SHA URL vem do mesmo
+# objeto de release para evitar misturar assets de canais/releases diferentes.
+function Invoke-UpdateFromZip($root, $zipUrl, $expectedVersion, $shaUrl = $null) {
     $tempDir = Join-Path $env:TEMP "GoLiveBypass-plugin-$expectedVersion"
     if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     $zipFile = Join-Path $tempDir 'plugin.zip'
-
     Write-Step "Baixando $zipUrl"
-    try {
-        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing -TimeoutSec 60
-    } catch {
-        Remove-CaminhoSilencioso $tempDir
-        throw "Download do zip falhou: $($_.Exception.Message)"
-    }
-
+    try { Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing -TimeoutSec 60 }
+    catch { Remove-CaminhoSilencioso $tempDir; throw "Download do zip falhou: $($_.Exception.Message)" }
     Write-Step "Validando SHA-256"
-    $shaUrl = "$zipUrl.sha256"
-    $shaExpected = $null
+    if (-not $shaUrl) { $shaUrl = "$zipUrl.sha256" }
     try {
         $shaResponse = Invoke-WebRequest -Uri $shaUrl -UseBasicParsing -TimeoutSec 15
-        # Windows PowerShell 5.1 pode expor Content como byte[] para assets
-        # binários/redirects do GitHub; normalize antes de aplicar Trim().
         $shaContent = if ($shaResponse.Content -is [byte[]]) {
             [Text.Encoding]::UTF8.GetString($shaResponse.Content).Trim()
-        } else {
-            ([string]$shaResponse.Content).Trim()
-        }
+        } else { ([string]$shaResponse.Content).Trim() }
         $shaExpected = ($shaContent -split '\s+')[0].ToLower()
     } catch {
         Remove-CaminhoSilencioso $tempDir
         throw "Release sem arquivo .sha256 (asset companion). Sem hash, sem update."
+    }
+    if ($shaExpected -notmatch '^[0-9a-f]{64}$') {
+        Remove-CaminhoSilencioso $tempDir
+        throw 'Release com SHA-256 invalido. Sem hash, sem update.'
     }
     $shaActual = (Get-FileHash -LiteralPath $zipFile -Algorithm SHA256).Hash.ToLower()
     if ($shaActual -ne $shaExpected) {
@@ -2151,31 +2196,21 @@ function Invoke-UpdateFromZip($root, $zipUrl, $expectedVersion) {
         throw "SHA-256 nao confere: esperado $shaExpected, obtido $shaActual."
     }
     Write-Ok 'SHA-256 confere'
-
-    Write-Step "Extraindo o plugin"
     $extractDir = Join-Path $tempDir 'extract'
     New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-    try {
-        Expand-Archive -LiteralPath $zipFile -DestinationPath $extractDir -Force
-    } catch {
-        Remove-CaminhoSilencioso $tempDir
-        throw "Extracao falhou: $($_.Exception.Message)"
-    }
-
-    $target = Join-Path $root "src\userplugins\$PluginDirName"
-    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
-    New-Item -ItemType Directory -Path $target -Force | Out-Null
-
-    # O zip tem a pasta raiz goLiveBypass/; copia o conteudo
+    try { Expand-Archive -LiteralPath $zipFile -DestinationPath $extractDir -Force }
+    catch { Remove-CaminhoSilencioso $tempDir; throw "Extracao falhou: $($_.Exception.Message)" }
     $extracted = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1
-    if (-not $extracted) {
+    if (-not $extracted -or $extracted.Name -ne $PluginDirName) {
         Remove-CaminhoSilencioso $tempDir
         throw 'Zip nao tem a pasta esperada (goLiveBypass/).'
     }
+    $target = Join-Path $root "src\userplugins\$PluginDirName"
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
     Get-ChildItem -LiteralPath $extracted.FullName -Force | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force
     }
-
     Remove-CaminhoSilencioso $tempDir
     Write-Ok 'Plugin extraido'
 }

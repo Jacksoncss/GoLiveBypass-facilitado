@@ -60,6 +60,7 @@ extract_update_functions() {
     printf "GITHUB_REPO=\"bezumiya/GoLiveBypass\"\n"
     printf "GITHUB_API=\"https://api.github.com/repos/bezumiya/GoLiveBypass\"\n"
     printf "GITHUB_UA=\"GoLiveBypass-Installer\"\n"
+    printf 'have() { command -v "$1" >/dev/null 2>&1; }\n'
 }
 
 # --------------------------------------------------------------------------- 1. Sintaxe
@@ -226,8 +227,83 @@ else
 fi
 rm -rf "$TMP"
 
+echo
+echo "== 9. Canal do instalador e SemVer beta =="
+if grep -F -- "--channel" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
+   grep -F -- 'stable|beta' "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1; then
+    ok "parser aceita --channel stable|beta"
+else
+    bad "parser de --channel ausente"
+fi
+if grep -F -- "Stable e a opcao recomendada" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
+   grep -F -- "Beta e opcional" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
+   grep -F -- "ajuda a comunidade" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1; then
+    ok "mensagens de stable/beta sao encorajadoras e honestas"
+else
+    bad "mensagens de canal ausentes"
+fi
+if [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-9 2.0.0-beta-10")" = "-1" ] &&
+   [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-10 2.0.0-beta-9")" = "1" ]; then
+    ok "SemVer ordena beta-9 antes de beta-10"
+else
+    bad "SemVer beta com dois digitos incorreto"
+fi
+FIXTURE="$(mktemp -d)"
+cat > "$FIXTURE/releases.json" <<'EOF'
+[
+  {"draft":true,"prerelease":true,"tag_name":"v9.9.9-beta-99","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/draft"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/draft.sha"}]},
+  {"draft":false,"prerelease":true,"tag_name":"v2.1.0-beta-9","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/b9"}]},
+  {"draft":false,"prerelease":true,"tag_name":"v2.1.0-beta-10","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/b10"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/b10.sha"}]},
+  {"draft":false,"prerelease":false,"tag_name":"v2.0.0","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/stable"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/stable.sha"}]},
+  {"draft":false,"prerelease":false,"tag_name":"v2.2.0","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/no-sha"}]}
+]
+EOF
+cat > "$FIXTURE/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$GLB_CURL_LOG"
+cat "$GLB_FIXTURE"
+EOF
+chmod +x "$FIXTURE/curl"
+stable_release=$(GLB_FIXTURE="$FIXTURE/releases.json" GLB_CURL_LOG="$FIXTURE/curl.log" PATH="$FIXTURE:$PATH" sh -c ". '$HARNESS'; github_release_candidates stable")
+beta_release=$(GLB_FIXTURE="$FIXTURE/releases.json" GLB_CURL_LOG="$FIXTURE/curl.log" PATH="$FIXTURE:$PATH" sh -c ". '$HARNESS'; github_release_candidates beta")
+if [ "$(printf '%s\n' "$stable_release" | sed -n '1p')" = "2.0.0" ]; then
+    ok "stable filtra beta/draft/missing SHA e escolhe a maior stable"
+else
+    bad "selecao stable de release incorreta"
+fi
+if [ "$(printf '%s\n' "$beta_release" | sed -n '1p')" = "2.1.0-beta-10" ]; then
+    ok "beta considera stable/prerelease e ordena beta-9 antes de beta-10"
+else
+    bad "selecao beta ou ordem SemVer incorreta"
+fi
+if ! grep -F '/releases/latest' "$FIXTURE/curl.log" >/dev/null 2>&1; then ok "selecao de canal nao usa /releases/latest"; else bad "selecao usou endpoint latest"; fi
+rm -rf "$FIXTURE"
 rm -f "$HARNESS"
-
+echo
+echo "== 10. Flag/default noninteractive, merge e check sem download =="
+RUNTIME="$(mktemp -d)"
+mkdir -p "$RUNTIME/Equicord/src/utils" "$RUNTIME/Equicord/src/userplugins/goLiveBypass" "$RUNTIME/home/.config/Equicord/settings" "$RUNTIME/bin"
+printf '{"name":"Equicord"}\n' > "$RUNTIME/Equicord/package.json"
+: > "$RUNTIME/Equicord/src/utils/types.ts"
+printf '{"version":"2.0.0-beta-9"}\n' > "$RUNTIME/Equicord/src/userplugins/goLiveBypass/manifest.json"
+printf '{"autoUpdate":false,"keep":{"nested":true}}\n' > "$RUNTIME/home/.config/Equicord/settings/settings.json"
+cat > "$RUNTIME/releases.json" <<'EOF'
+[{"draft":false,"prerelease":false,"tag_name":"v2.0.0","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/stable"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/stable.sha"}]},{"draft":false,"prerelease":true,"tag_name":"v2.0.0-beta-10","assets":[{"name":"goLiveBypass-vencord.zip","browser_download_url":"https://fake/beta"},{"name":"goLiveBypass-vencord.zip.sha256","browser_download_url":"https://fake/beta.sha"}]}]
+EOF
+cat > "$RUNTIME/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$GLB_CURL_LOG"
+cat "$GLB_FIXTURE"
+EOF
+chmod +x "$RUNTIME/bin/curl"
+flag_out="$(GLB_FIXTURE="$RUNTIME/releases.json" GLB_CURL_LOG="$RUNTIME/curl.log" HOME="$RUNTIME/home" PATH="$RUNTIME/bin:$PATH" GLB_INSTALLER_LOG_DIR="$RUNTIME/log" sh "$REPO/installer/golivebypass-installer.sh" --check-update --source "$RUNTIME/Equicord" --channel beta --yes 2>/dev/null || true)"
+if printf '%s\n' "$flag_out" | grep -F 'canal: beta' >/dev/null; then ok "flag --channel beta vence e -Yes nao bloqueia"; else bad "flag/default beta incorreto"; fi
+if [ "$(wc -l < "$RUNTIME/curl.log" | tr -d ' ')" = "1" ] && ! grep -F 'plugin.zip' "$RUNTIME/curl.log" >/dev/null 2>&1; then ok "--check-update consulta API sem download do zip"; else bad "--check-update baixou alem da API"; fi
+if node -e 'const s=require(process.argv[1]); if(s.autoUpdate!==false||s.keep.nested!==true||s.plugins.GoLiveBypass.updateChannel!=="beta")process.exit(1)' "$RUNTIME/home/.config/Equicord/settings/settings.json"; then ok "persistencia faz merge preservando autoUpdate e demais chaves"; else bad "persistencia nao preservou configuracoes"; fi
+rm -f "$RUNTIME/home/.config/Equicord/settings/settings.json"
+default_out="$(GLB_FIXTURE="$RUNTIME/releases.json" GLB_CURL_LOG="$RUNTIME/curl-default.log" HOME="$RUNTIME/home" PATH="$RUNTIME/bin:$PATH" GLB_INSTALLER_LOG_DIR="$RUNTIME/log-default" sh "$REPO/installer/golivebypass-installer.sh" --check-update --source "$RUNTIME/Equicord" --yes 2>/dev/null || true)"
+if printf '%s\n' "$default_out" | grep -F 'canal: stable' >/dev/null; then ok "modo noninteractive sem flag usa stable por padrao"; else bad "default stable noninteractive incorreto"; fi
+rm -rf "$RUNTIME"
 # --------------------------------------------------------------------------- 9. Uso documentado
 echo
 echo "== 9. Documentacao do auto-update =="

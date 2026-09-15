@@ -12,6 +12,7 @@ import {
   normalizeWindowsDiscoveryPath,
   parseWindowsDiscoveryCommand,
   parseWindowsDiscoveryJson,
+  summarizeWindowsDiscoveryCollection,
   toPublicWindowsDiscoveryInstall,
   validateWindowsExecutable,
   validateWindowsProcessExecutable,
@@ -151,11 +152,16 @@ describe("discovery Windows puro", () => {
 
     expect(parsed.registry).toMatchObject({ status: "partial", truncated: true, errorCode: "UNINSTALL_LIMIT" });
     expect(invocation?.file).toBe("powershell.exe");
-    expect(invocation?.args).toEqual(expect.arrayContaining(["-NoProfile", "-NonInteractive", "-Command"]));
+    expect(invocation?.args).toEqual(expect.arrayContaining(["-NoProfile", "-NonInteractive", "-EncodedCommand"]));
+    expect(invocation?.args).not.toContain("-ExecutionPolicy");
+    expect(invocation?.args).not.toContain("-Command");
+    const encoded = invocation?.args[3] ?? "";
+    expect(Buffer.from(encoded, "base64").toString("utf16le")).toBe(buildWindowsDiscoveryPowerShell());
     expect(buildWindowsDiscoveryPowerShell()).toContain("Get-CimInstance Win32_Process");
+    expect(buildWindowsDiscoveryPowerShell()).toContain("Select-Object -First 65");
+    expect(buildWindowsDiscoveryPowerShell()).toContain("$processStatus = 'partial'");
     expect(buildWindowsDiscoveryPowerShell()).toContain("Select-Object -First 129");
     expect(buildWindowsDiscoveryPowerShell()).toContain("HKLM:\\Software\\WOW6432Node\\Classes");
-    expect(buildWindowsDiscoveryPowerShell()).toContain("Get-ItemProperty");
   });
 
   it("mapeia falha catastrófica e JSON inválido para erros sem expor exceção", () => {
@@ -163,6 +169,29 @@ describe("discovery Windows puro", () => {
       throw new Error("caminho privado");
     })).toThrow("POWERSHELL_EXIT");
     expect(() => collectWindowsDiscoveryPowerShell(() => "{}")).toThrow("JSON_INVALID");
+  });
+  it("resume partial/error dos blocos como coleta degradada sem apagar rows", () => {
+    const raw = parseWindowsDiscoveryJson(JSON.stringify({
+      schema: 1,
+      process: {
+        status: "partial",
+        rows: [{ name: "Discord.exe", pid: 10, path: null }],
+        truncated: true,
+        errorCode: "PROCESS_LIMIT",
+      },
+      registry: {
+        status: "error",
+        rows: [],
+        truncated: false,
+        errorCode: "REGISTRY_UNAVAILABLE",
+      },
+    }));
+    const health = summarizeWindowsDiscoveryCollection(raw);
+    expect(health).toEqual({
+      collectionFailed: true,
+      sourceFailure: "process:PROCESS_LIMIT,registry:REGISTRY_UNAVAILABLE",
+    });
+    expect(raw.process.rows).toHaveLength(1);
   });
 
   it("trata processos pelos seis nomes e caminhos exatos", () => {
@@ -189,6 +218,7 @@ describe("discovery Windows puro", () => {
     };
     const candidates = handleRegistryRows([
       { hive: "hkcu", kind: "app-paths", value: `"${direct}"`, flavourHint: "Discord" },
+      { hive: "hkcu", kind: "url-handler", value: `"${direct}" --url "%1"`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "url-handler", value: `"${updater}" --processStart Discord.exe`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "url-handler", value: `"${updater}" --processStart Discord.exe --extra`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "uninstall", value: "", flavourHint: "Discord", displayIcon: `${direct},0`, installLocation: "C:\\Program Files\\Discord" },
@@ -196,7 +226,7 @@ describe("discovery Windows puro", () => {
 
     expect(candidates.some((candidate) => candidate.exePath === direct)).toBe(true);
     expect(candidates.some((candidate) => candidate.exePath === installed)).toBe(true);
-    expect(candidates).toHaveLength(4);
+    expect(candidates).toHaveLength(5);
   });
 
   it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {

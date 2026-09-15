@@ -138,11 +138,13 @@ $flavours = @('Discord','DiscordPTB','DiscordCanary','Vesktop','Equibop','Legcor
 $schemes = @('discord','discordptb','discordcanary','vesktop','equibop','legcord')
 $processFilter = "Name = 'Discord.exe' OR Name = 'DiscordPTB.exe' OR Name = 'DiscordCanary.exe' OR Name = 'Vesktop.exe' OR Name = 'Equibop.exe' OR Name = 'Legcord.exe'"
 
+# The 65th matching process is a sentinel: emit at most 64 rows but report truncation.
 $processRows = @()
 $processStatus = 'ok'
 $processError = $null
+$processTruncated = $false
 try {
-  $processRows = @(Get-CimInstance Win32_Process -Filter $processFilter -ErrorAction Stop | ForEach-Object {
+  $processMatches = @(Get-CimInstance Win32_Process -Filter $processFilter -ErrorAction Stop | ForEach-Object {
     $processPath = $null
     if ($_.ExecutablePath) { $processPath = [string]$_.ExecutablePath }
     [pscustomobject]@{
@@ -150,8 +152,11 @@ try {
       pid = [int]$_.ProcessId
       path = $processPath
     }
-  } | Select-Object -First 64)
-  if ($processRows.Count -eq 0) { $processStatus = 'empty' }
+  } | Select-Object -First 65)
+  if ($processMatches.Count -gt 64) { $processTruncated = $true }
+  $processRows = @($processMatches | Select-Object -First 64)
+  if ($processRows.Count -eq 0 -and !$processTruncated) { $processStatus = 'empty' }
+  elseif ($processTruncated) { $processStatus = 'partial' }
 } catch {
   $processStatus = 'error'
   $processError = 'CIM_UNAVAILABLE'
@@ -159,9 +164,9 @@ try {
 $processBlock = [ordered]@{
   status = $processStatus
   rows = @($processRows)
-  truncated = $false
+  truncated = [bool]$processTruncated
 }
-if ($processError) { $processBlock.errorCode = $processError }
+if ($processError) { $processBlock['errorCode'] = $processError }
 
 $registryRows = @()
 $registryErrors = 0
@@ -257,8 +262,9 @@ $registryBlock = [ordered]@{
   rows = @($registryRows)
   truncated = [bool]$registryTruncated
 }
-if ($registryErrors -gt 0) { $registryBlock.errorCode = 'REGISTRY_PARTIAL' }
-if ($registryTruncated -and !$registryBlock.errorCode) { $registryBlock.errorCode = 'UNINSTALL_LIMIT' }
+if ($registryErrors -gt 0 -and $registryRows.Count -eq 0) { $registryBlock['errorCode'] = 'REGISTRY_UNAVAILABLE' }
+elseif ($registryErrors -gt 0) { $registryBlock['errorCode'] = 'REGISTRY_PARTIAL' }
+elseif ($registryTruncated) { $registryBlock['errorCode'] = 'UNINSTALL_LIMIT' }
 
 [pscustomobject]@{
   schema = 1
@@ -298,10 +304,8 @@ export function collectWindowsDiscoveryPowerShell(
     stdout = runner("powershell.exe", [
       "-NoProfile",
       "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      WINDOWS_DISCOVERY_POWERSHELL_SCRIPT,
+      "-EncodedCommand",
+      Buffer.from(WINDOWS_DISCOVERY_POWERSHELL_SCRIPT, "utf16le").toString("base64"),
     ]);
   } catch {
     throw new WindowsDiscoveryCollectionError("POWERSHELL_EXIT");
@@ -321,6 +325,24 @@ function asRows(value: unknown): unknown[] | null {
   if (Array.isArray(value)) return value;
   if (value === undefined || value === null) return null;
   return [value];
+}
+export interface WindowsDiscoveryCollectionHealth {
+  collectionFailed: boolean;
+  sourceFailure?: string;
+}
+
+export function summarizeWindowsDiscoveryCollection(
+  raw: WindowsDiscoveryRaw,
+): WindowsDiscoveryCollectionHealth {
+  const failures: string[] = [];
+  for (const [source, block] of [["process", raw.process], ["registry", raw.registry]] as const) {
+    if (block.status === "error" || block.status === "partial" || block.truncated) {
+      failures.push(`${source}:${block.errorCode || (block.truncated ? "truncated" : block.status)}`);
+    }
+  }
+  return failures.length > 0
+    ? { collectionFailed: true, sourceFailure: failures.join(",") }
+    : { collectionFailed: false };
 }
 
 function parseBlock<Row>(
@@ -657,11 +679,8 @@ export function handleRegistryRows(
       const command = parseWindowsDiscoveryCommand(row.value);
       if (!command) continue;
       const candidate = row.kind === "url-handler"
-        ? candidateFromUpdateCommand(command, flavour, deps) ?? (
-          command.args.length === 0
-            ? candidateFromRegistryExecutable(command.executable, flavour, deps)
-            : null
-        )
+        ? candidateFromUpdateCommand(command, flavour, deps) ??
+          candidateFromRegistryExecutable(command.executable, flavour, deps)
         : command.args.length === 0
           ? candidateFromRegistryExecutable(command.executable, flavour, deps)
           : null;

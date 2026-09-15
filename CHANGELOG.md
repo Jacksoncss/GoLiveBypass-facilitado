@@ -9,7 +9,7 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - Windows (`-Channel stable|beta`) e Linux (`--channel stable|beta`) usam stable por padrão. Em modo interativo, stable é a opção recomendada, com o canal mais previsível e somente releases estáveis; beta é opt-in: um canal de testes em que você ajuda a comunidade ao testar, encontrar e corrigir erros antes da versão estável. Nenhum canal promete estabilidade.
 - A preferência é persistida separadamente em `plugins.GoLiveBypass.updateChannel` no `settings.json` do Equicord/Vencord, preservando `autoUpdate` e as demais chaves; as configurações da GUI e do standalone não são tocadas.
-- Checagens e instalações escolhem a maior versão SemVer válida do canal, exigem release publicada com ZIP e SHA-256, rejeitam metadata inconsistente e nunca fazem downgrade. `--check-update`/`-Mode CheckUpdate` apenas consultam a API e não baixam arquivos.
+- Checagens e instalações escolhem a maior versão SemVer válida do canal, exigem release publicada com ZIP e SHA-256, rejeitam metadata inconsistente e nunca fazem downgrade. `--check-update`/`-Mode CheckUpdate` consultam a API sem baixar o ZIP, mas podem persistir a preferência de canal após uma operação válida.
 - Como o canal selecionado exige um ZIP e seu SHA-256 da mesma release, uma release sem esses assets agora falha de forma explícita e não cai silenciosamente em `RepoRaw`; use `--plugin-source`/`-PluginSource` somente quando quiser uma fonte local explícita.
 
 

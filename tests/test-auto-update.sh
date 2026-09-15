@@ -242,6 +242,18 @@ if grep -F -- "Stable e a opcao recomendada" "$REPO/installer/golivebypass-insta
 else
     bad "mensagens de canal ausentes"
 fi
+if grep -E "installer\\.selected.*channel" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
+   grep -E "installer\\.completed.*channel" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1; then
+    ok "eventos selected/completed incluem canal"
+else
+    bad "eventos selected/completed sem canal"
+fi
+if grep -F 'pode persistir o canal, sem baixar ZIP' "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
+   grep -F 'pode persistir o canal, sem baixar ZIP' "$REPO/installer/GoLiveBypass-Installer.ps1" >/dev/null 2>&1; then
+    ok "CheckUpdate documenta persistencia sem download"
+else
+    bad "documentacao CheckUpdate desatualizada"
+fi
 if [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-9 2.0.0-beta-10")" = "-1" ] &&
    [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-10 2.0.0-beta-11")" = "-1" ] &&
    [ "$(sh -c ". $HARNESS; compare_version 2.0.0-beta-11 2.0.0-beta-10")" = "1" ]; then

@@ -15,8 +15,7 @@
 #   ./golivebypass-installer.sh --plugin-source ~/GoLiveBypass/goLiveBypass
 #   ./golivebypass-installer.sh --mod vencord --yes
 #   ./golivebypass-installer.sh --uninstall
-#   ./golivebypass-installer.sh --check-update   # so consulta o GitHub, nao mexe
-#   ./golivebypass-installer.sh --update          # aplica update se houver
+#   ./golivebypass-installer.sh --check-update   # consulta a API e pode persistir o canal, sem baixar ZIP
 #
 # Obrigado ao Vithor (https://github.com/Vith0r), que escreveu o primeiro instalador do
 # GoLiveBypass e abriu o caminho para este aqui.
@@ -181,7 +180,7 @@ installer_log() {
         case "$chave" in
             *password*|*senha*|*token*|*captcha*|*secret*|*privatekey*|*private_key*|*publickey*|*authorization*|*cookie*|*session*|*credential*|*stdin*|*rawconfig*|config|endpoint)
                 valor="<redacted>" ;;
-            mode|permanent|we_injected|target_count|candidate_count|discord_count|mod_kind|reason|reason_code|result|exit_code|duration_ms|path_present|path_kind|active|preserved|identity|count)
+            mode|channel|permanent|we_injected|target_count|candidate_count|discord_count|mod_kind|reason|reason_code|result|exit_code|duration_ms|path_present|path_kind|active|preserved|identity|count)
                 valor="$(_glb_redact "$valor")" ;;
             *) continue ;;
         esac
@@ -1044,7 +1043,7 @@ find_checkout() {
     if [ -n "$SOURCE" ]; then
         installer_log info installer.checkout_candidate detect candidate_kind source candidate_count 1
         if is_checkout "$SOURCE"; then
-            installer_log info installer.selected detect candidate_kind source path_present true
+            installer_log info installer.selected detect candidate_kind source path_present true channel "$CHANNEL"
             printf '%s\n' "$SOURCE"; return 0
         fi
         installer_log warn installer.checkout_rejected detect candidate_kind source reason_code SOURCE_NOT_A_CHECKOUT
@@ -1053,14 +1052,14 @@ find_checkout() {
 
     installer_log info installer.checkout_candidate detect candidate_kind injection
     if root="$(checkout_from_injection)"; then
-        installer_log info installer.selected detect candidate_kind injection path_present true
+        installer_log info installer.selected detect candidate_kind injection path_present true channel "$CHANNEL"
         ok "Achei pelo Discord: $root"
         printf '%s\n' "$root"; return 0
     fi
 
     installer_log info installer.checkout_candidate detect candidate_kind disk
     if root="$(checkout_on_disk)"; then
-        installer_log info installer.selected detect candidate_kind disk path_present true
+        installer_log info installer.selected detect candidate_kind disk path_present true channel "$CHANNEL"
         ok "Achei no disco: $root"
         printf '%s\n' "$root"; return 0
     fi
@@ -1282,7 +1281,7 @@ install_mod() {
         *) fail "Mod desconhecido: $choice" ;;
     esac
     target="$HOME/$choice"
-    installer_log info installer.selected preparing mode download mod_kind "$choice"
+    installer_log info installer.selected preparing mode download mod_kind "$choice" channel "$CHANNEL"
 
     printf '\n  %sVou fazer:%s\n' "$C_BOLD" "$C_OFF" >&2
     printf '  %s  1. Baixar o %s em %s%s\n' "$C_DIM" "$choice" "$target" "$C_OFF" >&2
@@ -1430,7 +1429,7 @@ install_plugin_source() {
     zip="$(printf '%s\n' "$release" | sed -n '2p')"
     sha="$(printf '%s\n' "$release" | sed -n '3p')"
     if [ -z "$version" ] || [ -z "$zip" ] || [ -z "$sha" ]; then
-        fail "Nao encontrei uma release $CHANNEL valida com zip e SHA-256. Verifique a conexao ou use --plugin-source com uma fonte local."
+        fail "Nao encontrei uma release $CHANNEL valida com zip e SHA-256; ela pode estar ausente, em metadata incoerente ou indisponivel por rede/rate limit. Use --plugin-source com uma fonte local explicita."
     fi
     step "Instalando o plugin da release $version (canal $CHANNEL)"
     do_update_from_zip "$root" "$zip" "$version" "$sha"
@@ -2365,13 +2364,13 @@ do_check_update() {
         printf 'plugin: instalado (v%s)\n' "$installed"
     fi
     if ! latest_release=$(github_latest_release "$CHANNEL" 2>/dev/null); then
-        printf 'remote: %snao consegui consultar (rede, timeout ou JSON invalido)%s\n' "$C_DIM" "$C_OFF"
+        printf 'remote: %snao consegui consultar (rede, timeout, JSON invalido ou metadata incoerente)%s\n' "$C_DIM" "$C_OFF"
         return 0
     fi
     latest_tag=$(printf '%s\n' "$latest_release" | sed -n '1p')
     latest_zip=$(printf '%s\n' "$latest_release" | sed -n '2p')
     latest_sha=$(printf '%s\n' "$latest_release" | sed -n '3p')
-    [ -n "$latest_tag" ] || { printf 'remote: nenhuma release %s valida com zip e SHA-256\n' "$CHANNEL"; return 0; }
+    [ -n "$latest_tag" ] || { printf 'remote: nenhuma release %s valida com zip e SHA-256 (ausente, metadata incoerente, rede ou rate limit)\n' "$CHANNEL"; return 0; }
     persist_channel "$root" "$CHANNEL" || true
     printf 'canal: %s\n' "$CHANNEL"
     printf 'remote: %s\n' "$latest_tag"
@@ -2399,12 +2398,12 @@ do_update() {
         fail "A versao instalada do plugin e invalida; nenhum update seguro foi aplicado."
     fi
     if ! latest_release=$(github_latest_release "$CHANNEL" 2>/dev/null); then
-        fail "Nao consegui consultar releases do canal $CHANNEL (rede, timeout ou JSON invalido)."
+        fail "Nao consegui consultar releases do canal $CHANNEL (rede, timeout, JSON invalido ou metadata incoerente)."
     fi
     latest_tag=$(printf '%s\n' "$latest_release" | sed -n '1p')
     latest_zip=$(printf '%s\n' "$latest_release" | sed -n '2p')
     latest_sha=$(printf '%s\n' "$latest_release" | sed -n '3p')
-    [ -n "$latest_tag" ] || fail "Nao encontrei release $CHANNEL valida com zip e SHA-256."
+    [ -n "$latest_tag" ] || fail "Nao encontrei release $CHANNEL valida com zip e SHA-256 (ausente, metadata incoerente, rede ou rate limit)."
     if [ -n "$installed" ]; then
         cmp=$(compare_version "$installed" "$latest_tag")
         [ "$cmp" != "-2" ] || fail "A versao instalada do plugin e invalida; nenhum downgrade ou update foi feito."
@@ -2504,7 +2503,7 @@ do_install() {
     if [ -n "$installed_kind" ]; then
         installer_log info installer.mod_detected detect mod_kind "$installed_kind"
     fi
-    installer_log info installer.selected preparing mod_kind "$checkout_identity" path_present true
+    installer_log info installer.selected preparing mod_kind "$checkout_identity" path_present true channel "$CHANNEL"
     while IFS= read -r identity; do
         [ -z "$identity" ] && continue
         if [ "$identity" != "$checkout_identity" ]; then
@@ -2563,9 +2562,9 @@ EOF
 
     GLB_PHASE="completed"
     if [ "$permanente" -eq 1 ]; then
-        installer_log info installer.completed completed permanent true
+        installer_log info installer.completed completed permanent true channel "$CHANNEL"
     else
-        installer_log info installer.completed completed permanent false
+        installer_log info installer.completed completed permanent false channel "$CHANNEL"
     fi
 
     printf '\n'

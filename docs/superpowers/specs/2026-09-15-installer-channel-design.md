@@ -16,4 +16,4 @@ A instalação/atualização usa o ZIP e o SHA da mesma release e valida o manif
 
 ## Mensagens e segurança
 
-As mensagens explicam que stable é o canal mais previsível e recebe somente releases estáveis. Beta é um canal de testes em que a pessoa ajuda a comunidade ao testar, encontrar e corrigir erros antes da versão estável. O texto é encorajador e honesto: nenhum canal promete estabilidade. `--check-update` consulta e informa o canal/candidata sem baixar o ZIP, e nenhuma falha do updater altera GUI, WireGuard, roteamento, standalone ou o funcionamento do plugin.
+As mensagens explicam que stable é o canal mais previsível e recebe somente releases estáveis. Beta é um canal de testes em que a pessoa ajuda a comunidade ao testar, encontrar e corrigir erros antes da versão estável. O texto é encorajador e honesto: nenhum canal promete estabilidade. `--check-update` consulta e informa o canal/candidata sem baixar o ZIP, mas pode persistir a preferência selecionada após uma operação válida; nenhuma falha do updater altera GUI, WireGuard, roteamento, standalone ou o funcionamento do plugin.

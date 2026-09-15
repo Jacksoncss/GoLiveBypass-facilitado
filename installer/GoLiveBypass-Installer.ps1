@@ -12,7 +12,7 @@
       .\GoLiveBypass-Installer.ps1 -PluginSource "C:\caminho\do\GoLiveBypass\goLiveBypass"
       .\GoLiveBypass-Installer.ps1 -Mod Equicord -Yes
       .\GoLiveBypass-Installer.ps1 -Mode Uninstall
-      .\GoLiveBypass-Installer.ps1 -Mode CheckUpdate   # so consulta o GitHub, nao mexe
+      .\GoLiveBypass-Installer.ps1 -Mode CheckUpdate   # consulta a API e pode persistir o canal, sem baixar ZIP
       .\GoLiveBypass-Installer.ps1 -Mode Update        # aplica update se houver
 
     Obrigado ao Vithor (https://github.com/Vith0r), que escreveu o primeiro instalador do
@@ -268,7 +268,7 @@ $script:InstallerPhase = 'detect'
 # Chave proibida vira <redacted>; chave fora da allowlist e descartada (fail-closed).
 $script:InstallerForbiddenKey = '(?i)(password|senha|token|captcha|secret|private[_]?key|public[_]?key|authorization|cookie|session|credential|stdin|rawconfig|^config$|endpoint)'
 $script:InstallerAllowedKeys = @(
-    'mode', 'permanent', 'we_injected', 'target_count', 'candidate_count', 'candidate_kind',
+    'mode', 'channel', 'permanent', 'we_injected', 'target_count', 'candidate_count', 'candidate_kind',
     'discord_count', 'mod_kind', 'reason', 'reason_code', 'result', 'exit_code',
     'duration_ms', 'path_present', 'path_kind', 'active', 'preserved', 'identity', 'count'
 )
@@ -781,7 +781,7 @@ function Find-Checkout {
     if ($Source) {
         Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'source'; candidate_count = 1 }
         if (Test-ModCheckout $Source) {
-            Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'source'; path_present = $true }
+            Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'source'; path_present = $true; channel = $script:SelectedChannel }
             return $Source
         }
         Write-InstallerEvent 'warn' 'installer.checkout_rejected' 'detect' @{ candidate_kind = 'source'; reason_code = 'SOURCE_NOT_A_CHECKOUT' }
@@ -791,7 +791,7 @@ function Find-Checkout {
     Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'injection' }
     $root = Find-CheckoutFromInjection
     if ($root) {
-        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'injection'; path_present = $true }
+        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'injection'; path_present = $true; channel = $script:SelectedChannel }
         Write-Ok "Achei pelo Discord: $root"
         return $root
     }
@@ -799,7 +799,7 @@ function Find-Checkout {
     Write-InstallerEvent 'info' 'installer.checkout_candidate' 'detect' @{ candidate_kind = 'disk' }
     $root = Find-CheckoutOnDisk
     if ($root) {
-        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'disk'; path_present = $true }
+        Write-InstallerEvent 'info' 'installer.selected' 'detect' @{ candidate_kind = 'disk'; path_present = $true; channel = $script:SelectedChannel }
         Write-Ok "Achei no disco: $root"
         return $root
     }
@@ -1098,7 +1098,7 @@ function Install-Mod($choice) {
     $info = $Mods[$choice]
     $target = Join-Path $env:USERPROFILE $info.Label
     $script:InstallerPhase = 'preparing'
-    Write-InstallerEvent 'info' 'installer.selected' 'preparing' @{ mode = 'download'; mod_kind = $choice; path_present = $true }
+    Write-InstallerEvent 'info' 'installer.selected' 'preparing' @{ mode = 'download'; mod_kind = $choice; path_present = $true; channel = $script:SelectedChannel }
 
     Write-Host ''
     Write-Host '  Vou fazer:' -ForegroundColor White
@@ -1323,7 +1323,7 @@ function Install-PluginSource($root) {
 
     $release = Get-PluginInstallRelease $script:SelectedChannel
     if (-not $release) {
-        throw "Nao encontrei uma release $script:SelectedChannel valida com goLiveBypass-vencord.zip e SHA-256. Verifique a conexao ou use -PluginSource com uma fonte local."
+        throw "Nao encontrei uma release $script:SelectedChannel valida com zip e SHA-256; ela pode estar ausente, em metadata incoerente ou indisponivel por rede/rate limit. Use -PluginSource com uma fonte local explicita."
     }
     Write-Step "Instalando o plugin da release $($release.Version) (canal $script:SelectedChannel)"
     Invoke-UpdateFromZip $root $release.AssetUrl $release.Version $release.ShaUrl
@@ -1499,7 +1499,7 @@ function Invoke-Install($root) {
     Start-Discord
 
     $script:InstallerPhase = 'completed'
-    Write-InstallerEvent 'info' 'installer.completed' 'completed' @{ permanent = [bool]$permanent; we_injected = [bool]$weInjected }
+    Write-InstallerEvent 'info' 'installer.completed' 'completed' @{ permanent = [bool]$permanent; we_injected = [bool]$weInjected; channel = $script:SelectedChannel }
 
     Write-Host ''
     Write-Ok 'Pronto. O plugin ja vem ativado, nao precisa mexer em nada.'
@@ -2122,7 +2122,7 @@ function Invoke-CheckUpdate {
     else { Write-Host "  plugin: instalado (versao desconhecida)" -ForegroundColor Yellow }
     $release = Get-LatestRelease $channel
     if (-not $release) {
-        Write-Host "  remote: nenhuma release $channel valida com zip e SHA-256 (rede, rate limit ou asset ausente)" -ForegroundColor DarkGray
+        Write-Host "  remote: nenhuma release $channel valida com zip e SHA-256 (ausente, metadata incoerente, rede ou rate limit)" -ForegroundColor DarkGray
         return
     }
     [void](Set-UpdateChannelPreference $root $channel)
@@ -2149,7 +2149,7 @@ function Invoke-Update {
         throw "A versao instalada do plugin e invalida; nenhum update seguro foi aplicado."
     }
     $release = Get-LatestRelease $channel
-    if (-not $release) { throw "Nao encontrei uma release $channel valida com zip e SHA-256; nenhum update foi aplicado." }
+    if (-not $release) { throw "Nao encontrei uma release $channel valida com zip e SHA-256; ela pode estar ausente, em metadata incoerente ou indisponivel por rede/rate limit." }
     if ($installed -and (Compare-Version $installed $release.Version) -ge 0) {
         [void](Set-UpdateChannelPreference $root $channel)
         if ((Compare-Version $installed $release.Version) -eq 0) { Write-Ok "Voce ja esta na versao $($release.Version) (canal $channel)." }

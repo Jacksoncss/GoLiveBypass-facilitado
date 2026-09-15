@@ -59,8 +59,11 @@ function registryDeps(
   return {
     ...fs,
     listDirectory: () => [],
-    findInstall: (_root, flavour) =>
-      found.find((install) => install.exePath.toLowerCase().endsWith(`\\${flavour}.exe`)) ?? null,
+    findInstall: (root, flavour) =>
+      found.find((install) =>
+        winKey(install.appDir).startsWith(winKey(root)) &&
+        install.exePath.toLowerCase().endsWith(`\\${flavour}.exe`),
+      ) ?? null,
   };
 }
 
@@ -193,6 +196,53 @@ describe("discovery Windows puro", () => {
     });
     expect(raw.process.rows).toHaveLength(1);
   });
+  it("truncamento bounded é aviso sem collectionFailed, enquanto erro parcial degrada", () => {
+    const truncated = parseWindowsDiscoveryJson(JSON.stringify({
+      schema: 1,
+      process: { status: "partial", rows: [], truncated: true, errorCode: "PROCESS_LIMIT" },
+      registry: { status: "partial", rows: [], truncated: true, errorCode: "UNINSTALL_LIMIT" },
+    }));
+    expect(summarizeWindowsDiscoveryCollection(truncated)).toEqual({
+      collectionFailed: false,
+      sourceFailure: "process:PROCESS_LIMIT,registry:UNINSTALL_LIMIT",
+    });
+
+    const partialError = parseWindowsDiscoveryJson(JSON.stringify({
+      schema: 1,
+      process: { status: "partial", rows: [], truncated: true, errorCode: "PROCESS_LIMIT" },
+      registry: { status: "partial", rows: [], truncated: true, errorCode: "REGISTRY_PARTIAL" },
+    }));
+    expect(summarizeWindowsDiscoveryCollection(partialError)).toEqual({
+      collectionFailed: true,
+      sourceFailure: "process:PROCESS_LIMIT,registry:REGISTRY_PARTIAL",
+    });
+  });
+  it("cacheia resultado truncado normal como fresco em vez de usar stale", () => {
+    let nowMs = 0;
+    let calls = 0;
+    const cache = createWindowsDiscoveryCache({
+      platform: () => "win32",
+      nowMs: () => nowMs,
+      readEnv: () => ({}),
+      rootsForEnv: () => [],
+      collectFresh: () => {
+        calls += 1;
+        return calls === 1
+          ? emptySnapshot()
+          : emptySnapshot(nowMs, false, "registry:UNINSTALL_LIMIT");
+      },
+    });
+
+    cache.read();
+    nowMs = 4_001;
+    const freshWarning = cache.read({ allowStale: true });
+    expect(freshWarning).toMatchObject({
+      stale: false,
+      collectionFailed: false,
+      sourceFailure: "registry:UNINSTALL_LIMIT",
+    });
+    expect(calls).toBe(2);
+  });
 
   it("trata processos pelos seis nomes e caminhos exatos", () => {
     const discord = "D:\\MyDiscord\\app-1.0.10\\Discord.exe";
@@ -210,23 +260,34 @@ describe("discovery Windows puro", () => {
     const direct = "C:\\Program Files\\Discord\\Discord.exe";
     const updater = "C:\\Discord\\Update.exe";
     const installed = "C:\\Discord\\app-1.0.10\\Discord.exe";
-    const fs = fakeFs([direct, updater, installed]);
-    const found: WindowsDiscordInstall = {
-      appDir: path.win32.dirname(installed),
-      resources: path.win32.join(path.win32.dirname(installed), "resources"),
-      exePath: installed,
-    };
+    const x86Root = "C:\\Program Files (x86)\\Discord";
+    const x86Installed = `${x86Root}\\app-1.0.10\\Discord.exe`;
+    const fs = fakeFs([direct, updater, installed, x86Installed]);
+    const found: WindowsDiscordInstall[] = [
+      {
+        appDir: path.win32.dirname(installed),
+        resources: path.win32.join(path.win32.dirname(installed), "resources"),
+        exePath: installed,
+      },
+      {
+        appDir: path.win32.dirname(x86Installed),
+        resources: path.win32.join(path.win32.dirname(x86Installed), "resources"),
+        exePath: x86Installed,
+      },
+    ];
     const candidates = handleRegistryRows([
       { hive: "hkcu", kind: "app-paths", value: `"${direct}"`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "url-handler", value: `"${direct}" --url "%1"`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "url-handler", value: `"${updater}" --processStart Discord.exe`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "url-handler", value: `"${updater}" --processStart Discord.exe --extra`, flavourHint: "Discord" },
       { hive: "hkcu", kind: "uninstall", value: "", flavourHint: "Discord", displayIcon: `${direct},0`, installLocation: "C:\\Program Files\\Discord" },
-    ], registryDeps(fs, [found]));
+      { hive: "hkcu", kind: "uninstall", value: "", flavourHint: "Discord", installLocation: x86Root },
+    ], registryDeps(fs, found));
 
     expect(candidates.some((candidate) => candidate.exePath === direct)).toBe(true);
     expect(candidates.some((candidate) => candidate.exePath === installed)).toBe(true);
-    expect(candidates).toHaveLength(5);
+    expect(candidates.some((candidate) => candidate.exePath === x86Installed)).toBe(true);
+    expect(candidates).toHaveLength(6);
   });
 
   it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {

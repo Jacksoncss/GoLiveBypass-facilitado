@@ -334,15 +334,26 @@ export interface WindowsDiscoveryCollectionHealth {
 export function summarizeWindowsDiscoveryCollection(
   raw: WindowsDiscoveryRaw,
 ): WindowsDiscoveryCollectionHealth {
-  const failures: string[] = [];
+  const sourceFailures: string[] = [];
+  let collectionFailed = false;
   for (const [source, block] of [["process", raw.process], ["registry", raw.registry]] as const) {
-    if (block.status === "error" || block.status === "partial" || block.truncated) {
-      failures.push(`${source}:${block.errorCode || (block.truncated ? "truncated" : block.status)}`);
+    const code = block.errorCode;
+    const boundedLimit = code === "PROCESS_LIMIT" || code === "UNINSTALL_LIMIT";
+    const isError = block.status === "error" ||
+      (block.status === "partial" && !boundedLimit && !block.truncated) ||
+      (block.status === "partial" && Boolean(code) && !boundedLimit);
+    if (isError) {
+      collectionFailed = true;
+      sourceFailures.push(`${source}:${code || block.status}`);
+    } else if (block.truncated || boundedLimit) {
+      sourceFailures.push(`${source}:${code || (source === "process" ? "PROCESS_LIMIT" : "UNINSTALL_LIMIT")}`);
     }
   }
-  return failures.length > 0
-    ? { collectionFailed: true, sourceFailure: failures.join(",") }
-    : { collectionFailed: false };
+  const sourceFailure = sourceFailures.join(",");
+  return {
+    collectionFailed,
+    ...(sourceFailure ? { sourceFailure } : {}),
+  };
 }
 
 function parseBlock<Row>(
@@ -642,16 +653,27 @@ function candidateFromUpdateCommand(
 
 function normalizeWindowsDiscoveryRoot(raw: string): string | null {
   const input = raw.trim();
-  if (!input || /[\u0000-\u001f\u007f"\r\n,]/.test(input)) return null;
+  if (!input || /[\u0000-\u001f\u007f\r\n,]/.test(input)) return null;
   const command = parseWindowsDiscoveryCommand(input);
   if (!command) return null;
-  if (command.args.length > 0) {
-    if (input.includes('"') || !/^[A-Za-z]:[\\/]/.test(input)) return null;
-    if (command.args.some((arg) => !/[\\/]/.test(arg) || arg.startsWith("-") || arg.startsWith("/"))) return null;
+
+  let source = input;
+  if (input.includes('"')) {
+    if (!/^"[^"\r\n]+"$/.test(input) || command.args.length > 0) return null;
+    source = command.executable;
+  } else {
+    if (!/^[A-Za-z]:[\\/]/.test(input)) return null;
+    if (command.args.some((arg) =>
+      arg.startsWith("-") ||
+      arg.startsWith("/") ||
+      /^[A-Za-z]:[\\/]/.test(arg),
+    )) return null;
   }
-  if (!/^[A-Za-z]:[\\/]/.test(input) || /^\\\\/.test(input) || /^\\\\[?.]/.test(input)) return null;
-  if (input.slice(2).includes(":") || input.split(/[\\/]+/).includes("..")) return null;
-  return path.win32.normalize(command.args.length > 0 ? input : command.executable);
+
+  if (!/^[A-Za-z]:[\\/]/.test(source) || /^\\\\/.test(source) || /^\\\\[?.]/.test(source)) return null;
+  if (source.slice(2).includes(":") || source.split(/[\\/]+/).includes("..")) return null;
+  const normalized = path.win32.normalize(source);
+  return path.win32.isAbsolute(normalized) ? normalized : null;
 }
 
 export function handleProcessRows(
@@ -796,7 +818,7 @@ export function createWindowsDiscoveryCache(deps: WindowsDiscoveryCacheDeps): Wi
 
     try {
       const fresh = deps.collectFresh(env, roots);
-      const degraded = fresh.collectionFailed || Boolean(fresh.sourceFailure);
+      const degraded = fresh.collectionFailed;
       if (previous && allowStale && age >= 0 && age < WINDOWS_DISCOVERY_STALE_MS && degraded) {
         return copySnapshot(previous.snapshot, true);
       }

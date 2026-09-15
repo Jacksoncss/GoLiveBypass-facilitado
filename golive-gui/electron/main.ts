@@ -867,11 +867,37 @@ type WindowsDiscoveryReadOptions = {
   forceRefresh?: boolean;
   allowStale?: boolean;
 };
+function logWindowsDiscoveryHealth(sourceFailure: string | undefined): void {
+  if (!sourceFailure) return;
+  const boundedCodes = new Set(["PROCESS_LIMIT", "UNINSTALL_LIMIT"]);
+  const details = sourceFailure.split(",").slice(0, 2);
+  for (const detail of details) {
+    const match = /^(process|registry):([A-Za-z0-9_]+)$/.exec(detail.trim());
+    if (!match) continue;
+    const origem = match[1] as "process" | "registry";
+    const code = match[2];
+    const status = code === "partial" || code === "PROCESS_LIMIT" || code === "UNINSTALL_LIMIT" || code === "REGISTRY_PARTIAL"
+      ? "partial"
+      : code === "error" || code === "REGISTRY_UNAVAILABLE" || code === "CIM_UNAVAILABLE"
+        ? "error"
+        : null;
+    if (!status) continue;
+    discordscan.scanFonte(origem, status, {
+      truncated: boundedCodes.has(code),
+      errorCode: /^[A-Z][A-Z0-9_]*$/.test(code) ? code : undefined,
+    });
+  }
+}
+
 
 function getWinDiscordInstalls(options: WindowsDiscoveryReadOptions = {}): DiscordInstall[] {
   const localAppData = process.env.LOCALAPPDATA;
   discordscan.scanInicio("win32", localAppData);
   const snapshot = withNoAsar(() => windowsDiscoveryCache.read(options));
+  logWindowsDiscoveryHealth(snapshot.sourceFailure);
+  for (const candidate of snapshot.installs) {
+    discordscan.scanCandidato(candidate.flavour, candidate.detectedBy);
+  }
   const installs = snapshot.installs.map(toPublicWindowsDiscoveryInstall).map((install) => ({
     flavour: install.flavour,
     resources: install.resources,

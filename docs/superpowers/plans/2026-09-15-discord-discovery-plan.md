@@ -34,6 +34,12 @@ export type WindowsDiscoveryFlavour =
 export type DiscoverySource = "root" | "process" | "registry" | "shortcut";
 export type DiscoveryBlockStatus = "ok" | "empty" | "partial" | "error";
 
+export interface WindowsDiscoveryEnvironment {
+  LOCALAPPDATA?: string; APPDATA?: string; USERPROFILE?: string;
+  PUBLIC?: string; ProgramData?: string; ProgramFiles?: string;
+  "ProgramFiles(x86)"?: string; ProgramW6432?: string;
+}
+
 export interface WindowsDiscoveryCollectors {
   collectPowerShell: () => WindowsDiscoveryRaw;
   listDirectory: (root: string) => string[];
@@ -42,26 +48,38 @@ export interface WindowsDiscoveryCollectors {
   realpath?: (file: string) => string;
   readShortcut: (file: string) => { target: string; args: string };
 }
+
+export interface WindowsDiscoveryCacheDeps {
+  nowMs: () => number;
+  readEnv: () => WindowsDiscoveryEnvironment;
+  rootsForEnv: (env: WindowsDiscoveryEnvironment) => string[];
+  collectFresh: (
+    env: WindowsDiscoveryEnvironment,
+    roots: string[],
+  ) => WindowsDiscoverySnapshot;
+}
+
+export interface WindowsDiscoveryCache {
+  read(options?: { forceRefresh?: boolean; allowStale?: boolean }): WindowsDiscoverySnapshot;
+  invalidate(): void;
+}
 ```
 
-Os nomes exatos podem ser ajustados para o padrão local, mas os seams devem permitir injetar todas as operações com efeito: filesystem, coletor PowerShell e `shell.readShortcutLink`. A implementação de produção adapta `diskFs`, `execFileSync` e `shell.readShortcutLink`; o parser de JSON e o merge não importam `electron` nem executam comandos. Os testes usam paths Windows artificiais (`path.win32`) e callbacks em Linux.
+`createWindowsDiscoveryCache(deps)` e as funções `parseWindowsDiscoveryJson()`/merge/validação serão puras: o cache usa somente `nowMs`, `readEnv`, `rootsForEnv` e `collectFresh` injetados, com TTL de quatro segundos e stale de oito segundos. O adapter de produção em `main.ts` adapta `process.env`, `diskFs`, `execFileSync` e `shell.readShortcutLink` e chama essa API; o módulo não lê ambiente global nem importa `electron`. O parser de JSON e o merge não executam comandos. Os testes usam paths Windows artificiais (`path.win32`) e callbacks em Linux.
 
 ## Fase 1 — Contrato comum, normalização e parser puro
 
 **Arquivos:**
 
-- Criar `golive-gui/electron/windows-discord-discovery.ts`.
-- Ler `golive-gui/electron/windows-discord-install.ts`; manter `findWindowsDiscordInstall()` compatível.
 - Criar `golive-gui/tests/windows-discord-discovery.test.ts`.
 
-**Símbolos a criar:**
-
-- `WindowsDiscoveryRaw`, `WindowsDiscoveryRawProcessRow`, `WindowsDiscoveryRawRegistryRow`.
+- `WindowsDiscoveryRaw`, `WindowsDiscoveryRawProcessRow`, `WindowsDiscoveryRawRegistryRow` e `WindowsDiscoverySnapshot`.
 - `WindowsDiscoveryCandidate` interno com `source`, `flavour`, `exePath`, `appDir`, `resources` e `detectedBy`.
 - `parseWindowsDiscoveryJson(raw: string): WindowsDiscoveryRaw`.
 - `normalizeWindowsDiscoveryPath(raw: string, context: "process" | "value" | "displayIcon"): string | null`.
 - `flavourFromExecutableName(name: string): WindowsDiscoveryFlavour | null`.
 - `validateWindowsExecutable(path: string, flavour: WindowsDiscoveryFlavour, fsSeam): string | null`.
+- `createWindowsDiscoveryCache(deps)` e `read(options)`/`invalidate()` com relógio, ambiente e roots injetáveis.
 
 **Contrato schema=1:**
 
@@ -91,19 +109,17 @@ Os nomes exatos podem ser ajustados para o padrão local, mas os seams devem per
 - `flavourHint` desconhecido ou discordante não cria flavour.
 - Paths customizados, parent `app-*`, direct+resources, basename falso, UNC, ADS, args e arquivo ausente exercitam o validador.
 - Dedupe preserva duas roots distintas do mesmo flavour e escolhe a origem de maior prioridade somente para o mesmo path.
-
-**Validação planejada:**
+- Cache puro: usar `nowMs` injetado para testar TTL de quatro segundos, stale máximo de oito segundos e `forceRefresh`, sem importar Electron nem depender do relógio/ambiente do processo.
 
 ```bash
-npm test -- --run tests/windows-discord-discovery.test.ts
+npm test -- tests/windows-discord-discovery.test.ts
 ```
 
 ## Fase 2 — Coletor PowerShell e handlers de processo/registro
 
 **Arquivos:**
 
-- Modificar `golive-gui/electron/windows-discord-discovery.ts`.
-- Criar/atualizar `golive-gui/electron/windows-discord-discovery-powershell.ts` somente se separar o script melhorar auditoria; evitar dois módulos se não houver necessidade.
+- Modificar `golive-gui/electron/windows-discord-discovery.ts` como o único módulo de discovery/PowerShell; não criar módulo PowerShell alternativo.
 - Criar/atualizar `golive-gui/tests/windows-discord-discovery.test.ts` com fixtures do stdout.
 
 **Símbolos a criar:**
@@ -141,10 +157,8 @@ npm test -- --run tests/windows-discord-discovery.test.ts
 - Fixtures de Uninstall com HKCU/HKLM/WOW, `DisplayIcon`, `InstallLocation`, DisplayName permitido/não permitido e 129 subchaves com truncamento antes do row Discord.
 - Assertar que nunca se registra ou executa `CommandLine`, argumentos ou exceção/stdout bruto.
 
-**Validação planejada:**
-
 ```bash
-npm test -- --run tests/windows-discord-discovery.test.ts
+npm test -- tests/windows-discord-discovery.test.ts
 ```
 
 ## Fase 3 — Roots bounded e adapter de atalhos
@@ -186,7 +200,7 @@ A ordem fixa deve ser documentada e estável. Cada root chama apenas `findWindow
 **Validação planejada:**
 
 ```bash
-npm test -- --run tests/windows-discord-install.test.ts tests/windows-discord-discovery.test.ts
+npm test -- tests/windows-discord-install.test.ts tests/windows-discord-discovery.test.ts
 ```
 
 ## Fase 4 — Integração em `main.ts`, cache e snapshots de lifecycle
@@ -194,45 +208,48 @@ npm test -- --run tests/windows-discord-install.test.ts tests/windows-discord-di
 **Arquivos:**
 
 - Modificar `golive-gui/electron/main.ts`.
-- Modificar `golive-gui/tests/ativacao-guard.test.ts` apenas para preservar/estender contratos de integração.
+- Modificar `golive-gui/tests/ativacao-guard.test.ts` apenas para preservar/estender contratos de integração, inclusive asserções inline existentes.
 - Adicionar casos a `golive-gui/tests/windows-discord-discovery.test.ts` para cache/mapper, sem importar o app Electron.
 
-**Símbolos e integração:**
-
-- Substituir o corpo de `getWinDiscordInstalls()` por chamada ao discovery e mapper que remove `detectedBy`, preservando `DiscordInstall { flavour, resources, exePath, bundlePath? }`.
+- Remover o early-return que hoje faz `getWinDiscordInstalls()` retornar `[]` quando `LOCALAPPDATA` está ausente. Sem esse ambiente, pular somente roots que dependem dele e ainda executar os handlers de processo, registro e atalhos.
+- Substituir o corpo de `getWinDiscordInstalls()` por chamada ao discovery/cache e mapper que remove `detectedBy`, preservando `DiscordInstall { flavour, resources, exePath, bundlePath? }`.
+- O wrapper de `getWinDiscordInstalls()` deve preservar `withNoAsar()` e `original-fs`/`diskFs`; `main.ts` apenas adapta ambiente, filesystem e collectors para a API pura do módulo.
 - Não alterar `windowsAllowedAppPaths()`. Adicionar teste de integração que captura o candidato discovery, verifica que o mesmo `exePath` absoluto chega sem alteração à entrada de `windowsAllowedAppPaths()` e que a expansão existente continua presente.
+- O teste de integração com ambiente sem `LOCALAPPDATA` deve provar que `getWinDiscordInstalls()` não retorna cedo: pula somente roots dependentes de `LOCALAPPDATA` e ainda chama os handlers de processo, registro e atalhos.
 - `getDiscordInstalls()` continua sem alteração para Linux e Mac além do dispatch Windows existente.
 - `discordProcessState()` e `waitUntilDiscordRunning()` continuam separados para liveness por `tasklist`; falha CIM não vira stopped.
 
-**Cache:**
-
-- Usar uma chave que contenha `platform` e os valores de `LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `PUBLIC`, `ProgramData`, `ProgramFiles`, `ProgramFiles(x86)` e `ProgramW6432`.
+- O cache é criado pelo componente puro `createWindowsDiscoveryCache()` em `windows-discord-discovery.ts`; `main.ts` não usa `Date.now()`/`process.env` diretamente para decidir TTL e não implementa cache paralelo.
+- Usar `readEnv`, `rootsForEnv` e `nowMs` injetados; a chave contém `platform` e os valores de `LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `PUBLIC`, `ProgramData`, `ProgramFiles`, `ProgramFiles(x86)` e `ProgramW6432`.
 - `%ProgramW6432%` entra nas roots quando não vazio e diferente das outras; qualquer mudança de valor ou igualdade/diferença invalida o cache.
 - TTL único de quatro segundos. Stale máximo de oito segundos.
 - Stale é elegível somente em `getStatus()` e no caminho de diagnóstico `startWindowsRouteWatchdog()` → `diagnoseWindowsRoute()`. Nenhuma operação lifecycle usa stale.
 - `forceRefresh` obrigatório antes de ativação, desativação, `restore-internet`, troca manual de rota, otimização/troca Proton, failover e cada rollback. PowerShell continua síncrono, mas bloqueia a thread principal no máximo três segundos e no máximo uma vez por TTL; não há busca aberta/background.
 - Em erro de coleta, lifecycle usa somente dados frescos das fontes que responderam; status/watchdog pode reutilizar snapshot stale até oito segundos. Nunca transformar stale/erro em lista vazia silenciosa.
 
-**Captura antes de kill:**
+### Captura antes de kill
 
 - `executarAtivacao()`: force refresh e capture `installs` antes de `killDiscord()`; reutilize a lista para perfil, WireSock e start.
 - `deactivateAll()`: force refresh antes da captura já existente; reutilize após recuperação.
 - `ipcMain.handle("restore-internet")`: quando `hadWireSock`, force refresh/capture antes do kill e reutilize no restart; não rescaneie apenas pelo processo depois do kill.
-- `applyProtonRouteResult()`: force refresh/capture antes da troca e reutilize a variável no rollback, eliminando rescan posterior ao kill.
+- `ipcMain.handle("select-proton-route")` / `applyProtonRouteResult()`: force refresh/capture antes de matar o cliente e reutilize a variável no rollback, eliminando rescan posterior ao kill.
+- `ipcMain.handle("optimize-proton-route")` / caminho de aplicação Proton em torno de `applyProtonRouteResult()` (~4206): force refresh antes de qualquer kill e reutilize o snapshot nos caminhos de falha/rollback.
 - `applyProtonFailoverCandidate()`: force refresh/capture antes da troca que possa encerrar cliente e reutilize em falhas/rollback.
 - Rollback de ativação, restauração e troca de rota nunca usa snapshot stale; se não houver candidato fresco, falha de forma segura sem iniciar executável desconhecido.
 
 **Testes da fase:**
 
-- Cache: TTL exato 4s, stale 8s apenas nos dois consumidores permitidos, invalidação de cada env/root incluindo ProgramW6432, forceRefresh sempre ignorando cache.
+- Cache puro em Linux, sem Electron: usar `nowMs` controlado para provar TTL exato 4s, stale máximo 8s somente quando `allowStale=true`, expiração e `forceRefresh`.
+- Testar chave/invalidação por cada env/root, incluindo ausência de `LOCALAPPDATA` e mudança de `%ProgramW6432%`.
 - Snapshot process-only permanece disponível depois de simular `killDiscord()` e é o mesmo usado no restart/rollback.
-- Testes fonte/estrutura de `ativacao-guard.test.ts` continuam afirmando ordem `killDiscord` antes de WireSock e snapshot antes do kill em restore/rollback.
+- Atualizar/re-pinar explicitamente `golive-gui/tests/ativacao-guard.test.ts:257`, na asserção de restore que hoje espera `startDiscordAndConfirm(getDiscordInstalls(), "restaurar-internet")`: a expectativa deve provar que a variável foi capturada antes de `killDiscord()` e reutilizada, não um novo `getDiscordInstalls()` posterior. Localizar e conferir outros testes inline semelhantes que contenham `startDiscordAndConfirm(getDiscordInstalls(), ...)` ou rescans após kill e ajustar somente as expectativas necessárias.
+- Testes fonte/estrutura continuam afirmando ordem `killDiscord` antes de WireSock e snapshot antes do kill em restore/rollback.
 - Teste comprova que `windowsAllowedAppPaths()` não foi alterado e recebe o `exePath` exato do discovery.
 
 **Validação planejada:**
 
 ```bash
-npm test -- --run tests/windows-discord-discovery.test.ts tests/ativacao-guard.test.ts
+npm test -- tests/windows-discord-discovery.test.ts tests/ativacao-guard.test.ts
 ```
 
 ## Fase 5 — Observabilidade e changelog
@@ -261,17 +278,16 @@ npm test -- --run tests/windows-discord-discovery.test.ts tests/ativacao-guard.t
 **Validação planejada:**
 
 ```bash
-npm test -- --run tests/logger.test.ts tests/redact.test.ts tests/windows-discord-discovery.test.ts
+npm test -- tests/logger.test.ts tests/redact.test.ts tests/windows-discord-discovery.test.ts
 ```
 
 ## Fase 6 — Testes permanentes de integração
-
-**Arquivos:**
 
 - Consolidar `golive-gui/tests/windows-discord-discovery.test.ts`.
 - Manter/estender `golive-gui/tests/windows-discord-install.test.ts`.
 - Manter/estender `golive-gui/tests/ativacao-guard.test.ts`.
 - Não alterar `golive-gui/tests/wiresock.test.ts` para remover a expectativa existente de diretório: AllowedApps está fora do escopo.
+- Os testes de TTL/stale do cache devem permanecer Linux-only por meio de `nowMs`, `readEnv`, `rootsForEnv` e `collectFresh` injetados; não importar `main.ts` nem Electron.
 
 **Cobertura mínima permanente:**
 
@@ -282,7 +298,7 @@ npm test -- --run tests/logger.test.ts tests/redact.test.ts tests/windows-discor
 5. URL schemes e roots de registro constantes; HKCU/HKLM/WOW; teto 128 Uninstall e truncamento antes do Discord.
 6. Shortcut target direto, Update com `--processStart <flavour>.exe`, args somente em memória, link quebrado, quatro raízes e exatamente um nível vendor.
 7. Precedência process > root > registry > shortcut; dedupe somente por exePath; dois roots do mesmo flavour preservados e ambos iniciáveis.
-8. Cache TTL 4s/stale 8s, stale somente status/watchdog, forceRefresh em lifecycle e chave completa de env/roots.
+8. Cache TTL 4s/stale 8s, stale somente `getStatus()` e `startWindowsRouteWatchdog()` → `diagnoseWindowsRoute()`, forceRefresh em lifecycle e chave completa de env/roots.
 9. Snapshot process-only capturado antes de `killDiscord()` e reutilizado em restore e todos rollbacks relevantes.
 10. `exePath` do discovery chega sem alteração ao builder `windowsAllowedAppPaths()`; contrato de AllowedApps continua igual.
 11. Logs sanitizados e changelog condicional quando scan.raiz/scan.install mudarem.
@@ -293,8 +309,6 @@ Os testes de parser/merge/limites devem rodar em Linux por seams injetáveis. Ne
 
 **Preparação:** executar em VM Windows descartável, sem publicar artefatos. Não executar nesta fase qualquer alteração de registro/atalho fora dos fixtures e da operação controlada do teste.
 
-**Smoke obrigatório:**
-
 1. Instalação real em `Program Files` fora de `%LOCALAPPDATA%`, parada: confirmar descoberta por root/registro/atalho e `exePath` absoluto.
 2. Instalação externa em `D:\MyDiscord\app-<versão>`, aberta: confirmar descoberta por `Win32_Process.ExecutablePath`.
 3. Instalação sem registro/atalho: confirmar que só é encontrada durante execução e não inventar cold-start por busca de disco.
@@ -303,12 +317,13 @@ Os testes de parser/merge/limites devem rodar em Linux por seams injetáveis. Ne
 6. Trocar rota Proton manual/automática e provocar rollback; confirmar que o cliente externo volta pelo mesmo snapshot e que nenhum caminho process-only é perdido.
 7. Simular/observar fonte parcial (Uninstall truncado, shortcut quebrado ou CIM sem path); confirmar que outras fontes ainda detectam o cliente.
 8. Confirmar ausência de varredura recursiva, bloqueio acima de três segundos por chamada PowerShell e dados crus nos logs/report.
+9. Forçar falha de cópia/preparação do probe em `Program Files` e confirmar que `discord-scope-proof` permanece best-effort/log-only e não bloqueia ativação, desativação, restore, troca de rota ou rollback.
 
 **Comandos de validação finais (não executar como parte deste documento):**
 
 ```bash
 cd golive-gui
-npm test -- --run tests/windows-discord-install.test.ts tests/windows-discord-discovery.test.ts tests/ativacao-guard.test.ts tests/logger.test.ts tests/redact.test.ts
+npm test -- tests/windows-discord-install.test.ts tests/windows-discord-discovery.test.ts tests/ativacao-guard.test.ts tests/logger.test.ts tests/redact.test.ts
 npm run compile
 cd ..
 ```

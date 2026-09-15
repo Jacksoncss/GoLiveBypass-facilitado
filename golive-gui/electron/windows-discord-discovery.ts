@@ -63,6 +63,8 @@ export interface WindowsDiscoverySnapshot {
   installs: WindowsDiscoveryCandidate[];
   capturedAtMs: number;
   stale?: boolean;
+  collectionFailed: boolean;
+  sourceFailure?: string;
 }
 
 export interface WindowsDiscoveryEnvironment {
@@ -92,6 +94,7 @@ export interface WindowsDiscoveryCollectors {
 }
 
 export interface WindowsDiscoveryCacheDeps {
+  platform: () => string;
   nowMs: () => number;
   readEnv: () => WindowsDiscoveryEnvironment;
   rootsForEnv: (env: WindowsDiscoveryEnvironment) => string[];
@@ -176,9 +179,11 @@ function parseRegistryRow(value: unknown): WindowsDiscoveryRawRegistryRow | null
   if (value.flavourHint !== undefined && typeof value.flavourHint !== "string") return null;
   if (value.displayIcon !== undefined && typeof value.displayIcon !== "string") return null;
   if (value.installLocation !== undefined && typeof value.installLocation !== "string") return null;
+  const kind = value.kind as WindowsDiscoveryRegistryKind;
+  if (kind !== "uninstall" && ("displayIcon" in value || "installLocation" in value)) return null;
   const result: WindowsDiscoveryRawRegistryRow = {
     hive: value.hive as WindowsDiscoveryRegistryHive,
-    kind: value.kind as WindowsDiscoveryRegistryKind,
+    kind,
     value: value.value,
   };
   if (typeof value.flavourHint === "string") result.flavourHint = value.flavourHint;
@@ -202,6 +207,72 @@ export function parseWindowsDiscoveryJson(raw: string): WindowsDiscoveryRaw {
     process: parseBlock(value.process, parseProcessRow),
     registry: parseBlock(value.registry, parseRegistryRow),
   };
+}
+
+export interface WindowsDiscoveryCommand {
+  executable: string;
+  args: string[];
+}
+
+function tokenizeWindowsCommand(raw: string): string[] | null {
+  if (/[\u0000-\u001f\u007f\r\n]/.test(raw)) return null;
+  const tokens: string[] = [];
+  let token = "";
+  let quoted = false;
+  let tokenStarted = false;
+
+  for (let index = 0; index < raw.length;) {
+    const char = raw[index];
+    if (char === "\\") {
+      let slashes = 0;
+      while (raw[index + slashes] === "\\") slashes += 1;
+      const next = raw[index + slashes];
+      if (next === '"') {
+        token += "\\".repeat(Math.floor(slashes / 2));
+        if (slashes % 2 === 1) {
+          token += '"';
+          tokenStarted = true;
+          index += slashes + 1;
+        } else {
+          quoted = !quoted;
+          tokenStarted = true;
+          index += slashes + 1;
+        }
+      } else {
+        token += "\\".repeat(slashes);
+        tokenStarted = true;
+        index += slashes;
+      }
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      tokenStarted = true;
+      index += 1;
+      continue;
+    }
+    if (!quoted && /\s/.test(char)) {
+      if (tokenStarted) {
+        tokens.push(token);
+        token = "";
+        tokenStarted = false;
+      }
+      index += 1;
+      continue;
+    }
+    token += char;
+    tokenStarted = true;
+    index += 1;
+  }
+  if (quoted) return null;
+  if (tokenStarted) tokens.push(token);
+  return tokens.length > 0 ? tokens : null;
+}
+
+export function parseWindowsDiscoveryCommand(raw: string): WindowsDiscoveryCommand | null {
+  const tokens = tokenizeWindowsCommand(raw);
+  if (!tokens || !tokens[0] || tokens.some((token) => /[\u0000-\u001f\u007f\r\n]/.test(token))) return null;
+  return { executable: tokens[0], args: tokens.slice(1) };
 }
 
 function extractPathToken(raw: string, context: "process" | "value" | "displayIcon"): string | null {
@@ -348,7 +419,7 @@ export function toPublicWindowsDiscoveryInstall(
   };
 }
 
-function cacheKey(env: WindowsDiscoveryEnvironment, roots: readonly string[]): string {
+function cacheKey(platform: string, env: WindowsDiscoveryEnvironment, roots: readonly string[]): string {
   const knownEnv: Record<string, string> = {};
   for (const key of [
     "LOCALAPPDATA",
@@ -362,7 +433,7 @@ function cacheKey(env: WindowsDiscoveryEnvironment, roots: readonly string[]): s
   ] as const) {
     knownEnv[key] = env[key] ?? "";
   }
-  return JSON.stringify({ env: knownEnv, roots: [...roots].sort().map(canonicalPathKey) });
+  return JSON.stringify({ platform, env: knownEnv, roots: [...roots].sort().map(canonicalPathKey) });
 }
 
 function copySnapshot(snapshot: WindowsDiscoverySnapshot, stale: boolean): WindowsDiscoverySnapshot {
@@ -370,6 +441,8 @@ function copySnapshot(snapshot: WindowsDiscoverySnapshot, stale: boolean): Windo
     installs: [...snapshot.installs],
     capturedAtMs: snapshot.capturedAtMs,
     stale,
+    collectionFailed: snapshot.collectionFailed,
+    sourceFailure: snapshot.sourceFailure,
   };
 }
 
@@ -380,27 +453,33 @@ export function createWindowsDiscoveryCache(deps: WindowsDiscoveryCacheDeps): Wi
     const now = deps.nowMs();
     const env = deps.readEnv();
     const roots = deps.rootsForEnv(env);
-    const key = cacheKey(env, roots);
+    const key = cacheKey(deps.platform(), env, roots);
     const forceRefresh = options.forceRefresh === true;
     const allowStale = options.allowStale === true && !forceRefresh;
 
-    if (!forceRefresh && cached?.key === key) {
-      const age = now - cached.snapshot.capturedAtMs;
-      if (age >= 0 && age < WINDOWS_DISCOVERY_TTL_MS) return copySnapshot(cached.snapshot, false);
-      if (allowStale && age >= 0 && age < WINDOWS_DISCOVERY_STALE_MS) {
-        try {
-          const fresh = deps.collectFresh(env, roots);
-          cached = { key, snapshot: { ...fresh, capturedAtMs: now, stale: false } };
-          return copySnapshot(cached.snapshot, false);
-        } catch {
-          return copySnapshot(cached.snapshot, true);
-        }
-      }
+    const previous = !forceRefresh && cached?.key === key ? cached : null;
+    const age = previous ? now - previous.snapshot.capturedAtMs : Number.POSITIVE_INFINITY;
+    if (previous && age >= 0 && age < WINDOWS_DISCOVERY_TTL_MS) {
+      return copySnapshot(previous.snapshot, false);
     }
 
-    const fresh = deps.collectFresh(env, roots);
-    cached = { key, snapshot: { ...fresh, capturedAtMs: now, stale: false } };
-    return copySnapshot(cached.snapshot, false);
+    try {
+      const fresh = deps.collectFresh(env, roots);
+      const degraded = fresh.collectionFailed || Boolean(fresh.sourceFailure);
+      if (previous && allowStale && age >= 0 && age < WINDOWS_DISCOVERY_STALE_MS && degraded) {
+        return copySnapshot(previous.snapshot, true);
+      }
+      cached = {
+        key,
+        snapshot: { ...fresh, capturedAtMs: now, stale: false },
+      };
+      return copySnapshot(cached.snapshot, false);
+    } catch (error) {
+      if (previous && allowStale && age >= 0 && age < WINDOWS_DISCOVERY_STALE_MS) {
+        return copySnapshot(previous.snapshot, true);
+      }
+      throw error;
+    }
   };
 
   return {

@@ -6,6 +6,7 @@ import {
   makeWindowsDiscoveryCandidate,
   mergeWindowsDiscoveryCandidates,
   normalizeWindowsDiscoveryPath,
+  parseWindowsDiscoveryCommand,
   parseWindowsDiscoveryJson,
   toPublicWindowsDiscoveryInstall,
   validateWindowsExecutable,
@@ -41,8 +42,8 @@ function candidate(
   return result;
 }
 
-function emptySnapshot(capturedAtMs = 0): WindowsDiscoverySnapshot {
-  return { installs: [], capturedAtMs };
+function emptySnapshot(capturedAtMs = 0, collectionFailed = false, sourceFailure?: string): WindowsDiscoverySnapshot {
+  return { installs: [], capturedAtMs, collectionFailed, sourceFailure };
 }
 
 describe("discovery Windows puro", () => {
@@ -68,7 +69,7 @@ describe("discovery Windows puro", () => {
     expect(parsed.registry.rows).toEqual([]);
   });
 
-  it("rejeita schema desconhecido e descarta rows com tipos inválidos", () => {
+  it("rejeita schema desconhecido, descarta rows inválidos e campos fora do kind", () => {
     expect(() => parseWindowsDiscoveryJson(JSON.stringify({
       schema: 2,
       process: { status: "ok", rows: [], truncated: false },
@@ -86,11 +87,25 @@ describe("discovery Windows puro", () => {
         truncated: true,
         errorCode: "PROCESS_LIMIT",
       },
-      registry: { status: "empty", rows: [], truncated: false },
+      registry: {
+        status: "empty",
+        rows: [
+          { hive: "hkcu", kind: "app-paths", value: "C:\\Discord\\Discord.exe", displayIcon: "C:\\Discord\\Discord.exe" },
+          { hive: "hkcu", kind: "uninstall", value: "", displayIcon: "C:\\Discord\\Update.exe,0", installLocation: "C:\\Discord" },
+        ],
+        truncated: false,
+      },
     }));
 
     expect(parsed.process.rows).toEqual([{ name: "Discord.exe", pid: 42, path: null }]);
     expect(parsed.process).toMatchObject({ status: "partial", truncated: true, errorCode: "PROCESS_LIMIT" });
+    expect(parsed.registry.rows).toEqual([{
+      hive: "hkcu",
+      kind: "uninstall",
+      value: "",
+      displayIcon: "C:\\Discord\\Update.exe,0",
+      installLocation: "C:\\Discord",
+    }]);
   });
 
   it("aplica ,0 somente ao token de displayIcon", () => {
@@ -100,6 +115,21 @@ describe("discovery Windows puro", () => {
     expect(normalizeWindowsDiscoveryPath(`${executable},0`, "displayIcon")).toBe(executable);
     expect(normalizeWindowsDiscoveryPath(`"${executable}",0`, "displayIcon")).toBe(executable);
     expect(normalizeWindowsDiscoveryPath(`"${executable}"`, "value")).toBe(executable);
+  });
+  it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {
+    expect(parseWindowsDiscoveryCommand(
+      '"C:\\Program Files\\Discord\\Update.exe" --processStart Discord.exe',
+    )).toEqual({
+      executable: "C:\\Program Files\\Discord\\Update.exe",
+      args: ["--processStart", "Discord.exe"],
+    });
+    expect(parseWindowsDiscoveryCommand("C:\\Discord\\Discord.exe --flag")).toEqual({
+      executable: "C:\\Discord\\Discord.exe",
+      args: ["--flag"],
+    });
+    expect(parseWindowsDiscoveryCommand('"C:\\Discord\\Update.exe --processStart Discord.exe')).toBeNull();
+    expect(parseWindowsDiscoveryCommand('"" --processStart Discord.exe')).toBeNull();
+    expect(normalizeWindowsDiscoveryPath('"C:\\Program Files\\Discord\\Discord.exe" --flag', "value")).toBeNull();
   });
 
   it("deriva flavour somente do nome exato do executável", () => {
@@ -160,7 +190,9 @@ describe("discovery Windows puro", () => {
     let nowMs = 0;
     let calls = 0;
     let env: WindowsDiscoveryEnvironment = { ProgramFiles: "C:\\Program Files" };
+    let platform = "win32";
     const cache = createWindowsDiscoveryCache({
+      platform: () => platform,
       nowMs: () => nowMs,
       readEnv: () => env,
       rootsForEnv: (current) => current.ProgramFiles ? [`${current.ProgramFiles}\\Discord`] : [],
@@ -181,12 +213,16 @@ describe("discovery Windows puro", () => {
     env = { ProgramFiles: "D:\\Program Files" };
     cache.read();
     expect(calls).toBe(4);
+    platform = "darwin";
+    cache.read();
+    expect(calls).toBe(5);
   });
 
   it("usa stale por no máximo 8s somente quando permitido e falha sem stale", () => {
     let nowMs = 0;
     let calls = 0;
     const cache = createWindowsDiscoveryCache({
+      platform: () => "win32",
       nowMs: () => nowMs,
       readEnv: () => ({}),
       rootsForEnv: () => [],
@@ -206,11 +242,42 @@ describe("discovery Windows puro", () => {
     nowMs = 8_000;
     expect(() => cache.read({ allowStale: true })).toThrow("fonte indisponível");
   });
+  it("reutiliza snapshot saudável quando coleta nova retorna degradada e permite resultado degradado sem stale", () => {
+    let nowMs = 0;
+    let calls = 0;
+    const cache = createWindowsDiscoveryCache({
+      platform: () => "win32",
+      nowMs: () => nowMs,
+      readEnv: () => ({}),
+      rootsForEnv: () => [],
+      collectFresh: () => {
+        calls += 1;
+        return calls === 1
+          ? emptySnapshot()
+          : emptySnapshot(nowMs, true, "REGISTRY_UNAVAILABLE");
+      },
+    });
+
+    cache.read();
+    nowMs = 4_001;
+    const stale = cache.read({ allowStale: true });
+    expect(stale).toMatchObject({ stale: true, collectionFailed: false });
+    expect(calls).toBe(2);
+
+    const degraded = cache.read();
+    expect(degraded).toMatchObject({
+      stale: false,
+      collectionFailed: true,
+      sourceFailure: "REGISTRY_UNAVAILABLE",
+    });
+    expect(calls).toBe(3);
+  });
 
   it("aceita ambiente sem LOCALAPPDATA quando roots dependentes ficam vazias", () => {
     let collectCalls = 0;
     let seenEnv: WindowsDiscoveryEnvironment | undefined;
     const cache = createWindowsDiscoveryCache({
+      platform: () => "win32",
       nowMs: () => 0,
       readEnv: () => ({ ProgramFiles: "C:\\Program Files" }),
       rootsForEnv: (env) => {

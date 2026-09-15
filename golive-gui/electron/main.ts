@@ -35,6 +35,7 @@ import { validateWgConfContent } from "./wg-validator";
 import * as proton from "./proton";
 import { ProtonOptimizationCoordinator } from "./proton-optimization";
 import { restoreBypassOnStartup, type StartupOptimizationResult } from "./startup-restore";
+import { findWindowsDiscordInstall } from "./windows-discord-install";
 import { collectWindowsDiscoveryPowerShell, collectWindowsDiscoverySnapshot, createWindowsDiscoveryCache, rootsForEnvironment, toPublicWindowsDiscoveryInstall, type WindowsDiscoverySnapshotCollectors } from "./windows-discord-discovery";
 import { waitForProcessRunning, waitForProcessStopped, type ProcessProbeState } from "./wait-condition";
 import { TUNNEL_STARTUP_SETTLE_MS, waitForTunnelStartupSettle } from "./tunnel-startup";
@@ -842,6 +843,26 @@ app.on("before-quit", (event) => {
     })
     .finally(() => app.quit());
 });
+// A bandeja é a dona do app: fechar a janela apenas esconde e o processo continua
+// vivo em segundo plano. Encerramento explícito passa pelo menu Sair/before-quit.
+app.on("window-all-closed", () => {});
+
+function withNoAsar<T>(fn: () => T): T {
+  const previous = process.noAsar;
+  process.noAsar = true;
+  try {
+    return fn();
+  } finally {
+    process.noAsar = previous;
+  }
+}
+
+interface DiscordInstall {
+  flavour: string;
+  resources: string;
+  exePath: string;
+  bundlePath?: string;
+}
 type WindowsDiscoveryReadOptions = {
   forceRefresh?: boolean;
   allowStale?: boolean;

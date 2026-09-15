@@ -145,7 +145,7 @@ describe("guarda de ativacao duplicada", () => {
     expect(src).toContain("assertWindowsRouteGeneration(generation)");
     expect(src).toContain('if (IS_WINDOWS && sessaoAtiva())');
     expect(src).toContain('await activateBypass({});');
-    const statusStart = src.indexOf("function getStatus():");
+    const statusStart = src.indexOf("function getStatus(options: WindowsDiscoveryReadOptions");
     const status = src.slice(statusStart, src.indexOf("async function linuxStatus", statusStart));
     expect(status).toContain('return "CONNECTING"');
     expect(status).toContain('return "RECOVERY_REQUIRED"');
@@ -272,6 +272,10 @@ describe("guarda de ativacao duplicada", () => {
     expect(discovery).not.toContain("if (!localAppData) return []");
     expect(src).toContain("collectWindowsDiscoverySnapshot");
     expect(src).toContain("createWindowsDiscoveryCache");
+    expect(src).toContain('import { findWindowsDiscordInstall } from "./windows-discord-install";');
+    expect(src).toContain("function withNoAsar<T>(fn: () => T): T");
+    expect(src).toContain("interface DiscordInstall");
+    expect(src).toContain('app.on("window-all-closed", () => {});');
     expect(src).toContain("diskFs.lstatSync");
   });
 

@@ -71,3 +71,37 @@ export function scriptJsonInvalido(stdout: string) {
 export function ativacaoSemDiscord(motivo: string) {
   logger.warn("discord", "ativacao.sem_discord", { motivo });
 }
+
+// Descoberta Windows (#300): cada fonte reporta origem/status/contagem/truncation/
+// errorCode e cada candidato reporta flavour/detected_by. Nenhum registro aceita
+// caminho cru, CommandLine, argumentos, stdout ou PID: origem e detected_by sao
+// categorias fechadas, entao um path nunca entra no log por este caminho.
+export type DiscoveryScanSource = "root" | "process" | "registry" | "shortcut";
+export type DiscoveryScanStatus = "ok" | "empty" | "partial" | "error";
+
+export interface DiscoveryScanFonteExtras {
+  total?: number;
+  truncated?: boolean;
+  errorCode?: string;
+}
+
+// Resultado de uma fonte pontual. "truncated" so aparece quando o teto de coleta
+// foi atingido; errorCode so carrega o codigo estavel daquela fonte (nunca a
+// excecao crua nem um caminho).
+export function scanFonte(
+  origem: DiscoveryScanSource,
+  status: DiscoveryScanStatus,
+  extras: DiscoveryScanFonteExtras = {},
+) {
+  const data: Record<string, unknown> = { origem, status };
+  if (typeof extras.total === "number") data.total = extras.total;
+  if (extras.truncated) data.truncated = "sim";
+  if (extras.errorCode) data.error_code = extras.errorCode;
+  logger.info("discord", "scan.fonte", data);
+}
+
+// Candidato aceito, sem path. detected_by e a origem de maior precedencia que
+// venceu a deduplicacao para este flavour.
+export function scanCandidato(flavour: string, detectedBy: DiscoveryScanSource) {
+  logger.info("discord", "scan.candidato", { flavour, detected_by: detectedBy });
+}

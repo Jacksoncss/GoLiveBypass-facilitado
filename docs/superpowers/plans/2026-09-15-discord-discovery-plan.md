@@ -71,8 +71,11 @@ export interface WindowsDiscoveryCache {
 
 **Arquivos:**
 
+- Criar `golive-gui/electron/windows-discord-discovery.ts`.
+- Ler `golive-gui/electron/windows-discord-install.ts`; manter `findWindowsDiscordInstall()` compatível.
 - Criar `golive-gui/tests/windows-discord-discovery.test.ts`.
 
+**Símbolos a criar:**
 - `WindowsDiscoveryRaw`, `WindowsDiscoveryRawProcessRow`, `WindowsDiscoveryRawRegistryRow` e `WindowsDiscoverySnapshot`.
 - `WindowsDiscoveryCandidate` interno com `source`, `flavour`, `exePath`, `appDir`, `resources` e `detectedBy`.
 - `parseWindowsDiscoveryJson(raw: string): WindowsDiscoveryRaw`.

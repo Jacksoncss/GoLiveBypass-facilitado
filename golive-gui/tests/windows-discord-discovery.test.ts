@@ -62,7 +62,7 @@ function registryDeps(
     findInstall: (root, flavour) =>
       found.find((install) =>
         winKey(install.appDir).startsWith(winKey(root)) &&
-        install.exePath.toLowerCase().endsWith(`\\${flavour}.exe`),
+        install.exePath.toLowerCase().endsWith(`\\${flavour.toLowerCase()}.exe`),
       ) ?? null,
   };
 }
@@ -295,6 +295,20 @@ describe("discovery Windows puro", () => {
     const fs = fakeFs([executable]);
     const candidates = handleRegistryRows([
       { hive: "hklm", kind: "uninstall", value: "", flavourHint: "Discord", installLocation: root },
+    ], registryDeps(fs, [{
+      appDir: path.win32.dirname(executable),
+      resources: path.win32.join(path.win32.dirname(executable), "resources"),
+      exePath: executable,
+    }]));
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ source: "registry", flavour: "Discord", exePath: executable });
+  });
+  it("aceita InstallLocation x86 quoted como token único", () => {
+    const root = "C:\\Program Files (x86)\\Discord";
+    const executable = `${root}\\app-1.0.10\\Discord.exe`;
+    const fs = fakeFs([executable]);
+    const candidates = handleRegistryRows([
+      { hive: "hklm", kind: "uninstall", value: "", flavourHint: "Discord", installLocation: `"${root}"` },
     ], registryDeps(fs, [{
       appDir: path.win32.dirname(executable),
       resources: path.win32.join(path.win32.dirname(executable), "resources"),

@@ -653,7 +653,7 @@ function candidateFromUpdateCommand(
 
 function normalizeWindowsDiscoveryRoot(raw: string): string | null {
   const input = raw.trim();
-  if (!input || /[\u0000-\u001f\u007f"\r\n,]/.test(input)) return null;
+  if (!input || /[\u0000-\u001f\u007f\r\n,]/.test(input)) return null;
   const command = parseWindowsDiscoveryCommand(input);
   if (!command) return null;
 

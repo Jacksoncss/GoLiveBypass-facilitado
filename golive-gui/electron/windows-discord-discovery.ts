@@ -284,22 +284,16 @@ function extractPathToken(raw: string, context: "process" | "value" | "displayIc
   const command = parseWindowsDiscoveryCommand(commandInput);
   if (!command) return null;
   if (command.args.length === 0) return command.executable;
-  // A raw ExecutablePath/DisplayIcon may be an unquoted path containing spaces.
-  // Treat it as one token only when every remainder is visibly a path segment;
-  // command arguments (including an option ending in .exe) remain rejected.
-  if (
-    !commandInput.includes('"') &&
-    /\.exe$/i.test(commandInput) &&
-    command.args.every((arg) =>
-      /[\\/]/.test(arg) &&
-      !/^[A-Za-z]:[\\/]/.test(arg) &&
-      !arg.startsWith("-") &&
-      !arg.startsWith("/"),
-    )
-  ) {
-    return commandInput;
-  }
-  return null;
+
+  // ExecutablePath and DisplayIcon can be unquoted paths containing spaces.
+  // Tokenization still validates quotes/control characters, while the first
+  // .exe marker gives a deterministic boundary: anything after it is an arg.
+  if (commandInput.includes('"') || !/^[A-Za-z]:[\\/]/.test(commandInput)) return null;
+  const firstExe = commandInput.search(/\.exe/i);
+  if (firstExe < 0) return null;
+  const candidateEnd = firstExe + ".exe".length;
+  if (commandInput.slice(candidateEnd).trim() !== "") return null;
+  return commandInput.slice(0, candidateEnd).trim();
 }
 
 export function normalizeWindowsDiscoveryPath(

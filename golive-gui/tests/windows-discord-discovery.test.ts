@@ -115,6 +115,9 @@ describe("discovery Windows puro", () => {
     expect(normalizeWindowsDiscoveryPath(`${executable},0`, "displayIcon")).toBe(executable);
     expect(normalizeWindowsDiscoveryPath(`"${executable}",0`, "displayIcon")).toBe(executable);
     expect(normalizeWindowsDiscoveryPath(`"${executable}"`, "value")).toBe(executable);
+    const x86Executable = "C:\\Program Files (x86)\\Discord\\app-1.0.10\\Discord.exe";
+    expect(normalizeWindowsDiscoveryPath(x86Executable, "process")).toBe(x86Executable);
+    expect(normalizeWindowsDiscoveryPath(`${x86Executable},0`, "displayIcon")).toBe(x86Executable);
     expect(normalizeWindowsDiscoveryPath(executable, "process")).toBe(executable);
   });
   it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {

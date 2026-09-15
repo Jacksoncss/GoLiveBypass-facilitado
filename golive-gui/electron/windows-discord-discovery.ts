@@ -868,8 +868,15 @@ export function handleShortcutRoots(
   deps: WindowsDiscoverySnapshotCollectors,
 ): WindowsDiscoveryCandidate[] {
   const candidates: WindowsDiscoveryCandidate[] = [];
-  for (const [index, root] of shortcutRootsForEnvironment(env).entries()) {
-    candidates.push(...collectShortcutLinks(root, index < 2, deps));
+  const roots = shortcutRootsForEnvironment(env);
+  const startMenuRoots = new Set(
+    [
+      env.APPDATA ? path.win32.join(env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs") : "",
+      env.ProgramData ? path.win32.join(env.ProgramData, "Microsoft", "Windows", "Start Menu", "Programs") : "",
+    ].filter(Boolean).map(windowsPathKey),
+  );
+  for (const root of roots) {
+    candidates.push(...collectShortcutLinks(root, startMenuRoots.has(windowsPathKey(root)), deps));
   }
   return candidates;
 }

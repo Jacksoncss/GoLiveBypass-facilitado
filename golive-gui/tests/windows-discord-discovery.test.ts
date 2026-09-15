@@ -80,6 +80,12 @@ function shortcutDeps(
   found: WindowsDiscordInstall[] = [],
 ): WindowsDiscoverySnapshotCollectors {
   const base = registryDeps(fs, found);
+  const normalizedDirectories = new Map(
+    [...directories.entries()].map(([key, names]) => [winKey(key), names] as const),
+  );
+  const normalizedShortcuts = new Map(
+    [...shortcuts.entries()].map(([key, value]) => [winKey(key), value] as const),
+  );
   return {
     ...base,
     collectPowerShell: () => ({
@@ -87,11 +93,11 @@ function shortcutDeps(
       process: { status: "empty", rows: [], truncated: false },
       registry: { status: "empty", rows: [], truncated: false },
     }),
-    isDirectory: (target) => directories.has(winKey(target)),
+    isDirectory: (target) => normalizedDirectories.has(winKey(target)),
     isSymbolicLink: () => false,
-    listDirectory: (root) => directories.get(winKey(root)) ?? [],
+    listDirectory: (root) => normalizedDirectories.get(winKey(root)) ?? [],
     readShortcut: (file) => {
-      const shortcut = shortcuts.get(winKey(file));
+      const shortcut = normalizedShortcuts.get(winKey(file));
       if (!shortcut) throw new Error("shortcut inválido");
       return shortcut;
     },
@@ -188,6 +194,27 @@ describe("discovery Windows puro", () => {
     }
     const candidates = handleShortcutRoots(env, shortcutDeps(directories, shortcuts, fakeFs([target])));
     expect(candidates).toHaveLength(128);
+  });
+  it("mantém Desktop direct-only quando as raízes Start Menu estão ausentes", () => {
+    const env: WindowsDiscoveryEnvironment = { USERPROFILE: "C:\\Users\\A", PUBLIC: "C:\\Users\\Public" };
+    const [desktop] = shortcutRootsForEnvironment(env);
+    const vendor = path.win32.join(desktop, "Vendor");
+    const direct = "D:\\Apps\\Discord.exe";
+    const nested = "D:\\Apps\\Vesktop.exe";
+    const directories = new Map([
+      [desktop, ["Discord.lnk", "Vendor"]],
+      [vendor, ["Vesktop.lnk"]],
+    ]);
+    const shortcuts = new Map([
+      [path.win32.join(desktop, "Discord.lnk"), { target: direct, args: "" }],
+      [path.win32.join(vendor, "Vesktop.lnk"), { target: nested, args: "" }],
+    ]);
+    const candidates = handleShortcutRoots(env, shortcutDeps(
+      directories,
+      shortcuts,
+      fakeFs([direct, nested]),
+    ));
+    expect(candidates.map((candidate) => candidate.exePath)).toEqual([direct]);
   });
 
   it("combina roots, handlers PowerShell e atalhos em snapshot com health", () => {

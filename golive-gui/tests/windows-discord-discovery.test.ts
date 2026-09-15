@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import path from "path";
 import {
+  buildWindowsDiscoveryPowerShell,
+  collectWindowsDiscoveryPowerShell,
   createWindowsDiscoveryCache,
   flavourFromExecutableName,
+  handleProcessRows,
+  handleRegistryRows,
   makeWindowsDiscoveryCandidate,
   mergeWindowsDiscoveryCandidates,
   normalizeWindowsDiscoveryPath,
@@ -14,8 +18,10 @@ import {
   type WindowsDiscoveryCandidate,
   type WindowsDiscoveryEnvironment,
   type WindowsDiscoveryFileSystem,
+  type WindowsDiscoveryRegistryHandlerDeps,
   type WindowsDiscoverySnapshot,
 } from "../electron/windows-discord-discovery";
+import type { WindowsDiscordInstall } from "../electron/windows-discord-install";
 
 function winKey(value: string): string {
   return path.win32.normalize(value).toLowerCase();
@@ -44,6 +50,17 @@ function candidate(
 
 function emptySnapshot(capturedAtMs = 0, collectionFailed = false, sourceFailure?: string): WindowsDiscoverySnapshot {
   return { installs: [], capturedAtMs, collectionFailed, sourceFailure };
+}
+function registryDeps(
+  fs: WindowsDiscoveryFileSystem,
+  found: WindowsDiscordInstall[] = [],
+): WindowsDiscoveryRegistryHandlerDeps {
+  return {
+    ...fs,
+    listDirectory: () => [],
+    findInstall: (_root, flavour) =>
+      found.find((install) => install.exePath.toLowerCase().endsWith(`\\${flavour}.exe`)) ?? null,
+  };
 }
 
 describe("discovery Windows puro", () => {
@@ -120,6 +137,68 @@ describe("discovery Windows puro", () => {
     expect(normalizeWindowsDiscoveryPath(`${x86Executable},0`, "displayIcon")).toBe(x86Executable);
     expect(normalizeWindowsDiscoveryPath(executable, "process")).toBe(executable);
   });
+  it("coleta JSON schema=1 com runner PowerShell injetável e script constante", () => {
+    let invocation: { file: string; args: readonly string[] } | undefined;
+    const raw = JSON.stringify({
+      schema: 1,
+      process: { status: "empty", rows: [], truncated: false },
+      registry: { status: "partial", rows: [], truncated: true, errorCode: "UNINSTALL_LIMIT" },
+    });
+    const parsed = collectWindowsDiscoveryPowerShell((file, args) => {
+      invocation = { file, args };
+      return raw;
+    });
+
+    expect(parsed.registry).toMatchObject({ status: "partial", truncated: true, errorCode: "UNINSTALL_LIMIT" });
+    expect(invocation?.file).toBe("powershell.exe");
+    expect(invocation?.args).toEqual(expect.arrayContaining(["-NoProfile", "-NonInteractive", "-Command"]));
+    expect(buildWindowsDiscoveryPowerShell()).toContain("Get-CimInstance Win32_Process");
+    expect(buildWindowsDiscoveryPowerShell()).toContain("Select-Object -First 129");
+    expect(buildWindowsDiscoveryPowerShell()).toContain("HKLM:\\Software\\WOW6432Node\\Classes");
+    expect(buildWindowsDiscoveryPowerShell()).toContain("Get-ItemProperty");
+  });
+
+  it("mapeia falha catastrófica e JSON inválido para erros sem expor exceção", () => {
+    expect(() => collectWindowsDiscoveryPowerShell(() => {
+      throw new Error("caminho privado");
+    })).toThrow("POWERSHELL_EXIT");
+    expect(() => collectWindowsDiscoveryPowerShell(() => "{}")).toThrow("JSON_INVALID");
+  });
+
+  it("trata processos pelos seis nomes e caminhos exatos", () => {
+    const discord = "D:\\MyDiscord\\app-1.0.10\\Discord.exe";
+    const fs = fakeFs([discord]);
+    const candidates = handleProcessRows([
+      { name: "Discord.exe", pid: 10, path: discord },
+      { name: "Update.exe", pid: 11, path: "D:\\MyDiscord\\Update.exe" },
+      { name: "Discord.exe", pid: 12, path: null },
+    ], fs);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ source: "process", flavour: "Discord", exePath: discord });
+  });
+
+  it("usa App Paths, URL handler e fallback Uninstall sem executar command strings", () => {
+    const direct = "C:\\Program Files\\Discord\\Discord.exe";
+    const updater = "C:\\Discord\\Update.exe";
+    const installed = "C:\\Discord\\app-1.0.10\\Discord.exe";
+    const fs = fakeFs([direct, updater, installed]);
+    const found: WindowsDiscordInstall = {
+      appDir: path.win32.dirname(installed),
+      resources: path.win32.join(path.win32.dirname(installed), "resources"),
+      exePath: installed,
+    };
+    const candidates = handleRegistryRows([
+      { hive: "hkcu", kind: "app-paths", value: `"${direct}"`, flavourHint: "Discord" },
+      { hive: "hkcu", kind: "url-handler", value: `"${updater}" --processStart Discord.exe`, flavourHint: "Discord" },
+      { hive: "hkcu", kind: "url-handler", value: `"${updater}" --processStart Discord.exe --extra`, flavourHint: "Discord" },
+      { hive: "hkcu", kind: "uninstall", value: "", flavourHint: "Discord", displayIcon: `${direct},0`, installLocation: "C:\\Program Files\\Discord" },
+    ], registryDeps(fs, [found]));
+
+    expect(candidates.some((candidate) => candidate.exePath === direct)).toBe(true);
+    expect(candidates.some((candidate) => candidate.exePath === installed)).toBe(true);
+    expect(candidates).toHaveLength(4);
+  });
+
   it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {
     expect(parseWindowsDiscoveryCommand(
       '"C:\\Program Files\\Discord\\Update.exe" --processStart Discord.exe',

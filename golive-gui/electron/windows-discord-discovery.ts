@@ -1,4 +1,6 @@
+import { execFileSync } from "child_process";
 import path from "path";
+import { findWindowsDiscordInstall, type WindowsDiscordInstall } from "./windows-discord-install";
 
 export type WindowsDiscoveryFlavour =
   | "Discord"
@@ -92,6 +94,17 @@ export interface WindowsDiscoveryCollectors {
   realpath?: (file: string) => string;
   readShortcut: (file: string) => { target: string; args: string };
 }
+export type WindowsDiscoveryPowerShellRunner = (file: string, args: readonly string[]) => string;
+
+export interface WindowsDiscoveryRegistryHandlerDeps extends WindowsDiscoveryFileSystem {
+  listDirectory: (root: string) => string[];
+  findInstall: (
+    root: string,
+    flavour: string,
+    exists: (target: string) => boolean,
+    readdir: (target: string) => string[],
+  ) => WindowsDiscordInstall | null;
+}
 
 export interface WindowsDiscoveryCacheDeps {
   platform: () => string;
@@ -119,6 +132,186 @@ const FLAVOUR_BY_EXE = new Map<string, WindowsDiscoveryFlavour>(
 const RAW_STATUSES = new Set<DiscoveryBlockStatus>(["ok", "empty", "partial", "error"]);
 const RAW_KINDS = new Set<WindowsDiscoveryRegistryKind>(["app-paths", "uninstall", "url-handler"]);
 const RAW_HIVES = new Set<WindowsDiscoveryRegistryHive>(["hkcu", "hklm", "wow6432"]);
+export const WINDOWS_DISCOVERY_POWERSHELL_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$flavours = @('Discord','DiscordPTB','DiscordCanary','Vesktop','Equibop','Legcord')
+$schemes = @('discord','discordptb','discordcanary','vesktop','equibop','legcord')
+$processFilter = "Name = 'Discord.exe' OR Name = 'DiscordPTB.exe' OR Name = 'DiscordCanary.exe' OR Name = 'Vesktop.exe' OR Name = 'Equibop.exe' OR Name = 'Legcord.exe'"
+
+$processRows = @()
+$processStatus = 'ok'
+$processError = $null
+try {
+  $processRows = @(Get-CimInstance Win32_Process -Filter $processFilter -ErrorAction Stop | ForEach-Object {
+    $processPath = $null
+    if ($_.ExecutablePath) { $processPath = [string]$_.ExecutablePath }
+    [pscustomobject]@{
+      name = [string]$_.Name
+      pid = [int]$_.ProcessId
+      path = $processPath
+    }
+  } | Select-Object -First 64)
+  if ($processRows.Count -eq 0) { $processStatus = 'empty' }
+} catch {
+  $processStatus = 'error'
+  $processError = 'CIM_UNAVAILABLE'
+}
+$processBlock = [ordered]@{
+  status = $processStatus
+  rows = @($processRows)
+  truncated = $false
+}
+if ($processError) { $processBlock.errorCode = $processError }
+
+$registryRows = @()
+$registryErrors = 0
+$registryTruncated = $false
+$appPathSpecs = @(
+  @{hive='hkcu'; root='HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths'},
+  @{hive='hklm'; root='HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths'},
+  @{hive='wow6432'; root='HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths'}
+)
+foreach ($spec in $appPathSpecs) {
+  foreach ($flavour in $flavours) {
+    try {
+      $key = Join-Path $spec.root ($flavour + '.exe')
+      if (Test-Path -LiteralPath $key) {
+        $value = [string]((Get-Item -LiteralPath $key -ErrorAction Stop).GetValue(''))
+        $registryRows += [pscustomobject]@{
+          hive = $spec.hive
+          kind = 'app-paths'
+          value = $value
+          flavourHint = $flavour
+        }
+      }
+    } catch { $registryErrors++ }
+  }
+}
+
+$urlSpecs = @(
+  @{hive='hkcu'; root='HKCU:\Software\Classes'},
+  @{hive='hklm'; root='HKLM:\Software\Classes'},
+  @{hive='wow6432'; root='HKLM:\Software\WOW6432Node\Classes'}
+)
+for ($index = 0; $index -lt $schemes.Count; $index++) {
+  foreach ($spec in $urlSpecs) {
+    try {
+      $key = Join-Path (Join-Path (Join-Path (Join-Path $spec.root $schemes[$index]) 'shell') 'open') 'command'
+      if (Test-Path -LiteralPath $key) {
+        $value = [string]((Get-Item -LiteralPath $key -ErrorAction Stop).GetValue(''))
+        $registryRows += [pscustomobject]@{
+          hive = $spec.hive
+          kind = 'url-handler'
+          value = $value
+          flavourHint = $flavours[$index]
+        }
+      }
+    } catch { $registryErrors++ }
+  }
+}
+
+$uninstallSpecs = @(
+  @{hive='hkcu'; root='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'},
+  @{hive='hklm'; root='HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'},
+  @{hive='wow6432'; root='HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'}
+)
+foreach ($spec in $uninstallSpecs) {
+  try {
+    # A 129th item is read only as a sentinel so the processed set stays bounded at 128.
+    $subkeys = @(Get-ChildItem -LiteralPath $spec.root -ErrorAction Stop | Select-Object -First 129)
+    if ($subkeys.Count -gt 128) { $registryTruncated = $true }
+    foreach ($key in @($subkeys | Select-Object -First 128)) {
+      try {
+        $properties = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+        $displayName = [string]$properties.DisplayName
+        if (!$displayName -or $displayName -notmatch '(?i)(Discord|Vesktop|Equibop|Legcord)') { continue }
+        $defaultValue = [string]((Get-Item -LiteralPath $key.PSPath -ErrorAction Stop).GetValue(''))
+        $displayIcon = [string]$properties.DisplayIcon
+        $installLocation = [string]$properties.InstallLocation
+        $hint = $null
+        if ($displayName -match '(?i)Discord\s*Canary') { $hint = 'DiscordCanary' }
+        elseif ($displayName -match '(?i)Discord\s*PTB') { $hint = 'DiscordPTB' }
+        elseif ($displayName -match '(?i)Discord') { $hint = 'Discord' }
+        elseif ($displayName -match '(?i)Vesktop') { $hint = 'Vesktop' }
+        elseif ($displayName -match '(?i)Equibop') { $hint = 'Equibop' }
+        elseif ($displayName -match '(?i)Legcord') { $hint = 'Legcord' }
+        $registryRows += [pscustomobject]@{
+          hive = $spec.hive
+          kind = 'uninstall'
+          value = $defaultValue
+          flavourHint = $hint
+          displayIcon = $displayIcon
+          installLocation = $installLocation
+        }
+      } catch { $registryErrors++ }
+    }
+  } catch { $registryErrors++ }
+}
+
+$registryStatus = 'ok'
+if ($registryRows.Count -eq 0 -and $registryErrors -gt 0) { $registryStatus = 'error' }
+elseif ($registryRows.Count -eq 0 -and !$registryTruncated) { $registryStatus = 'empty' }
+elseif ($registryErrors -gt 0 -or $registryTruncated) { $registryStatus = 'partial' }
+$registryBlock = [ordered]@{
+  status = $registryStatus
+  rows = @($registryRows)
+  truncated = [bool]$registryTruncated
+}
+if ($registryErrors -gt 0) { $registryBlock.errorCode = 'REGISTRY_PARTIAL' }
+if ($registryTruncated -and !$registryBlock.errorCode) { $registryBlock.errorCode = 'UNINSTALL_LIMIT' }
+
+[pscustomobject]@{
+  schema = 1
+  process = [pscustomobject]$processBlock
+  registry = [pscustomobject]$registryBlock
+} | ConvertTo-Json -Compress -Depth 6
+`;
+
+export class WindowsDiscoveryCollectionError extends Error {
+  readonly errorCode: string;
+
+  constructor(errorCode: string) {
+    super(errorCode);
+    this.name = "WindowsDiscoveryCollectionError";
+    this.errorCode = errorCode;
+  }
+}
+
+function defaultWindowsDiscoveryPowerShellRunner(file: string, args: readonly string[]): string {
+  return String(execFileSync(file, args, {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 3_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  }));
+}
+
+export function buildWindowsDiscoveryPowerShell(): string {
+  return WINDOWS_DISCOVERY_POWERSHELL_SCRIPT;
+}
+
+export function collectWindowsDiscoveryPowerShell(
+  runner: WindowsDiscoveryPowerShellRunner = defaultWindowsDiscoveryPowerShellRunner,
+): WindowsDiscoveryRaw {
+  let stdout: string;
+  try {
+    stdout = runner("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      WINDOWS_DISCOVERY_POWERSHELL_SCRIPT,
+    ]);
+  } catch {
+    throw new WindowsDiscoveryCollectionError("POWERSHELL_EXIT");
+  }
+  try {
+    return parseWindowsDiscoveryJson(stdout);
+  } catch {
+    throw new WindowsDiscoveryCollectionError("JSON_INVALID");
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -382,6 +575,120 @@ export function makeWindowsDiscoveryCandidate(
     exePath: validated,
     detectedBy: source,
   };
+}
+function hintedFlavour(value: string | undefined): WindowsDiscoveryFlavour | null {
+  if (!value) return null;
+  return WINDOWS_DISCOVERY_FLAVOURS.find((flavour) => flavour.toLowerCase() === value.trim().toLowerCase()) ?? null;
+}
+
+function candidateFromRegistryExecutable(
+  executable: string,
+  flavour: WindowsDiscoveryFlavour | null,
+  deps: WindowsDiscoveryRegistryHandlerDeps,
+): WindowsDiscoveryCandidate | null {
+  const executableFlavour = flavourFromExecutableName(executable);
+  if (!executableFlavour || (flavour && executableFlavour !== flavour)) return null;
+  return makeWindowsDiscoveryCandidate("registry", executableFlavour, executable, deps);
+}
+
+function candidateFromBoundedRoot(
+  root: string,
+  flavour: WindowsDiscoveryFlavour,
+  deps: WindowsDiscoveryRegistryHandlerDeps,
+): WindowsDiscoveryCandidate | null {
+  const found = deps.findInstall(root, flavour, deps.exists, deps.listDirectory);
+  return found ? makeWindowsDiscoveryCandidate("registry", flavour, found.exePath, deps) : null;
+}
+
+function candidateFromUpdateCommand(
+  command: WindowsDiscoveryCommand,
+  flavour: WindowsDiscoveryFlavour | null,
+  deps: WindowsDiscoveryRegistryHandlerDeps,
+): WindowsDiscoveryCandidate | null {
+  const updater = normalizeWindowsDiscoveryPath(command.executable, "process");
+  if (
+    !updater ||
+    path.win32.basename(updater).toLowerCase() !== "update.exe" ||
+    !flavour ||
+    command.args.length !== 2 ||
+    command.args[0] !== "--processStart" ||
+    flavourFromExecutableName(command.args[1]) !== flavour ||
+    !fileIsValid(updater, deps)
+  ) return null;
+  return candidateFromBoundedRoot(path.win32.dirname(updater), flavour, deps);
+}
+
+function normalizeWindowsDiscoveryRoot(raw: string): string | null {
+  const input = raw.trim();
+  if (!input || /[\u0000-\u001f\u007f"\r\n,]/.test(input)) return null;
+  const command = parseWindowsDiscoveryCommand(input);
+  if (!command) return null;
+  if (command.args.length > 0) {
+    if (input.includes('"') || !/^[A-Za-z]:[\\/]/.test(input)) return null;
+    if (command.args.some((arg) => !/[\\/]/.test(arg) || arg.startsWith("-") || arg.startsWith("/"))) return null;
+  }
+  if (!/^[A-Za-z]:[\\/]/.test(input) || /^\\\\/.test(input) || /^\\\\[?.]/.test(input)) return null;
+  if (input.slice(2).includes(":") || input.split(/[\\/]+/).includes("..")) return null;
+  return path.win32.normalize(command.args.length > 0 ? input : command.executable);
+}
+
+export function handleProcessRows(
+  rows: readonly WindowsDiscoveryRawProcessRow[],
+  fsSeam: WindowsDiscoveryFileSystem,
+): WindowsDiscoveryCandidate[] {
+  const candidates: WindowsDiscoveryCandidate[] = [];
+  for (const row of rows) {
+    const flavour = flavourFromExecutableName(row.name);
+    if (!flavour || !row.path) continue;
+    const candidate = makeWindowsDiscoveryCandidate("process", flavour, row.path, fsSeam, true);
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+export function handleRegistryRows(
+  rows: readonly WindowsDiscoveryRawRegistryRow[],
+  deps: WindowsDiscoveryRegistryHandlerDeps,
+): WindowsDiscoveryCandidate[] {
+  const candidates: WindowsDiscoveryCandidate[] = [];
+  for (const row of rows) {
+    const flavour = hintedFlavour(row.flavourHint);
+    if (row.kind === "app-paths" || row.kind === "url-handler") {
+      const command = parseWindowsDiscoveryCommand(row.value);
+      if (!command) continue;
+      const candidate = row.kind === "url-handler"
+        ? candidateFromUpdateCommand(command, flavour, deps) ?? (
+          command.args.length === 0
+            ? candidateFromRegistryExecutable(command.executable, flavour, deps)
+            : null
+        )
+        : command.args.length === 0
+          ? candidateFromRegistryExecutable(command.executable, flavour, deps)
+          : null;
+      if (candidate) candidates.push(candidate);
+      continue;
+    }
+
+    if (row.displayIcon) {
+      const displayIcon = normalizeWindowsDiscoveryPath(row.displayIcon, "displayIcon");
+      if (displayIcon) {
+        const direct = candidateFromRegistryExecutable(displayIcon, flavour, deps);
+        if (direct) candidates.push(direct);
+        else if (path.win32.basename(displayIcon).toLowerCase() === "update.exe" && flavour) {
+          const bounded = candidateFromBoundedRoot(path.win32.dirname(displayIcon), flavour, deps);
+          if (bounded) candidates.push(bounded);
+        }
+      }
+    }
+    if (row.installLocation && flavour) {
+      const root = normalizeWindowsDiscoveryRoot(row.installLocation);
+      if (root) {
+        const bounded = candidateFromBoundedRoot(root, flavour, deps);
+        if (bounded) candidates.push(bounded);
+      }
+    }
+  }
+  return candidates;
 }
 
 const SOURCE_PRIORITY: Record<DiscoverySource, number> = {

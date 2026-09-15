@@ -1692,6 +1692,9 @@ function Show-Status($root) {
 
     if ($root) {
         Write-Host "    Fonte     $root" -ForegroundColor DarkGray
+        $currentChannel = Get-PersistedUpdateChannel $root
+        if (-not $currentChannel) { $currentChannel = 'stable' }
+        Write-Host "    Canal     $currentChannel" -ForegroundColor DarkGray
         $plugin = Join-Path $root "src\userplugins\$PluginDirName"
         if (Test-Path -LiteralPath $plugin) { Write-Host '    Plugin    ja instalado' -ForegroundColor Green }
         else { Write-Host '    Plugin    nao instalado' -ForegroundColor DarkGray }
@@ -1835,48 +1838,105 @@ function Invoke-RestoreEverything {
     Write-Host ''
     Write-Ok 'GoLiveBypass removido; Vencord/Equicord e o Discord foram preservados.'
 }
-
-function Show-MainMenu {
-    $root = Find-Checkout
-    Show-Status $root
-
-    if (Test-TuiInteractive) {
-        $tui = Tui-Menu 'O que voce quer fazer?' @(
-            'Instalar o GoLiveBypass',
-            'Verificar atualizacoes do plugin',
-            'Atualizar o plugin',
-            'Remover so o plugin (o mod continua)',
-            'Restaurar tudo (remove o plugin; preserva o mod)',
-            'Sair'
-        )
-        switch ($tui) {
-            1 { Invoke-Install $root }
-            2 { Invoke-CheckUpdate }
-            3 { Invoke-Update }
-            4 { Invoke-Uninstall }
-            5 { Invoke-RestoreEverything }
-            default { Write-Host '  Ate mais.' -ForegroundColor DarkGray }
-        }
+function Invoke-ChangeChannel($root) {
+    if (-not $root) {
+        Write-Warn 'Para persistir o canal, primeiro prepare um checkout do Equicord/Vencord.'
+        Write-Host '  A instalacao inicial perguntara o canal depois de preparar o mod.' -ForegroundColor DarkGray
+        return
+    }
+    $current = Get-PersistedUpdateChannel $root
+    if (-not $current) { $current = 'stable' }
+    if ($script:ChannelExplicit) {
+        Write-Host "  Canal fixado por -Channel: $Channel. Nada foi alterado pelo submenu." -ForegroundColor DarkGray
+        return
+    }
+    if ($Yes) {
+        if (Set-UpdateChannelPreference $root $current) { Write-Ok "Canal mantido em $current." }
         return
     }
 
-    Write-Host '  O que voce quer fazer?' -ForegroundColor White
-    Write-Host ''
-    Write-Host '    [1] Instalar o GoLiveBypass' -ForegroundColor Green
-    Write-Host '    [2] Verificar atualizacoes do plugin' -ForegroundColor Cyan
-    Write-Host '    [3] Atualizar o plugin' -ForegroundColor Green
-    Write-Host '    [4] Remover so o plugin (o mod continua)' -ForegroundColor Yellow
-    Write-Host '    [5] Restaurar tudo (remove o plugin; preserva o mod)' -ForegroundColor Red
-    Write-Host '    [0] Sair' -ForegroundColor Gray
-    Write-Host ''
+    $selected = $null
+    if (Test-TuiInteractive) {
+        $choice = Tui-Menu "Canal de atualizacoes (atual: $current)" @(
+            'Stable (recomendado) — canal mais previsivel, somente releases estaveis',
+            'Beta (opt-in) — canal de testes; ajuda a encontrar e corrigir erros',
+            'Cancelar'
+        )
+        if ($choice -eq 1) { $selected = 'stable' }
+        elseif ($choice -eq 2) { $selected = 'beta' }
+    } else {
+        Write-Host ''
+        Write-Host "  Canal de atualizacoes (atual: $current)" -ForegroundColor White
+        Write-Host '    [1] Stable (recomendado)' -ForegroundColor Green
+        Write-Host '        Canal mais previsivel, somente releases estaveis.' -ForegroundColor DarkGray
+        Write-Host '    [2] Beta (opt-in)' -ForegroundColor Yellow
+        Write-Host '        Canal de testes; voce ajuda a comunidade a testar, encontrar e corrigir erros antes da versao estavel.' -ForegroundColor DarkGray
+        Write-Host '    [0] Cancelar' -ForegroundColor DarkGray
+        $choice = Read-Escolha '  Escolha'
+        if ($choice -eq '1') { $selected = 'stable' }
+        elseif ($choice -eq '2') { $selected = 'beta' }
+    }
+    if (-not $selected) {
+        Write-Host '  Canal nao alterado. Voltando ao menu.' -ForegroundColor DarkGray
+        return
+    }
+    if (-not (Set-UpdateChannelPreference $root $selected)) {
+        Write-Warn 'Nao consegui salvar o canal; nenhuma instalacao ou atualizacao foi executada.'
+        return
+    }
+    if ((Get-PersistedUpdateChannel $root) -eq $selected) {
+        Write-Ok "Canal salvo: $selected. Voltando ao menu."
+    } else {
+        Write-Warn 'Nao consegui confirmar o canal salvo; nenhuma outra acao foi executada.'
+    }
+}
 
-    switch (Read-Escolha '  Escolha') {
-        '1' { Invoke-Install $root }
-        '2' { Invoke-CheckUpdate }
-        '3' { Invoke-Update }
-        '4' { Invoke-Uninstall }
-        '5' { Invoke-RestoreEverything }
-        default { Write-Host '  Ate mais.' -ForegroundColor DarkGray }
+function Show-MainMenu {
+    while ($true) {
+        $root = Find-Checkout
+        Show-Status $root
+
+        if (Test-TuiInteractive) {
+            $tui = Tui-Menu 'O que voce quer fazer?' @(
+                'Instalar o GoLiveBypass',
+                'Verificar atualizacoes do plugin',
+                'Atualizar o plugin',
+                'Mudar canal de atualizacoes',
+                'Remover so o plugin (o mod continua)',
+                'Restaurar tudo (remove o plugin; preserva o mod)',
+                'Sair'
+            )
+            switch ($tui) {
+                1 { Invoke-Install $root; return }
+                2 { Invoke-CheckUpdate; return }
+                3 { Invoke-Update; return }
+                4 { Invoke-ChangeChannel $root; continue }
+                5 { Invoke-Uninstall; return }
+                6 { Invoke-RestoreEverything; return }
+                default { Write-Host '  Ate mais.' -ForegroundColor DarkGray; return }
+            }
+        }
+
+        Write-Host '  O que voce quer fazer?' -ForegroundColor White
+        Write-Host ''
+        Write-Host '    [1] Instalar o GoLiveBypass' -ForegroundColor Green
+        Write-Host '    [2] Verificar atualizacoes do plugin' -ForegroundColor Cyan
+        Write-Host '    [3] Atualizar o plugin' -ForegroundColor Green
+        Write-Host '    [4] Mudar canal de atualizacoes' -ForegroundColor Cyan
+        Write-Host '    [5] Remover so o plugin (o mod continua)' -ForegroundColor Yellow
+        Write-Host '    [6] Restaurar tudo (remove o plugin; preserva o mod)' -ForegroundColor Red
+        Write-Host '    [0] Sair' -ForegroundColor Gray
+        Write-Host ''
+
+        switch (Read-Escolha '  Escolha') {
+            '1' { Invoke-Install $root; return }
+            '2' { Invoke-CheckUpdate; return }
+            '3' { Invoke-Update; return }
+            '4' { Invoke-ChangeChannel $root; continue }
+            '5' { Invoke-Uninstall; return }
+            '6' { Invoke-RestoreEverything; return }
+            default { Write-Host '  Ate mais.' -ForegroundColor DarkGray; return }
+        }
     }
 }
 

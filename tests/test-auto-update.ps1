@@ -170,6 +170,11 @@ if ($installModBlock -notmatch "installer\.selected.*channel") { Ok "download do
 if ($content -match 'Get-PluginReleaseCandidates' -and $content -match 'releases\?per_page=30' -and $content -notmatch 'Get-PluginReleaseCandidates[\s\S]{0,3000}releases/latest') {
     Ok "selecao de canal nao usa /releases/latest"
 } else { Bad "selecao de canal usa endpoint latest" }
+if ($content -match 'function Invoke-ChangeChannel' -and
+    $content -match 'Mudar canal de atualizacoes' -and
+    $content -match 'Invoke-ChangeChannel \$root; continue') {
+    Ok "menu Windows possui item de canal e retorna ao menu apos acoes"
+} else { Bad "menu Windows sem item/retorno do canal" }
 
 function Invoke-RestMethod {
     param([string]$Uri, [hashtable]$Headers, [int]$TimeoutSec)

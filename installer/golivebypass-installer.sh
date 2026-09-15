@@ -2103,6 +2103,7 @@ show_status() {
 
     if [ -n "$root" ]; then
         printf '  %s  Fonte     %s%s\n' "$C_DIM" "$root" "$C_OFF"
+        printf '  %s  Canal     %s%s\n' "$C_DIM" "$(get_persisted_channel "$root" || printf stable)" "$C_OFF"
         plugin="$root/src/userplugins/$PLUGIN_DIR_NAME"
         if [ -d "$plugin" ]; then
             printf '  %s  Plugin    ja instalado%s\n' "$C_GREEN" "$C_OFF"
@@ -2625,51 +2626,108 @@ do_restore_everything() {
     printf '\n'
     ok "GoLiveBypass removido; Vencord/Equicord e o Discord foram preservados."
 }
+change_channel_menu() {
+    local root="${1:-}" current choice selected
+    if [ -z "$root" ]; then
+        warn "Para persistir o canal, primeiro prepare um checkout do Equicord/Vencord; a instalacao inicial perguntara o canal depois de preparar o mod."
+        return 0
+    fi
+
+    current="$(get_persisted_channel "$root" || true)"
+    current="${current:-stable}"
+    if [ "$CHANNEL_EXPLICIT" -eq 1 ]; then
+        printf '  Canal fixado por --channel: %s. Nada foi alterado pelo submenu.\n' "$CHANNEL" >&2
+        return 0
+    fi
+    if [ "$ASSUME_YES" -eq 1 ]; then
+        persist_channel "$root" "$current" || return 0
+        ok "Canal mantido em $current."
+        return 0
+    fi
+
+    if tui_is_interactive; then
+        choice="$(tui_menu "Canal de atualizacoes (atual: $current)" \
+            "Stable (recomendado) — canal mais previsivel, somente releases estaveis" \
+            "Beta (opt-in) — canal de testes; ajuda a encontrar e corrigir erros" \
+            "Cancelar")"
+        case "$choice" in
+            1) selected="stable" ;;
+            2) selected="beta" ;;
+            *) return 0 ;;
+        esac
+    else
+        printf '\n  %sCanal de atualizacoes (atual: %s)%s\n\n' "$C_BOLD" "$current" "$C_OFF" >&2
+        printf '    %s[1] Stable (recomendado)%s\n' "$C_GREEN" "$C_OFF" >&2
+        printf '  %s      Canal mais previsivel, somente releases estaveis.%s\n' "$C_DIM" "$C_OFF" >&2
+        printf '    %s[2] Beta (opt-in)%s\n' "$C_YELLOW" "$C_OFF" >&2
+        printf '  %s      Canal de testes; voce ajuda a comunidade a testar, encontrar e corrigir erros antes da versao estavel.%s\n' "$C_DIM" "$C_OFF" >&2
+        printf '    %s[0] Cancelar%s\n\n' "$C_DIM" "$C_OFF" >&2
+        printf '%s' "  Escolha: " >&2
+        IFS= read -r choice || return 0
+        case "$choice" in
+            1) selected="stable" ;;
+            2) selected="beta" ;;
+            *) return 0 ;;
+        esac
+    fi
+
+    persist_channel "$root" "$selected" || return 0
+    if [ "$(get_persisted_channel "$root" || true)" = "$selected" ]; then
+        ok "Canal salvo: $selected. Voltando ao menu."
+    else
+        warn "Nao consegui confirmar o canal salvo; nada mais foi executado."
+    fi
+}
 
 main_menu() {
     local root
-    root="$(find_checkout || true)"
-    show_status "$root"
+    while :; do
+        root="$(find_checkout || true)"
+        show_status "$root"
 
-    if tui_is_interactive; then
-        local tui_choice
-        tui_choice="$(tui_menu "O que voce quer fazer?" \
-            "Instalar o GoLiveBypass" \
-            "Verificar atualizacoes do plugin" \
-            "Atualizar o plugin" \
-            "Remover so o plugin (o mod continua)" \
-            "Restaurar tudo (remove o plugin; preserva o mod)" \
-            "Sair")"
-        case "$tui_choice" in
-            1) do_install "$root" ;;
-            2) do_check_update ;;
-            3) do_update ;;
-            4) do_uninstall ;;
-            5) do_restore_everything ;;
-            *) printf '  %sAte mais.%s\n' "$C_DIM" "$C_OFF" ;;
+        if tui_is_interactive; then
+            local tui_choice
+            tui_choice="$(tui_menu "O que voce quer fazer?" \
+                "Instalar o GoLiveBypass" \
+                "Verificar atualizacoes do plugin" \
+                "Atualizar o plugin" \
+                "Mudar canal de atualizacoes" \
+                "Remover so o plugin (o mod continua)" \
+                "Restaurar tudo (remove o plugin; preserva o mod)" \
+                "Sair")"
+            case "$tui_choice" in
+                1) do_install "$root"; return ;;
+                2) do_check_update; return ;;
+                3) do_update; return ;;
+                4) change_channel_menu "$root"; continue ;;
+                5) do_uninstall; return ;;
+                6) do_restore_everything; return ;;
+                *) printf '  %sAte mais.%s\n' "$C_DIM" "$C_OFF" >&2; return ;;
+            esac
+        fi
+
+        printf '  %sO que voce quer fazer?%s\n\n' "$C_BOLD" "$C_OFF" >&2
+        printf '    %s[1] Instalar o GoLiveBypass%s\n' "$C_GREEN" "$C_OFF" >&2
+        printf '    %s[2] Verificar atualizacoes do plugin%s\n' "$C_CYAN" "$C_OFF" >&2
+        printf '    %s[3] Atualizar o plugin%s\n' "$C_GREEN" "$C_OFF" >&2
+        printf '    %s[4] Mudar canal de atualizacoes%s\n' "$C_CYAN" "$C_OFF" >&2
+        printf '    %s[5] Remover so o plugin (o mod continua)%s\n' "$C_YELLOW" "$C_OFF" >&2
+        printf '    %s[6] Restaurar tudo (remove o plugin; preserva o mod)%s\n' "$C_RED" "$C_OFF" >&2
+        printf '%s' "  Escolha: " >&2
+        local choice
+        IFS= read -r choice || return 0
+        case "$choice" in
+            1) do_install "$root"; return ;;
+            2) do_check_update; return ;;
+            3) do_update; return ;;
+            4) change_channel_menu "$root"; continue ;;
+            5) do_uninstall; return ;;
+            6) do_restore_everything; return ;;
+            *) printf '  %sAte mais.%s\n' "$C_DIM" "$C_OFF" >&2; return ;;
         esac
-        return
-    fi
-
-    printf '  %sO que voce quer fazer?%s\n\n' "$C_BOLD" "$C_OFF"
-    printf '    %s[1] Instalar o GoLiveBypass%s\n' "$C_GREEN" "$C_OFF"
-    printf '    %s[2] Verificar atualizacoes do plugin%s\n' "$C_CYAN" "$C_OFF"
-    printf '    %s[3] Atualizar o plugin%s\n' "$C_GREEN" "$C_OFF"
-    printf '    %s[4] Remover so o plugin (o mod continua)%s\n' "$C_YELLOW" "$C_OFF"
-    printf '    %s[5] Restaurar tudo (remove o plugin; preserva o mod)%s\n' "$C_RED" "$C_OFF"
-
-    local choice
-    printf '%s' "  Escolha: " >&2
-    read -r choice
-    case "$choice" in
-        1) do_install "$root" ;;
-        2) do_check_update ;;
-        3) do_update ;;
-        4) do_uninstall ;;
-        5) do_restore_everything ;;
-        *) printf '  %sAte mais.%s\n' "$C_DIM" "$C_OFF" ;;
-    esac
+    done
 }
+
 
 banner
 case "$MODE" in

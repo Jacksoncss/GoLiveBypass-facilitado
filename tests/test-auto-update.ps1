@@ -170,6 +170,32 @@ if ($installModBlock -notmatch "installer\.selected.*channel") { Ok "download do
 if ($content -match 'Get-PluginReleaseCandidates' -and $content -match 'releases\?per_page=30' -and $content -notmatch 'Get-PluginReleaseCandidates[\s\S]{0,3000}releases/latest') {
     Ok "selecao de canal nao usa /releases/latest"
 } else { Bad "selecao de canal usa endpoint latest" }
+if ($content -match 'function Invoke-ChangeChannel' -and
+    $content -match 'Mudar canal de atualizacoes' -and
+    $content -match 'Invoke-ChangeChannel \$root; continue') {
+    Ok "menu Windows possui item de canal e retorna ao menu apos acoes"
+} else { Bad "menu Windows sem item/retorno do canal" }
+$originalFindCheckout = (Get-Command Find-Checkout -CommandType Function).ScriptBlock
+$script:tuiCalls = 0
+$script:changeCalls = 0
+$script:textMenuCalls = 0
+function Find-Checkout { return $null }
+function Show-Status($root) { }
+function Test-TuiInteractive { return $true }
+function Tui-Menu {
+    $script:tuiCalls++
+    if ($script:tuiCalls -eq 1) { return 4 }
+    return 7
+}
+function Invoke-ChangeChannel($root) { $script:changeCalls++ }
+function Read-Escolha($prompt) { $script:textMenuCalls++; return '0' }
+Show-MainMenu
+if ($script:tuiCalls -eq 2 -and $script:changeCalls -eq 1 -and $script:textMenuCalls -eq 0) {
+    Ok "TUI volta ao loop apos mudar canal sem cair no menu textual"
+} else {
+    Bad "TUI caiu no menu textual ou nao voltou apos mudar canal"
+}
+Set-Item -Path Function:\Find-Checkout -Value $originalFindCheckout
 
 function Invoke-RestMethod {
     param([string]$Uri, [hashtable]$Headers, [int]$TimeoutSec)
@@ -262,8 +288,12 @@ $Source = $fakeCheckout
 $Channel = 'beta'
 $script:ChannelExplicit = $true
 $Yes = $true
-Invoke-CheckUpdate | Out-Null
-if ($script:webRequests -eq 0) { Ok "-Mode CheckUpdate nao baixa zip" } else { Bad "-Mode CheckUpdate fez download" }
+$checkOutput = (Invoke-CheckUpdate 6>&1 | Out-String)
+if ($script:webRequests -eq 0 -and $checkOutput -match 'canal:\s*beta' -and $checkOutput -match 'remote:\s*2\.1\.0-beta-10') {
+    Ok "-Mode CheckUpdate restaura Find-Checkout real, mostra canal/remote e nao baixa zip"
+} else {
+    Bad "-Mode CheckUpdate ficou falso-verde ou fez download"
+}
 Remove-Item $settingsRoot -Recurse -Force
 
 # Resultado

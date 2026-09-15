@@ -105,6 +105,12 @@ export interface WindowsDiscoveryRegistryHandlerDeps extends WindowsDiscoveryFil
     readdir: (target: string) => string[],
   ) => WindowsDiscordInstall | null;
 }
+export interface WindowsDiscoverySnapshotCollectors extends WindowsDiscoveryRegistryHandlerDeps {
+  collectPowerShell: () => WindowsDiscoveryRaw;
+  readShortcut: (file: string) => { target: string; args: string };
+  isDirectory: (target: string) => boolean;
+  isSymbolicLink: (target: string) => boolean;
+}
 
 export interface WindowsDiscoveryCacheDeps {
   platform: () => string;
@@ -132,6 +138,38 @@ const FLAVOUR_BY_EXE = new Map<string, WindowsDiscoveryFlavour>(
 const RAW_STATUSES = new Set<DiscoveryBlockStatus>(["ok", "empty", "partial", "error"]);
 const RAW_KINDS = new Set<WindowsDiscoveryRegistryKind>(["app-paths", "uninstall", "url-handler"]);
 const RAW_HIVES = new Set<WindowsDiscoveryRegistryHive>(["hkcu", "hklm", "wow6432"]);
+const ROOT_ENV_NAMES = ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] as const;
+
+function windowsPathKey(value: string): string {
+  return path.win32.normalize(value).replace(/[\\/]+$/, "").toLowerCase();
+}
+
+export function rootsForEnvironment(env: WindowsDiscoveryEnvironment): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const name of ROOT_ENV_NAMES) {
+    const base = env[name];
+    if (!base) continue;
+    const baseKey = windowsPathKey(base);
+    if (!baseKey || seen.has(baseKey)) continue;
+    seen.add(baseKey);
+    roots.push(path.win32.normalize(base));
+    roots.push(path.win32.join(base, "Programs"));
+  }
+  return roots;
+}
+
+export function shortcutRootsForEnvironment(env: WindowsDiscoveryEnvironment): string[] {
+  const roots: string[] = [];
+  const add = (base: string | undefined, ...parts: string[]) => {
+    if (base) roots.push(path.win32.join(base, ...parts));
+  };
+  add(env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs");
+  add(env.ProgramData, "Microsoft", "Windows", "Start Menu", "Programs");
+  add(env.USERPROFILE, "Desktop");
+  add(env.PUBLIC, "Desktop");
+  return roots;
+}
 export const WINDOWS_DISCOVERY_POWERSHELL_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $flavours = @('Discord','DiscordPTB','DiscordCanary','Vesktop','Equibop','Legcord')
@@ -500,7 +538,12 @@ export function parseWindowsDiscoveryCommand(raw: string): WindowsDiscoveryComma
   if (!tokens || !tokens[0] || tokens.some((token) => /[\u0000-\u001f\u007f\r\n]/.test(token))) return null;
   return { executable: tokens[0], args: tokens.slice(1) };
 }
+export function parseWindowsDiscoveryArguments(raw: string): string[] | null {
+  const input = raw.trim();
+  if (!input) return [];
+  return tokenizeWindowsCommand(input);
 
+}
 function extractPathToken(raw: string, context: "process" | "value" | "displayIcon"): string | null {
   const input = raw.trim();
   if (!input) return null;
@@ -614,26 +657,29 @@ function hintedFlavour(value: string | undefined): WindowsDiscoveryFlavour | nul
   return WINDOWS_DISCOVERY_FLAVOURS.find((flavour) => flavour.toLowerCase() === value.trim().toLowerCase()) ?? null;
 }
 
-function candidateFromRegistryExecutable(
+function candidateFromExecutable(
+  source: DiscoverySource,
   executable: string,
   flavour: WindowsDiscoveryFlavour | null,
   deps: WindowsDiscoveryRegistryHandlerDeps,
 ): WindowsDiscoveryCandidate | null {
   const executableFlavour = flavourFromExecutableName(executable);
   if (!executableFlavour || (flavour && executableFlavour !== flavour)) return null;
-  return makeWindowsDiscoveryCandidate("registry", executableFlavour, executable, deps);
+  return makeWindowsDiscoveryCandidate(source, executableFlavour, executable, deps);
 }
 
 function candidateFromBoundedRoot(
+  source: DiscoverySource,
   root: string,
   flavour: WindowsDiscoveryFlavour,
   deps: WindowsDiscoveryRegistryHandlerDeps,
 ): WindowsDiscoveryCandidate | null {
   const found = deps.findInstall(root, flavour, deps.exists, deps.listDirectory);
-  return found ? makeWindowsDiscoveryCandidate("registry", flavour, found.exePath, deps) : null;
+  return found ? makeWindowsDiscoveryCandidate(source, flavour, found.exePath, deps) : null;
 }
 
 function candidateFromUpdateCommand(
+  source: DiscoverySource,
   command: WindowsDiscoveryCommand,
   flavour: WindowsDiscoveryFlavour | null,
   deps: WindowsDiscoveryRegistryHandlerDeps,
@@ -648,7 +694,7 @@ function candidateFromUpdateCommand(
     flavourFromExecutableName(command.args[1]) !== flavour ||
     !fileIsValid(updater, deps)
   ) return null;
-  return candidateFromBoundedRoot(path.win32.dirname(updater), flavour, deps);
+  return candidateFromBoundedRoot(source, path.win32.dirname(updater), flavour, deps);
 }
 
 function normalizeWindowsDiscoveryRoot(raw: string): string | null {
@@ -699,10 +745,10 @@ export function handleRegistryRows(
       const command = parseWindowsDiscoveryCommand(row.value);
       if (!command) continue;
       const candidate = row.kind === "url-handler"
-        ? candidateFromUpdateCommand(command, flavour, deps) ??
-          candidateFromRegistryExecutable(command.executable, flavour, deps)
+        ? candidateFromUpdateCommand("registry", command, flavour, deps) ??
+          candidateFromExecutable("registry", command.executable, flavour, deps)
         : command.args.length === 0
-          ? candidateFromRegistryExecutable(command.executable, flavour, deps)
+          ? candidateFromExecutable("registry", command.executable, flavour, deps)
           : null;
       if (candidate) candidates.push(candidate);
       continue;
@@ -711,10 +757,10 @@ export function handleRegistryRows(
     if (row.displayIcon) {
       const displayIcon = normalizeWindowsDiscoveryPath(row.displayIcon, "displayIcon");
       if (displayIcon) {
-        const direct = candidateFromRegistryExecutable(displayIcon, flavour, deps);
+        const direct = candidateFromExecutable("registry", displayIcon, flavour, deps);
         if (direct) candidates.push(direct);
         else if (path.win32.basename(displayIcon).toLowerCase() === "update.exe" && flavour) {
-          const bounded = candidateFromBoundedRoot(path.win32.dirname(displayIcon), flavour, deps);
+          const bounded = candidateFromBoundedRoot("registry", path.win32.dirname(displayIcon), flavour, deps);
           if (bounded) candidates.push(bounded);
         }
       }
@@ -722,9 +768,128 @@ export function handleRegistryRows(
     if (row.installLocation && flavour) {
       const root = normalizeWindowsDiscoveryRoot(row.installLocation);
       if (root) {
-        const bounded = candidateFromBoundedRoot(root, flavour, deps);
+        const bounded = candidateFromBoundedRoot("registry", root, flavour, deps);
         if (bounded) candidates.push(bounded);
       }
+    }
+  }
+  return candidates;
+}
+function candidateFromShortcut(
+  target: string,
+  args: string,
+  deps: WindowsDiscoverySnapshotCollectors,
+): WindowsDiscoveryCandidate | null {
+  const executable = normalizeWindowsDiscoveryPath(target, "process");
+  if (!executable) return null;
+  const flavour = flavourFromExecutableName(executable);
+  if (flavour) return makeWindowsDiscoveryCandidate("shortcut", flavour, executable, deps);
+  if (path.win32.basename(executable).toLowerCase() !== "update.exe") return null;
+  const parsedArgs = parseWindowsDiscoveryArguments(args);
+  const processFlavour = parsedArgs && parsedArgs.length === 2 && parsedArgs[0] === "--processStart"
+    ? flavourFromExecutableName(parsedArgs[1])
+    : null;
+  if (!processFlavour || !parsedArgs) return null;
+  return candidateFromUpdateCommand(
+    "shortcut",
+    { executable, args: parsedArgs },
+    processFlavour,
+    deps,
+  );
+}
+
+function isSafeDirectory(target: string, deps: WindowsDiscoverySnapshotCollectors): boolean {
+  try {
+    return !deps.isSymbolicLink(target) && deps.isDirectory(target);
+  } catch {
+    return false;
+  }
+}
+
+function readShortcutNames(root: string, deps: WindowsDiscoverySnapshotCollectors): string[] {
+  try {
+    return deps.listDirectory(root);
+  } catch {
+    return [];
+  }
+}
+
+function isSafeShortcut(target: string, deps: WindowsDiscoverySnapshotCollectors): boolean {
+  try {
+    return !deps.isSymbolicLink(target);
+  } catch {
+    return false;
+  }
+}
+function collectShortcutLinks(
+  root: string,
+  vendorDepth: boolean,
+  deps: WindowsDiscoverySnapshotCollectors,
+): WindowsDiscoveryCandidate[] {
+  if (!isSafeDirectory(root, deps)) return [];
+  const candidates: WindowsDiscoveryCandidate[] = [];
+  const directNames = readShortcutNames(root, deps);
+  let directCount = 0;
+  const vendors: string[] = [];
+  for (const name of directNames) {
+    const file = path.win32.join(root, name);
+    if (/\.lnk$/i.test(name)) {
+      if (directCount++ >= 64 || !isSafeShortcut(file, deps)) continue;
+      try {
+        const shortcut = deps.readShortcut(file);
+        const candidate = candidateFromShortcut(shortcut.target, shortcut.args, deps);
+        if (candidate) candidates.push(candidate);
+      } catch {}
+    } else if (vendorDepth && isSafeDirectory(file, deps)) {
+      vendors.push(file);
+    }
+  }
+  if (!vendorDepth) return candidates;
+
+  for (const vendor of vendors.slice(0, 64)) {
+    const names = readShortcutNames(vendor);
+    let vendorCount = 0;
+    for (const name of names) {
+      if (!/\.lnk$/i.test(name) || vendorCount++ >= 64) continue;
+      const file = path.win32.join(vendor, name);
+      if (!isSafeShortcut(file, deps)) continue;
+      try {
+        const shortcut = deps.readShortcut(file);
+        const candidate = candidateFromShortcut(shortcut.target, shortcut.args, deps);
+        if (candidate) candidates.push(candidate);
+      } catch {}
+    }
+  }
+  return candidates;
+}
+
+export function handleShortcutRoots(
+  env: WindowsDiscoveryEnvironment,
+  deps: WindowsDiscoverySnapshotCollectors,
+): WindowsDiscoveryCandidate[] {
+  const candidates: WindowsDiscoveryCandidate[] = [];
+  for (const [index, root] of shortcutRootsForEnvironment(env).entries()) {
+    candidates.push(...collectShortcutLinks(root, index < 2, deps));
+  }
+  return candidates;
+}
+
+export function handleRootPaths(
+  roots: readonly string[],
+  deps: WindowsDiscoveryRegistryHandlerDeps,
+  flavours: readonly WindowsDiscoveryFlavour[] = WINDOWS_DISCOVERY_FLAVOURS,
+): WindowsDiscoveryCandidate[] {
+  const candidates: WindowsDiscoveryCandidate[] = [];
+  for (const root of roots) {
+    for (const flavour of flavours) {
+      try {
+        const flavourRoot = path.win32.join(root, flavour);
+        const found = deps.findInstall(flavourRoot, flavour, deps.exists, deps.listDirectory);
+        const candidate = found
+          ? makeWindowsDiscoveryCandidate("root", flavour, found.exePath, deps)
+          : null;
+        if (candidate) candidates.push(candidate);
+      } catch {}
     }
   }
   return candidates;
@@ -756,6 +921,44 @@ export function mergeWindowsDiscoveryCandidates(
     }
   }
   return merged;
+}
+function failedWindowsDiscoveryRaw(errorCode: string): WindowsDiscoveryRaw {
+  return {
+    schema: 1,
+    process: { status: "error", rows: [], truncated: false, errorCode },
+    registry: { status: "error", rows: [], truncated: false, errorCode },
+  };
+}
+
+function discoveryErrorCode(error: unknown): string {
+  return error instanceof WindowsDiscoveryCollectionError ? error.errorCode : "POWERSHELL_EXIT";
+}
+
+export function collectWindowsDiscoverySnapshot(
+  env: WindowsDiscoveryEnvironment,
+  deps: WindowsDiscoverySnapshotCollectors,
+  capturedAtMs: number,
+  roots = rootsForEnvironment(env),
+): WindowsDiscoverySnapshot {
+  let raw: WindowsDiscoveryRaw;
+  try {
+    raw = deps.collectPowerShell();
+  } catch (error) {
+    raw = failedWindowsDiscoveryRaw(discoveryErrorCode(error));
+  }
+  const candidates = [
+    ...handleRootPaths(roots, deps),
+    ...handleProcessRows(raw.process.rows, deps),
+    ...handleRegistryRows(raw.registry.rows, deps),
+    ...handleShortcutRoots(env, deps),
+  ];
+  const health = summarizeWindowsDiscoveryCollection(raw);
+  return {
+    installs: mergeWindowsDiscoveryCandidates(candidates),
+    capturedAtMs,
+    collectionFailed: health.collectionFailed,
+    sourceFailure: health.sourceFailure,
+  };
 }
 
 export type PublicWindowsDiscoveryInstall = Pick<WindowsDiscoveryCandidate, "flavour" | "resources" | "exePath">;

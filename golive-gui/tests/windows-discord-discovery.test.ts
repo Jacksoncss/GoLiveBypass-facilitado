@@ -3,15 +3,20 @@ import path from "path";
 import {
   buildWindowsDiscoveryPowerShell,
   collectWindowsDiscoveryPowerShell,
+  collectWindowsDiscoverySnapshot,
   createWindowsDiscoveryCache,
   flavourFromExecutableName,
   handleProcessRows,
   handleRegistryRows,
+  handleRootPaths,
+  handleShortcutRoots,
   makeWindowsDiscoveryCandidate,
   mergeWindowsDiscoveryCandidates,
   normalizeWindowsDiscoveryPath,
   parseWindowsDiscoveryCommand,
   parseWindowsDiscoveryJson,
+  rootsForEnvironment,
+  shortcutRootsForEnvironment,
   summarizeWindowsDiscoveryCollection,
   toPublicWindowsDiscoveryInstall,
   validateWindowsExecutable,
@@ -19,8 +24,10 @@ import {
   type WindowsDiscoveryCandidate,
   type WindowsDiscoveryEnvironment,
   type WindowsDiscoveryFileSystem,
+  type WindowsDiscoveryRaw,
   type WindowsDiscoveryRegistryHandlerDeps,
   type WindowsDiscoverySnapshot,
+  type WindowsDiscoverySnapshotCollectors,
 } from "../electron/windows-discord-discovery";
 import type { WindowsDiscordInstall } from "../electron/windows-discord-install";
 
@@ -66,8 +73,157 @@ function registryDeps(
       ) ?? null,
   };
 }
+function shortcutDeps(
+  directories: Map<string, string[]>,
+  shortcuts: Map<string, { target: string; args: string }>,
+  fs: WindowsDiscoveryFileSystem,
+  found: WindowsDiscordInstall[] = [],
+): WindowsDiscoverySnapshotCollectors {
+  const base = registryDeps(fs, found);
+  return {
+    ...base,
+    collectPowerShell: () => ({
+      schema: 1,
+      process: { status: "empty", rows: [], truncated: false },
+      registry: { status: "empty", rows: [], truncated: false },
+    }),
+    isDirectory: (target) => directories.has(winKey(target)),
+    isSymbolicLink: () => false,
+    listDirectory: (root) => directories.get(winKey(root)) ?? [],
+    readShortcut: (file) => {
+      const shortcut = shortcuts.get(winKey(file));
+      if (!shortcut) throw new Error("shortcut inválido");
+      return shortcut;
+    },
+  };
+}
 
 describe("discovery Windows puro", () => {
+  it("gera roots Windows determinísticos, deduplica envs e não bloqueia sem LOCALAPPDATA", () => {
+    const env: WindowsDiscoveryEnvironment = {
+      LOCALAPPDATA: "C:\\Users\\A\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+      ProgramW6432: "c:\\program files",
+    };
+    expect(rootsForEnvironment(env)).toEqual([
+      "C:\\Users\\A\\AppData\\Local",
+      "C:\\Users\\A\\AppData\\Local\\Programs",
+      "C:\\Program Files",
+      "C:\\Program Files\\Programs",
+      "C:\\Program Files (x86)",
+      "C:\\Program Files (x86)\\Programs",
+    ]);
+    expect(rootsForEnvironment({ ProgramFiles: "D:\\Apps" })).toEqual([
+      "D:\\Apps",
+      "D:\\Apps\\Programs",
+    ]);
+  });
+  it("usa finder bounded para roots de flavour e transforma em source=root", () => {
+    const root = "C:\\Program Files";
+    const executable = `${root}\\Discord\\app-1.0.10\\Discord.exe`;
+    const fs = fakeFs([executable]);
+    const candidates = handleRootPaths([root], registryDeps(fs, [{
+      appDir: path.win32.dirname(executable),
+      resources: path.win32.join(path.win32.dirname(executable), "resources"),
+      exePath: executable,
+    }]), ["Discord"]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ source: "root", flavour: "Discord", exePath: executable });
+  });
+
+  it("descobre atalhos diretos/vendor/Update sem executar args nem recursar", () => {
+    const env: WindowsDiscoveryEnvironment = {
+      APPDATA: "C:\\Users\\A\\AppData\\Roaming",
+      ProgramData: "C:\\ProgramData",
+      USERPROFILE: "C:\\Users\\A",
+      PUBLIC: "C:\\Users\\Public",
+    };
+    const [startRoot] = shortcutRootsForEnvironment(env);
+    const vendor = path.win32.join(startRoot, "Vendor");
+    const deep = path.win32.join(vendor, "Nested");
+    const direct = "D:\\Apps\\Discord.exe";
+    const updater = "D:\\Discord\\Update.exe";
+    const installed = "D:\\Discord\\app-1.0.10\\Discord.exe";
+    const directories = new Map([
+      [startRoot, ["Discord.lnk", "Vendor"]],
+      [vendor, ["Canary.lnk", "Nested", "Broken.lnk"]],
+      [deep, ["ShouldNotRead.lnk"]],
+    ]);
+    const shortcuts = new Map([
+      [winKey(path.win32.join(startRoot, "Discord.lnk")), { target: direct, args: "--url %1" }],
+      [winKey(path.win32.join(vendor, "Canary.lnk")), { target: "D:\\Apps\\DiscordCanary.exe", args: "" }],
+      [winKey(path.win32.join(vendor, "Broken.lnk")), { target: updater, args: "--processStart Discord.exe --extra" }],
+    ]);
+    const fs = fakeFs([direct, "D:\\Apps\\DiscordCanary.exe", updater, installed]);
+    const candidates = handleShortcutRoots(env, shortcutDeps(directories, shortcuts, fs, [{
+      appDir: path.win32.dirname(installed),
+      resources: path.win32.join(path.win32.dirname(installed), "resources"),
+      exePath: installed,
+    }]));
+
+    expect(candidates.map((candidate) => candidate.exePath)).toEqual([
+      direct,
+      "D:\\Apps\\DiscordCanary.exe",
+    ]);
+  });
+
+  it("limita 64 links diretos e 64 por vendor sem atravessar segundo nível", () => {
+    const env: WindowsDiscoveryEnvironment = { APPDATA: "C:\\Roaming" };
+    const [startRoot] = shortcutRootsForEnvironment(env);
+    const vendor = path.win32.join(startRoot, "Vendor");
+    const deep = path.win32.join(vendor, "Nested");
+    const target = "D:\\Apps\\Discord.exe";
+    const directNames = Array.from({ length: 65 }, (_, index) => `direct-${index}.lnk`);
+    const vendorNames = Array.from({ length: 65 }, (_, index) => `vendor-${index}.lnk`);
+    const directories = new Map([
+      [startRoot, [...directNames, "Vendor"]],
+      [vendor, [...vendorNames, "Nested"]],
+      [deep, ["deep.lnk"]],
+    ]);
+    const shortcuts = new Map<string, { target: string; args: string }>();
+    for (const name of [...directNames, ...vendorNames]) {
+      const parent = directNames.includes(name) ? startRoot : vendor;
+      shortcuts.set(winKey(path.win32.join(parent, name)), { target, args: "" });
+    }
+    const candidates = handleShortcutRoots(env, shortcutDeps(directories, shortcuts, fakeFs([target])));
+    expect(candidates).toHaveLength(128);
+  });
+
+  it("combina roots, handlers PowerShell e atalhos em snapshot com health", () => {
+    const root = "C:\\Program Files";
+    const processExe = "D:\\MyDiscord\\app-1.0.10\\Discord.exe";
+    const rootExe = `${root}\\Discord\\app-1.0.10\\Discord.exe`;
+    const fs = fakeFs([processExe, rootExe]);
+    const rootInstall: WindowsDiscordInstall = {
+      appDir: path.win32.dirname(rootExe),
+      resources: path.win32.join(path.win32.dirname(rootExe), "resources"),
+      exePath: rootExe,
+    };
+    const base = shortcutDeps(new Map(), new Map(), fs, [rootInstall]);
+    const raw: WindowsDiscoveryRaw = {
+      schema: 1,
+      process: {
+        status: "ok",
+        rows: [{ name: "Discord.exe", pid: 1, path: processExe }],
+        truncated: false,
+      },
+      registry: {
+        status: "partial",
+        rows: [],
+        truncated: true,
+        errorCode: "UNINSTALL_LIMIT",
+      },
+    };
+    const snapshot = collectWindowsDiscoverySnapshot({ ProgramFiles: root }, {
+      ...base,
+      collectPowerShell: () => raw,
+    }, 123);
+
+    expect(snapshot.installs.map((install) => install.exePath)).toEqual([rootExe, processExe]);
+    expect(snapshot.collectionFailed).toBe(false);
+    expect(snapshot.sourceFailure).toContain("registry:UNINSTALL_LIMIT");
+  });
   it("aceita schema=1 e normaliza row único do PowerShell 5.1", () => {
     const parsed = parseWindowsDiscoveryJson(JSON.stringify({
       schema: 1,

@@ -6,7 +6,7 @@ $installerContent = Get-Content -LiteralPath $installerPath -Raw
 $bannerIndex = $installerContent.LastIndexOf('Show-Banner')
 if ($bannerIndex -lt 0) { throw 'Nao consegui carregar as funcoes do instalador.' }
 $tempInstaller = Join-Path ([IO.Path]::GetTempPath()) "golive-plugin-copy-$([Guid]::NewGuid().ToString('N')).ps1"
-[IO.File]::WriteAllText($tempInstaller, $installerContent.Substring(0, $bannerIndex), [Text.UTF8Encoding]::new($false))
+Set-Content -LiteralPath $tempInstaller -Value $installerContent.Substring(0, $bannerIndex) -Encoding UTF8
 . $tempInstaller
 
 # O helper binario nao faz parte desta regressao; a copia de fontes e o build sao reais.

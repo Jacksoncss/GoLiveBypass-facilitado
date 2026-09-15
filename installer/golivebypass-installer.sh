@@ -1281,7 +1281,7 @@ install_mod() {
         *) fail "Mod desconhecido: $choice" ;;
     esac
     target="$HOME/$choice"
-    installer_log info installer.selected preparing mode download mod_kind "$choice" channel "$CHANNEL"
+    installer_log info installer.selected preparing mode download mod_kind "$choice"
 
     printf '\n  %sVou fazer:%s\n' "$C_BOLD" "$C_OFF" >&2
     printf '  %s  1. Baixar o %s em %s%s\n' "$C_DIM" "$choice" "$target" "$C_OFF" >&2

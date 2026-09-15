@@ -255,6 +255,13 @@ if ! printf '%s\n' "$detect_events" | grep -E "installer\\.selected.*channel" >/
 else
     bad "canal aparece falso no detect ou falta apos selecao"
 fi
+install_mod_events=$(sed -n '/^install_mod() {/,/^}/p' "$REPO/installer/golivebypass-installer.sh")
+if ! printf '%s\n' "$install_mod_events" | grep -E "installer\\.selected.*channel" >/dev/null 2>&1 &&
+   grep -E "installer\\.selected.*preparing.*channel" "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1; then
+    ok "download do mod nao fixa stable; plugin preparing mantem canal"
+else
+    bad "download do mod registra canal antes da selecao"
+fi
 if grep -F 'pode persistir o canal, sem baixar ZIP' "$REPO/installer/golivebypass-installer.sh" >/dev/null 2>&1 &&
    grep -F 'pode persistir o canal, sem baixar ZIP' "$REPO/installer/GoLiveBypass-Installer.ps1" >/dev/null 2>&1; then
     ok "CheckUpdate documenta persistencia sem download"

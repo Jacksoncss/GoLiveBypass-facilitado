@@ -165,6 +165,8 @@ if ($detectBlock -notmatch "installer\.selected.*detect.*channel" -and
     $content -match "installer\.completed.*channel") {
     Ok "settings beta nao cria canal falso no detect; preparing/completed mantem canal"
 } else { Bad "canal aparece falso no detect ou falta apos selecao" }
+$installModBlock = [regex]::Match($content, 'function Install-Mod[\s\S]*?function Stop-Discord').Value
+if ($installModBlock -notmatch "installer\.selected.*channel") { Ok "download do mod nao fixa stable antes da selecao" } else { Bad "download do mod registra canal antes da selecao" }
 if ($content -match 'Get-PluginReleaseCandidates' -and $content -match 'releases\?per_page=30' -and $content -notmatch 'Get-PluginReleaseCandidates[\s\S]{0,3000}releases/latest') {
     Ok "selecao de canal nao usa /releases/latest"
 } else { Bad "selecao de canal usa endpoint latest" }

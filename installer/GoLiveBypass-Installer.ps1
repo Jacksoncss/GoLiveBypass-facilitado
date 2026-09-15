@@ -1098,7 +1098,7 @@ function Install-Mod($choice) {
     $info = $Mods[$choice]
     $target = Join-Path $env:USERPROFILE $info.Label
     $script:InstallerPhase = 'preparing'
-    Write-InstallerEvent 'info' 'installer.selected' 'preparing' @{ mode = 'download'; mod_kind = $choice; path_present = $true; channel = $script:SelectedChannel }
+    Write-InstallerEvent 'info' 'installer.selected' 'preparing' @{ mode = 'download'; mod_kind = $choice; path_present = $true }
 
     Write-Host ''
     Write-Host '  Vou fazer:' -ForegroundColor White
@@ -1463,6 +1463,7 @@ function Invoke-Install($root) {
         throw 'Nao consegui preparar a pasta do Equicord/Vencord. Rode de novo, ou use -Source "C:\caminho\do\Equicord" apontando para um checkout que voce ja tenha.'
     }
     [void](Select-UpdateChannel $root)
+    Write-InstallerEvent 'info' 'installer.selected' 'preparing' @{ mode = 'install'; mod_kind = (Get-CheckoutMod $root); path_present = $true; channel = $script:SelectedChannel }
     $permanent = Select-Persistence
 
     Install-Toolchain $false

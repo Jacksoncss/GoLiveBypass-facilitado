@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import path from "path";
-import { findWindowsDiscordInstall, type WindowsDiscordInstall } from "./windows-discord-install";
+import type { WindowsDiscordInstall } from "./windows-discord-install";
 
 export type WindowsDiscoveryFlavour =
   | "Discord"

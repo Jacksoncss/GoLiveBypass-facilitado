@@ -35,6 +35,7 @@ import { validateWgConfContent } from "./wg-validator";
 import * as proton from "./proton";
 import { ProtonOptimizationCoordinator } from "./proton-optimization";
 import { restoreBypassOnStartup, type StartupOptimizationResult } from "./startup-restore";
+import { findWindowsDiscordInstall } from "./windows-discord-install";
 import { collectWindowsDiscoveryPowerShell, collectWindowsDiscoverySnapshot, createWindowsDiscoveryCache, rootsForEnvironment, toPublicWindowsDiscoveryInstall, type WindowsDiscoveryEnvironment, type WindowsDiscoverySnapshotCollectors } from "./windows-discord-discovery";
 import { waitForProcessRunning, waitForProcessStopped, type ProcessProbeState } from "./wait-condition";
 import { TUNNEL_STARTUP_SETTLE_MS, waitForTunnelStartupSettle } from "./tunnel-startup";

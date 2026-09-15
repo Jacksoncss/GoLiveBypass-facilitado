@@ -6,6 +6,16 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### GUI Windows: descoberta de instalações Discord fora de `%LOCALAPPDATA%` (#300)
+
+- A GUI Windows passa a procurar as raízes conhecidas `%ProgramFiles%`, `%ProgramFiles(x86)%` e `%ProgramW6432%` além de `%LOCALAPPDATA%`, nos layouts `<raiz>\<cliente>` e `<raiz>\Programs\<cliente>`, sem depender só das raízes fixas antigas.
+- Instalações em execução são reconhecidas pelo `ExecutablePath` do processo; instalações paradas, por `App Paths`, handlers de URL (`discord`/`discordptb`/`discordcanary`/`vesktop`/`equibop`/`legcord`), entradas `Uninstall` limitadas e atalhos conhecidos (Start Menu do usuário e comum, Desktop do usuário e público). Não há varredura de disco, enumeração recursiva de volume nem inventário irrestrito da máquina.
+- Restore, desativação, troca de rota (manual/Proton) e rollback capturam o snapshot de instalações **antes** de encerrar o Discord e reutilizam a mesma lista ao relançar, sem depender de um novo scan depois que o processo terminou.
+- Falhas parciais (timeout, CIM/registro indisponível, truncamento de enumeração) ficam restritas ao diagnóstico (`scan.fonte`) e não apagam candidatos de outras fontes nem transformam indisponibilidade em ausência comprovada.
+- `windowsAllowedAppPaths()`/`AllowedApps` permanecem sem alteração; Linux, macOS, plugin e standalone não mudam.
+- `scan.inicio`, `scan.raiz` e `scan.install` agora sanitizam o caminho antes de registrar: raízes conhecidas viram placeholders (`%LOCALAPPDATA%`, `%PROGRAMFILES%`, `<usuario>`), trechos fora do layout conhecido viram hash curto e o valor passa por clipping — sem expor usuário nem caminhos customizados.
+- Limitação: uma instalação portable sem registro, atalho ou processo em execução continua invisível; MSIX/MS Store não tem inventário AppX completo nesta versão (só é detectada quando processo, registro consultado ou atalho fornecem o executável exato).
+
 ### GUI Windows: migração segura da sessão Proton (#288, #290)
 
 - O helper fecha a sessão legada antes de migrá-la para DPAPI e mantém a substituição atômica. Em arquivo readonly ou bloqueio transitório de compartilhamento, remove somente o atributo readonly e tenta novamente por janela limitada; em falha persistente preserva o cache anterior e devolve `SESSION_PERSISTENCE`, sem acusar senha incorreta ou aceitar fallback em texto claro.

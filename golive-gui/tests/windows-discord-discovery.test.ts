@@ -289,6 +289,20 @@ describe("discovery Windows puro", () => {
     expect(candidates.some((candidate) => candidate.exePath === x86Installed)).toBe(true);
     expect(candidates).toHaveLength(6);
   });
+  it("aceita InstallLocation x86 não quoted e acha app-* via finder bounded", () => {
+    const root = "C:\\Program Files (x86)\\Discord";
+    const executable = `${root}\\app-1.0.10\\Discord.exe`;
+    const fs = fakeFs([executable]);
+    const candidates = handleRegistryRows([
+      { hive: "hklm", kind: "uninstall", value: "", flavourHint: "Discord", installLocation: root },
+    ], registryDeps(fs, [{
+      appDir: path.win32.dirname(executable),
+      resources: path.win32.join(path.win32.dirname(executable), "resources"),
+      exePath: executable,
+    }]));
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ source: "registry", flavour: "Discord", exePath: executable });
+  });
 
   it("tokeniza command string Windows, preserva args em memória e rejeita quoting malformado", () => {
     expect(parseWindowsDiscoveryCommand(

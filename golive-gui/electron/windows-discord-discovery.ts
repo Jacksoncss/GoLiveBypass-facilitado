@@ -653,7 +653,7 @@ function candidateFromUpdateCommand(
 
 function normalizeWindowsDiscoveryRoot(raw: string): string | null {
   const input = raw.trim();
-  if (!input || /[\u0000-\u001f\u007f\r\n,]/.test(input)) return null;
+  if (!input || /[\u0000-\u001f\u007f"\r\n,]/.test(input)) return null;
   const command = parseWindowsDiscoveryCommand(input);
   if (!command) return null;
 
@@ -663,11 +663,9 @@ function normalizeWindowsDiscoveryRoot(raw: string): string | null {
     source = command.executable;
   } else {
     if (!/^[A-Za-z]:[\\/]/.test(input)) return null;
-    if (command.args.some((arg) =>
-      arg.startsWith("-") ||
-      arg.startsWith("/") ||
-      /^[A-Za-z]:[\\/]/.test(arg),
-    )) return null;
+    const firstSpace = input.search(/\s/);
+    const suffix = firstSpace >= 0 ? input.slice(firstSpace).trim() : "";
+    if (suffix && /(?:^|\s)(?:[-/]|[A-Za-z]:[\\/])/.test(suffix)) return null;
   }
 
   if (!/^[A-Za-z]:[\\/]/.test(source) || /^\\\\/.test(source) || /^\\\\[?.]/.test(source)) return null;

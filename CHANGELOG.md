@@ -4,6 +4,13 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.0.6-beta-22] - 2026-09-17
+
+### GUI: correção do empacotamento da animação Proton
+
+- A dependência GSAP usada pelo carregamento do botão **Otimizar rota** volta a ser declarada no `package.json` e no lockfile, garantindo que a compilação da GUI inclua o módulo usado pelo renderer.
+
+
 ## [2.0.6-beta-21] - 2026-09-17
 
 ### GUI Linux: autorização sudo no Wayland

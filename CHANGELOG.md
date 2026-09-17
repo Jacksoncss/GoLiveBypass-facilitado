@@ -7,8 +7,8 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ## [Unreleased]
 ### Instalador Linux: recuperação de locks órfãos
 
-- Antes de reabrir o Discord nativo, o instalador remove links `Singleton*` deixados por crash ou encerramento forçado somente quando nenhum processo Discord está ativo. Locks de uma instância viva são preservados.
-- A regressão cobre remoção segura de locks órfãos e preservação durante uma execução ativa.
+- Antes de reabrir o Discord nativo, o instalador remove links `Singleton*` deixados por crash ou encerramento forçado somente quando nenhum processo Discord nativo está ativo; uma instância paralela não impede essa recuperação. Locks nativos de uma instância viva são preservados.
+- A regressão cobre remoção segura de locks órfãos, preservação durante uma execução ativa e coexistência com cliente paralelo.
 
 ### Instalador Linux: identidade do mod e clientes paralelos
 

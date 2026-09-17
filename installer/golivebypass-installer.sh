@@ -1326,8 +1326,14 @@ repo_file() {
 # O processo do flatpak tem o mesmo nome de sempre e o pgrep costuma achar, mas ele roda em
 # outro namespace de PID e um pkill pode nao alcancar. O `flatpak ps` responde pelo que o
 # pgrep nao ve, e o `flatpak kill` fecha o que o pkill nao fecha.
+# O lock nativo pertence somente ao Discord oficial. Clientes em flatpak têm outro diretório de
+# dados e não podem impedir a recuperação do lock desta instalação.
+native_discord_running() {
+    pgrep -x -i 'Discord|DiscordCanary|DiscordPTB|discord|discord-canary|discordptb' >/dev/null 2>&1
+}
+
 discord_running() {
-    pgrep -x -i 'Discord|DiscordCanary|DiscordPTB|discord|discord-canary|discordptb' >/dev/null 2>&1 && return 0
+    native_discord_running && return 0
 
     # Um `flatpak ps` so, e nao um por id: isto roda em laco de dois em dois segundos enquanto
     # o modo temporario espera o Discord fechar.
@@ -1338,13 +1344,14 @@ discord_running() {
     fi
     return 1
 }
+
 # O Chromium deixa Singleton* como links no diretório de dados. Depois de um crash ou
 # encerramento forçado eles podem apontar para alvos inexistentes e fazer a próxima abertura
-# sair silenciosamente. Só limpamos esses locks quando nenhum Discord está ativo; locks de um
-# processo vivo permanecem intactos.
+# sair silenciosamente. Só limpamos esses locks quando nenhum Discord nativo está ativo; locks
+# de um processo nativo vivo permanecem intactos.
 clear_stale_discord_locks() {
     local dir="${XDG_CONFIG_HOME:-$HOME/.config}/discord" item
-    discord_running && return 0
+    native_discord_running && return 0
     [ -d "$dir" ] || return 0
     for item in SingletonCookie SingletonLock SingletonSocket; do
         [ -L "$dir/$item" ] || continue

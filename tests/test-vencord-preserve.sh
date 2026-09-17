@@ -179,7 +179,8 @@ for item in SingletonCookie SingletonLock SingletonSocket; do
     ln -s "$TMP/missing-$item" "$LOCK_DIR/$item"
 done
 XDG_CONFIG_HOME="$LOCK_HOME/.config"
-discord_running() { return 1; }
+discord_running() { return 0; }
+native_discord_running() { return 1; }
 clear_stale_discord_locks
 stale=0
 for item in SingletonCookie SingletonLock SingletonSocket; do
@@ -192,7 +193,7 @@ done
 for item in SingletonCookie SingletonLock SingletonSocket; do
     ln -s "$TMP/live-$item" "$LOCK_DIR/$item"
 done
-discord_running() { return 0; }
+native_discord_running() { return 0; }
 clear_stale_discord_locks
 alive=0
 for item in SingletonCookie SingletonLock SingletonSocket; do

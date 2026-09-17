@@ -646,7 +646,7 @@ export class PluginVpnController {
         };
     }
 
-    public getStatus(): VpnStatus {
+    public getStatus(providedInspection?: windows.WireSockInspection): VpnStatus {
         if (isLinux()) return this.getLinuxStatus();
         if (!isSupportedWindowsArchitecture(process.platform, process.arch)) {
             return {
@@ -664,7 +664,7 @@ export class PluginVpnController {
                 message: "Windows x64 necessário",
             };
         }
-        const inspection = this.inspectWindows();
+        const inspection = providedInspection ?? this.inspectWindows();
         if (isUnknownWireSockInspection(inspection)) {
             const message = this.state === "active" || this.state === "restart_pending"
                 ? unknownWireSockMessage(inspection)
@@ -718,51 +718,7 @@ export class PluginVpnController {
         if (isLinux()) return this.getLinuxStatus();
         if (!isSupportedWindowsArchitecture(process.platform, process.arch)) return this.getStatus();
         const inspection = await windows.inspectWireSockAsync(this.serviceConfigPath, this.guiConfigPath);
-        if (isUnknownWireSockInspection(inspection)) {
-            const message = this.state === "active" || this.state === "restart_pending"
-                ? unknownWireSockMessage(inspection)
-                : this.statusMessage();
-            return {
-                state: this.state,
-                platform: "windows",
-                architecture: process.arch,
-                owned: false,
-                active: false,
-                generation: this.generation,
-                discordPid: this.discordPid,
-                profilePath: fs.existsSync(this.profilePath) ? this.profilePath : null,
-                configPath: fs.existsSync(this.serviceConfigPath) ? this.serviceConfigPath : null,
-                externalReason: null,
-                lastDiagnostic: this.lastDiagnostic,
-                message,
-            };
-        }
-        const operationInProgress = this.state === "preparing"
-            || this.state === "starting"
-            || this.state === "stopping"
-            || this.state === "restart_pending";
-        if (inspection.reliable && inspection.active && !inspection.owned && !operationInProgress) {
-            const reason = inspection.reason || "WireSock externo está ativo.";
-            if (this.state !== "blocked_external" || this.externalReason !== reason) this.blockExternal(reason);
-        }
-        const active = this.state === "active" && inspection.active && inspection.owned;
-        const reportedState: VpnState = this.state === "active" && !inspection.active ? "inactive" : this.state;
-        return {
-            state: reportedState,
-            platform: "windows",
-            architecture: process.arch,
-            owned: inspection.owned && (active || this.readOwner() !== null),
-            active,
-            generation: this.generation,
-            discordPid: this.discordPid,
-            profilePath: fs.existsSync(this.profilePath) ? this.profilePath : null,
-            configPath: fs.existsSync(this.serviceConfigPath) ? this.serviceConfigPath : null,
-            managedConflict: inspection.reliable && inspection.active && !inspection.owned
-                && (inspection.origin === "gui" || inspection.origin === "managed"),
-            externalReason: this.externalReason,
-            lastDiagnostic: this.lastDiagnostic,
-            message: reportedState === "inactive" ? "VPN inativa" : this.statusMessage(),
-        };
+        return this.getStatus(inspection);
     }
 
     public enable(): Promise<VpnOperationResult> {

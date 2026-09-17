@@ -24,6 +24,10 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - O envio por `curl` e `wget` agora tem timeouts explícitos de conexão e execução. A cobertura do cenário de serviço que não responde usa um orçamento curto e limitado, sem aguardar indefinidamente.
 
+### Limitação conhecida: macOS
+
+- Os auxiliares `writeError`, `macPermissionDenied`, `openAppManagementSettings`, `enclosingApp` e o deep-link `x-apple.systempreferences` não estão presentes na árvore desta beta e não são referenciados pelo renderer, IPC ou preload. O canal beta não publica macOS; não há alteração de comportamento a validar nessa plataforma.
+
 ## [Unreleased]
 ### Instaladores: canais stable/beta do plugin
 

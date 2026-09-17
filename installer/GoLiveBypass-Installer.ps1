@@ -69,6 +69,7 @@ $PluginFiles = @(
     'goLiveBypass/bug-report.ts',
     'goLiveBypass/update-channel.ts',
     'goLiveBypass/update-security.ts',
+    'goLiveBypass/proton-manual-selection.ts',
     'goLiveBypass/stability.ts',
     'goLiveBypass/vpn-controller.ts',
     'goLiveBypass/vpn-proton.ts',

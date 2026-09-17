@@ -1338,6 +1338,20 @@ discord_running() {
     fi
     return 1
 }
+# O Chromium deixa Singleton* como links no diretório de dados. Depois de um crash ou
+# encerramento forçado eles podem apontar para alvos inexistentes e fazer a próxima abertura
+# sair silenciosamente. Só limpamos esses locks quando nenhum Discord está ativo; locks de um
+# processo vivo permanecem intactos.
+clear_stale_discord_locks() {
+    local dir="${XDG_CONFIG_HOME:-$HOME/.config}/discord" item
+    discord_running && return 0
+    [ -d "$dir" ] || return 0
+    for item in SingletonCookie SingletonLock SingletonSocket; do
+        [ -L "$dir/$item" ] || continue
+        rm -f "$dir/$item" 2>/dev/null || true
+    done
+    return 0
+}
 
 stop_discord() {
     discord_running || return 0
@@ -2201,6 +2215,7 @@ start_discord() {
         nohup flatpak run "$id" >/dev/null 2>&1 &
         return 0
     fi
+    clear_stale_discord_locks
 
     for exe in discord Discord discord-canary; do
         if have "$exe"; then

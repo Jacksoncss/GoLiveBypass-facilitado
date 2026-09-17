@@ -171,5 +171,36 @@ else
     esac
 fi
 
+printf '\n== 6. Locks órfãos não impedem reabertura ==\n'
+LOCK_HOME="$TMP/home-lock"
+LOCK_DIR="$LOCK_HOME/.config/discord"
+mkdir -p "$LOCK_DIR"
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    ln -s "$TMP/missing-$item" "$LOCK_DIR/$item"
+done
+XDG_CONFIG_HOME="$LOCK_HOME/.config"
+discord_running() { return 1; }
+clear_stale_discord_locks
+stale=0
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    [ -L "$LOCK_DIR/$item" ] && stale=1
+done
+[ "$stale" -eq 0 ] \
+    && ok 'locks órfãos foram removidos sem processo Discord' \
+    || bad 'locks órfãos permaneceram sem processo Discord'
+
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    ln -s "$TMP/live-$item" "$LOCK_DIR/$item"
+done
+discord_running() { return 0; }
+clear_stale_discord_locks
+alive=0
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    [ -L "$LOCK_DIR/$item" ] || alive=1
+done
+[ "$alive" -eq 0 ] \
+    && ok 'locks foram preservados enquanto havia processo Discord' \
+    || bad 'locks ativos foram removidos indevidamente'
+
 printf '\n== Resultado: %s ok, %s falhas ==\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

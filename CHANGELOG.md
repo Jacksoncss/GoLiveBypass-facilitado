@@ -5,6 +5,11 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
+### Instalador Linux: recuperação de locks órfãos
+
+- Antes de reabrir o Discord nativo, o instalador remove links `Singleton*` deixados por crash ou encerramento forçado somente quando nenhum processo Discord está ativo. Locks de uma instância viva são preservados.
+- A regressão cobre remoção segura de locks órfãos e preservação durante uma execução ativa.
+
 ### Instalador Linux: identidade do mod e clientes paralelos
 
 - A guarda que preserva o mod existente agora considera somente injeções no Discord oficial. Equibop, Vesktop e Legcord são clientes paralelos e não bloqueiam um checkout compatível escolhido para a instalação; conflitos reais no Discord oficial continuam recusados.

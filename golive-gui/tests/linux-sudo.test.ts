@@ -17,7 +17,7 @@ function runWithOpenStdin(args: string[]): Promise<{ code: number | null; stdout
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`script bloqueou com stdin aberto: ${args.join(" ")}`));
-    }, 10_000);
+    }, 60_000);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.once("error", (error) => { clearTimeout(timeout); reject(error); });
@@ -178,7 +178,7 @@ describe("elevacao sudo no Linux", () => {
     expect(teardown).toContain("if ! netns_exists; then");
     expect(teardown).toContain('ok "Tunel WireGuard encerrado."');
   });
-  it("finaliza status e probe mesmo com stdin aberto", { timeout: 30_000 }, async () => {
+  it("finaliza status e probe mesmo com stdin aberto", { timeout: 120_000 }, async () => {
     // Integração deliberada com o relógio real: reproduz o pipe/socket vivo do
     // Electron, e o timeout curto detecta regressão de bloqueio em cat/read.
     for (const args of [

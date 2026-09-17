@@ -136,10 +136,6 @@ export function initLogger(dir: string) {
   }
 }
 
-export function logFilePath(): string {
-  return arquivo;
-}
-
 // Buffer serializado (mais antigo -> mais recente), respeitando o teto de bytes
 // a partir do fim: o mais recente e o que importa num diagnostico.
 export function getRecent(): string {
@@ -157,10 +153,6 @@ export function getRecent(): string {
   }
   escolhidas.reverse();
   return escolhidas.join("\n");
-}
-
-export function recentLineCount(): number {
-  return ring.reduce((total, e) => total + e.n, 0);
 }
 
 // Uso exclusivo de testes: o estado e de modulo, cada teste recomeca do zero.

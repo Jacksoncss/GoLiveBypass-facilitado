@@ -1,3 +1,4 @@
+import { gsap } from 'gsap';
 import { protonMeasurementText } from './proton-measurement';
 import { renderProtonCountryFlag } from './proton-flags';
 import { ProtonRouteSelect, type ProtonRouteOption } from './proton-route-select';
@@ -6,6 +7,10 @@ import {
   isManualRouteSelectable,
   recommendManualRoute,
   reduceManualRouteEvent,
+  shouldDiscoverProtonRoutesAfterPreferenceChange,
+  shouldMeasurePingForRouteDiscovery,
+  shouldShowProtonRoutePingFallbackFeedback,
+  PROTON_ROUTE_PING_FALLBACK_FEEDBACK,
   sortManualRouteCandidates,
   type ManualRouteCandidate,
 } from './proton-manual-selection';
@@ -256,6 +261,9 @@ const updateChannelToggle = document.getElementById('updateChannelToggle') as HT
 const settingsBtn = document.getElementById('settingsBtn') as HTMLButtonElement | null;
 const settingsDialog = document.getElementById('settingsDialog') as HTMLElement | null;
 const settingsBackdrop = document.getElementById('settingsBackdrop') as HTMLElement | null;
+const protonRoutePreferenceAuto = document.getElementById('protonRoutePreferenceAuto') as HTMLButtonElement | null;
+const protonRoutePreferenceManual = document.getElementById('protonRoutePreferenceManual') as HTMLButtonElement | null;
+const protonRoutePreferenceFeedback = document.getElementById('protonRoutePreferenceFeedback') as HTMLElement | null;
 const settingsClose = document.getElementById('settingsClose') as HTMLButtonElement | null;
 const vpnImportBtn = document.getElementById('vpnImportBtn') as HTMLButtonElement | null;
 const vpnConfigStatus = document.getElementById('vpnConfigStatus') as HTMLElement | null;
@@ -272,7 +280,7 @@ let linuxPreflight: Awaited<ReturnType<Window['api']['getLinuxPreflight']>> = nu
 // ---------------------------------------------------------------------------
 function syncThemeOptions() {
   const atual = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
-  document.querySelectorAll<HTMLButtonElement>('.theme-opt').forEach((opt) => {
+  document.querySelectorAll<HTMLButtonElement>('.theme-opt[data-theme-opt]').forEach((opt) => {
     const ativo = opt.dataset.themeOpt === atual;
     opt.classList.toggle('theme-opt--active', ativo);
     opt.setAttribute('aria-checked', String(ativo));
@@ -283,6 +291,7 @@ function openSettingsDialog() {
   if (!settingsDialog) return;
   syncThemeOptions();
   void refreshAutoFailover();
+  void refreshProtonRoutePreference();
   settingsDialog.hidden = false;
   settingsClose?.focus();
 }
@@ -296,7 +305,7 @@ settingsBtn?.addEventListener('click', openSettingsDialog);
 settingsBackdrop?.addEventListener('click', closeSettingsDialog);
 settingsClose?.addEventListener('click', closeSettingsDialog);
 
-document.querySelectorAll<HTMLButtonElement>('.theme-opt').forEach((opt) => {
+document.querySelectorAll<HTMLButtonElement>('.theme-opt[data-theme-opt]').forEach((opt) => {
   opt.addEventListener('click', () => {
     applyTheme(opt.dataset.themeOpt === 'light' ? 'light' : 'dark');
     syncThemeOptions();
@@ -328,7 +337,7 @@ async function updateStatus() {
     
     statusIndicator.className = 'status-indicator';
     statusTag.className = 'status-tag';
-    toggleBtn.classList.remove('loading', 'deactivate', 'overwrite');
+    toggleBtn.classList.remove('loading', 'deactivate');
 
     if (status === 'ACTIVE') {
       statusText.innerText = 'GoLiveBypass está Ativo';
@@ -594,6 +603,7 @@ let protonRouteDiscoveryRequestId = '';
 let protonRouteDiscoveryRetryPending = false;
 let protonRouteDiscoveryAfterOptimizationPending = false;
 let protonRouteDiscoveryMeasurePingPending = false;
+let protonRoutePingFallbackFeedbackShown = false;
 let protonManualMeasurementId = '';
 type ProtonSelectedRoute = { server: string; pingMs?: number };
 let protonSelectedRoute: ProtonSelectedRoute | null = null;
@@ -604,6 +614,10 @@ let protonManualSelectionInFlight = false;
 let protonMeasurementTotal = 0;
 let protonMeasurementTested = 0;
 const protonMeasurementRows = new Map<string, HTMLElement>();
+const protonOptimizeIcon = protonOptimizeBtn?.querySelector<SVGElement>('.icon-refresh') ?? null;
+const protonOptimizeMotion = gsap.matchMedia();
+let protonOptimizeLoading = false;
+let protonOptimizeLoadingTween: gsap.core.Tween | null = null;
 let protonManualCandidates = new Map<string, ManualRouteCandidate>();
 let protonRouteCatalogCandidates = new Map<string, ManualRouteCandidate>();
 let protonRouteDiscoveryRenderScheduled = false;
@@ -649,6 +663,18 @@ function mergedProtonManualCandidates(): Map<string, ManualRouteCandidate> {
   return merged;
 }
 
+function shouldMeasurePingForCurrentProtonRoutes(): boolean {
+  const hasSelectableCandidate = [...mergedProtonManualCandidates().values()]
+    .some(isManualRouteSelectable);
+  return shouldMeasurePingForRouteDiscovery(protonRoutePreference, hasSelectableCandidate);
+}
+
+function clearProtonRoutePingFallbackFeedback(): void {
+  if (!protonRoutePingFallbackFeedbackShown) return;
+  protonRoutePingFallbackFeedbackShown = false;
+  setProtonFeedback('');
+}
+
 function renderProtonMeasuredRouteOptions() {
   if (!protonCountrySelect) return;
 
@@ -684,6 +710,7 @@ function renderProtonMeasuredRouteOptions() {
       value: protonRouteOptionValue(selectedServer),
       label: formatProtonServerName(selectedServer),
       description: protonRoutePreference === 'manual'
+        && protonRememberedManualRoute?.server === selectedServer
         ? 'Rota manual salva · execute uma nova medição para trocar'
         : 'Rota escolhida automaticamente · use Otimizar rota para trocar',
       countryCode: protonServerCountry(selectedServer),
@@ -702,6 +729,7 @@ function renderProtonMeasuredRouteOptions() {
 function clearProtonManualMeasurement() {
   protonManualMeasurementId = '';
   protonManualCandidates = new Map();
+  clearProtonRoutePingFallbackFeedback();
 }
 
 function clearProtonMeasuredRoutes() {
@@ -787,6 +815,7 @@ async function selectManualProtonRoute(server: string, previousSelection?: strin
     const selectedServerName = formatProtonServerName(selectedServer);
     const selectedPing = Number.isFinite(result.pingMs) && result.pingMs! > 0 ? result.pingMs : candidate.pingMs;
     protonRoutePreference = 'manual';
+    syncProtonRoutePreferenceUi(protonRoutePreference);
     protonSelectedRoute = { server: selectedServer, pingMs: selectedPing };
     protonRememberedManualRoute = {
       server: selectedServer,
@@ -1090,13 +1119,105 @@ async function switchVpnMode(mode: 'proton' | 'custom') {
   if (mode === 'proton') {
     await refreshProtonState();
     if (isProtonAuthenticated) {
-      void discoverProtonRoutesInBackground();
+      void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes());
     }
   }
   await atualizarStatusWgConf();
   await updateStatus();
   fitWindowToContent();
 }
+
+const protonRoutePreferenceOptions = [protonRoutePreferenceAuto, protonRoutePreferenceManual]
+  .filter((option): option is HTMLButtonElement => option !== null);
+
+function syncProtonRoutePreferenceUi(preference: ProtonRoutePreference): void {
+  protonRoutePreferenceOptions.forEach((option) => {
+    const active = option.dataset.routePref === preference;
+    option.classList.toggle('theme-opt--active', active);
+    option.setAttribute('aria-checked', String(active));
+    option.tabIndex = active ? 0 : -1;
+  });
+}
+
+function setProtonRoutePreferenceFeedback(message = ''): void {
+  if (!protonRoutePreferenceFeedback) return;
+  protonRoutePreferenceFeedback.textContent = message;
+  protonRoutePreferenceFeedback.hidden = !message;
+}
+
+function setProtonRoutePreferenceDisabled(disabled: boolean): void {
+  protonRoutePreferenceOptions.forEach((option) => {
+    option.disabled = disabled;
+  });
+}
+
+async function refreshProtonRoutePreference(): Promise<void> {
+  try {
+    const settings = await window.api.getProtonSettings();
+    const manualPreference = settings.routePreference === 'manual'
+      || (settings.routePreference !== 'auto' && settings.lastServer?.manual === true);
+    protonRoutePreference = manualPreference ? 'manual' : 'auto';
+    syncProtonRoutePreferenceUi(protonRoutePreference);
+    setProtonRoutePreferenceFeedback();
+  } catch (err) {
+    console.error('Falha ao sincronizar preferência de rota Proton:', err);
+  }
+}
+
+async function handleProtonRoutePreferenceChange(next: ProtonRoutePreference): Promise<void> {
+  if (next === protonRoutePreference) {
+    syncProtonRoutePreferenceUi(protonRoutePreference);
+    return;
+  }
+  const previous = protonRoutePreference;
+  protonRoutePreference = next;
+  syncProtonRoutePreferenceUi(next);
+  setProtonRoutePreferenceDisabled(true);
+  setProtonRoutePreferenceFeedback();
+  try {
+    const persisted = await window.api.setProtonSettings({ routePreference: next });
+    if (persisted === false) throw new Error('A preferência não foi salva.');
+    if (shouldDiscoverProtonRoutesAfterPreferenceChange(next, isProtonAuthenticated)) {
+      renderProtonMeasuredRouteOptions();
+      void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes());
+    }
+  } catch (err) {
+    protonRoutePreference = previous;
+    syncProtonRoutePreferenceUi(previous);
+    setProtonRoutePreferenceFeedback('Não foi possível salvar essa preferência. A escolha anterior foi mantida.');
+    console.error('Falha ao salvar preferência de rota Proton:', err);
+  } finally {
+    setProtonRoutePreferenceDisabled(false);
+  }
+}
+
+function routePreferenceFromOption(option: HTMLButtonElement): ProtonRoutePreference | undefined {
+  return option.dataset.routePref === 'manual' ? 'manual'
+    : option.dataset.routePref === 'auto' ? 'auto'
+      : undefined;
+}
+
+protonRoutePreferenceOptions.forEach((option) => {
+  option.addEventListener('click', () => {
+    const preference = routePreferenceFromOption(option);
+    if (preference) void handleProtonRoutePreferenceChange(preference);
+  });
+  option.addEventListener('keydown', (event) => {
+    const currentIndex = protonRoutePreferenceOptions.indexOf(option);
+    if (currentIndex < 0) return;
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % protonRoutePreferenceOptions.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + protonRoutePreferenceOptions.length) % protonRoutePreferenceOptions.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = protonRoutePreferenceOptions.length - 1;
+    else return;
+    event.preventDefault();
+    const nextOption = protonRoutePreferenceOptions[nextIndex];
+    const preference = routePreferenceFromOption(nextOption);
+    nextOption.focus();
+    if (preference) void handleProtonRoutePreferenceChange(preference);
+  });
+});
 
 tabProton?.addEventListener('click', () => switchVpnMode('proton'));
 tabCustom?.addEventListener('click', () => switchVpnMode('custom'));
@@ -1110,6 +1231,7 @@ async function refreshProtonState(forcePlan = false) {
     const manualPreference = s.routePreference === 'manual'
       || (s.routePreference !== 'auto' && s.lastServer?.manual === true);
     protonRoutePreference = manualPreference ? 'manual' : 'auto';
+    syncProtonRoutePreferenceUi(protonRoutePreference);
     protonRememberedManualRoute = manualPreference && rememberedServer
       ? { server: rememberedServer, pingMs: Number.isFinite(rememberedPing) && rememberedPing > 0 ? rememberedPing : undefined }
       : null;
@@ -1142,8 +1264,7 @@ async function refreshProtonState(forcePlan = false) {
         return;
       }
     }
-
-    protonRoutePreference = 'auto';
+    syncProtonRoutePreferenceUi(protonRoutePreference);
     protonRememberedManualRoute = null;
     protonSelectedRoute = null;
     clearProtonManualMeasurement();
@@ -1172,7 +1293,7 @@ async function refreshProtonState(forcePlan = false) {
 }
 
 function shouldOptimizeProtonAutomatically(): boolean {
-  return protonRoutePreference !== 'manual' || !protonRememberedManualRoute;
+  return protonRoutePreference === 'auto';
 }
 
 function applyProtonDiscoveredRoutes(routes: readonly ProtonDiscoveredRoute[]): void {
@@ -1198,6 +1319,9 @@ function applyProtonDiscoveredRoutes(routes: readonly ProtonDiscoveredRoute[]): 
     candidates.set(server, candidate);
   }
   protonRouteCatalogCandidates = candidates;
+  if ([...mergedProtonManualCandidates().values()].some(isManualRouteSelectable)) {
+    clearProtonRoutePingFallbackFeedback();
+  }
   renderProtonMeasuredRouteOptions();
 }
 
@@ -1243,6 +1367,9 @@ function updateProtonRouteDiscoveryProgress(event: ProtonOptimizationProgress): 
         pingMs: pingValid ? event.pingMs : current.pingMs,
         pingStatus: pingValid ? 'success' : current.pingStatus,
       });
+      if (isManualRouteSelectable(protonRouteCatalogCandidates.get(server)!)) {
+        clearProtonRoutePingFallbackFeedback();
+      }
     }
   }
   scheduleProtonRouteDiscoveryRender();
@@ -1268,6 +1395,7 @@ async function discoverProtonRoutesInBackground(measurePing = false): Promise<vo
   renderProtonMeasuredRouteOptions();
   protonCountrySelect?.setLoading(true);
   if (protonOptimizeBtn) protonOptimizeBtn.disabled = true;
+  let pingMeasurementCompleted = false;
 
   try {
     const result = await window.api.discoverProtonRoutes({
@@ -1278,6 +1406,7 @@ async function discoverProtonRoutesInBackground(measurePing = false): Promise<vo
     if (result.success && result.measurementId && result.routes?.length) {
       protonManualMeasurementId = result.measurementId;
       applyProtonDiscoveredRoutes(result.routes);
+      pingMeasurementCompleted = measurePing;
     } else {
       protonRouteDiscoveryRetryPending = /rota de boot ainda está sendo restaurada/i.test(result.error ?? '');
       protonRouteCatalogCandidates = new Map();
@@ -1298,6 +1427,18 @@ async function discoverProtonRoutesInBackground(measurePing = false): Promise<vo
       if (protonOptimizeBtn) {
         protonOptimizeBtn.disabled = protonManualSelectionInFlight || protonOptimizationInFlight;
       }
+      if (pingMeasurementCompleted) {
+        const hasSelectableCandidate = [...mergedProtonManualCandidates().values()]
+          .some(isManualRouteSelectable);
+        if (shouldShowProtonRoutePingFallbackFeedback(
+          measurePing,
+          hasSelectableCandidate,
+          protonRoutePingFallbackFeedbackShown,
+        )) {
+          protonRoutePingFallbackFeedbackShown = true;
+          setProtonFeedback(PROTON_ROUTE_PING_FALLBACK_FEEDBACK, 'err');
+        }
+      }
     }
   }
 }
@@ -1307,7 +1448,7 @@ protonPlanRefreshBtn?.addEventListener('click', async () => {
   setProtonPlanLoading();
   await refreshProtonState(true);
   if (isProtonAuthenticated) {
-    void discoverProtonRoutesInBackground();
+    void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes());
   }
 });
 
@@ -1350,7 +1491,7 @@ async function submitProtonLogin() {
         if (shouldOptimizeProtonAutomatically()) {
           void optimizeProtonRoute(true);
         } else {
-          void discoverProtonRoutesInBackground();
+          void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes());
         }
       } else {
         if (res.code === 'TWO_FACTOR_REQUIRED' || res.code === 'TWO_FACTOR_INVALID' || protonNeeds2FA(res.error)) {
@@ -1427,8 +1568,40 @@ protonCountrySelect?.setOnChange((selectedValue) => {
   void handleProtonRouteChange(selectedValue);
 });
 
+function startProtonOptimizeAnimation(): void {
+  stopProtonOptimizeAnimation();
+  protonOptimizeLoading = true;
+  protonOptimizeMotion.add(
+    { reduceMotion: '(prefers-reduced-motion: reduce)' },
+    (context) => {
+      if (!protonOptimizeLoading || context.conditions?.reduceMotion || !protonOptimizeIcon) return;
+      protonOptimizeLoadingTween = gsap.to(protonOptimizeIcon, {
+        rotation: 360,
+        duration: 1.45,
+        ease: 'none',
+        repeat: -1,
+        transformOrigin: '50% 50%',
+      });
+      return () => {
+        protonOptimizeLoadingTween?.kill();
+        protonOptimizeLoadingTween = null;
+      };
+    },
+  );
+}
+
+function stopProtonOptimizeAnimation(): void {
+  protonOptimizeLoading = false;
+  protonOptimizeMotion.revert();
+  protonOptimizeLoadingTween?.kill();
+  protonOptimizeLoadingTween = null;
+  if (protonOptimizeIcon) gsap.set(protonOptimizeIcon, { rotation: 0 });
+}
+
+
 async function optimizeProtonRoute(onStartup = false, speedTest = true) {
   if (protonOptimizationInFlight || protonRouteDiscoveryInFlight || protonManualSelectionInFlight || !isProtonAuthenticated) return;
+  startProtonOptimizeAnimation();
 
   protonOptimizationInFlight = true;
   clearProtonManualMeasurement();
@@ -1480,8 +1653,11 @@ async function optimizeProtonRoute(onStartup = false, speedTest = true) {
     } else if (res.success) {
       const selectedPing = Number.isFinite(res.pingMs) && res.pingMs! > 0 ? res.pingMs : undefined;
       if (res.server) protonSelectedRoute = { server: res.server, pingMs: selectedPing };
-      protonRoutePreference = 'auto';
-      protonRememberedManualRoute = null;
+      if (onStartup) {
+        protonRoutePreference = 'auto';
+        syncProtonRoutePreferenceUi(protonRoutePreference);
+        protonRememberedManualRoute = null;
+      }
       protonManualMeasurementId = protonOptimizationRequestId;
       renderProtonMeasuredRouteOptions();
       const pingStr = protonMeasurementText(res);
@@ -1526,7 +1702,7 @@ async function optimizeProtonRoute(onStartup = false, speedTest = true) {
     setProtonFeedback((err as Error)?.message || String(err), 'err');
     await updateStatus();
   } finally {
-    protonOptimizationInFlight = false;
+    stopProtonOptimizeAnimation();
     protonOptimizationRequestId = '';
     if (tabProton) tabProton.disabled = false;
     if (tabCustom) tabCustom.disabled = false;
@@ -1599,7 +1775,7 @@ async function initVpnSection() {
     if (currentVpnMode === 'proton' && isProtonAuthenticated && shouldOptimizeProtonAutomatically()) {
       void optimizeProtonRoute(true);
     } else if (currentVpnMode === 'proton' && isProtonAuthenticated) {
-      void discoverProtonRoutesInBackground();
+      void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes());
     }
   } catch (err) {
     console.error('Erro ao inicializar seção VPN:', err);

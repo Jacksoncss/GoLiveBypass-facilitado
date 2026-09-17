@@ -198,7 +198,6 @@ html[data-theme='dark'] .page-ambient::before {
 .status-card,
 .toggle-btn,
 .switch-row,
-.net-mode-group,
 .warning-alert,
 .footer {
   animation: rise 600ms var(--ease) backwards;
@@ -208,7 +207,6 @@ html[data-theme='dark'] .page-ambient::before {
 .status-card { animation-delay: 60ms; }
 .toggle-btn { animation-delay: 120ms; }
 .switch-row { animation-delay: 180ms; }
-.net-mode-group { animation-delay: 240ms; }
 .warning-alert { animation-delay: 300ms; }
 .footer { animation-delay: 360ms; }
 
@@ -502,107 +500,6 @@ html[data-theme='dark'] .report-btn {
 }
 
 /* ------------------------------------------------------------
-   Conflict card — aviso grande quando o Discord tem Vencord/Equicord/Vesktop/etc.
-   Substitui o status-card em importancia visual. Cor de borda warn pra Vencord/Equicord
-   (perda real de plugins), info pra Vesktop/Equibop/Legcord (cliente paralelo).
-   ------------------------------------------------------------ */
-.conflict-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-  padding: 14px 16px;
-  background: var(--warn-bg-soft, rgba(255, 184, 0, 0.08));
-  border: 1px solid var(--warn-stroke, rgba(255, 184, 0, 0.4));
-  border-radius: var(--r-sm);
-  text-align: left;
-  animation: slide-up var(--anim) ease-out;
-  animation-delay: 80ms;
-  animation-fill-mode: both;
-}
-
-.conflict-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  color: var(--warn-ink);
-}
-
-.conflict-title svg {
-  flex: 0 0 auto;
-}
-
-.conflict-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--fg);
-}
-
-.conflict-body p {
-  margin: 0;
-}
-
-.conflict-body strong {
-  color: var(--warn-ink);
-  font-weight: 600;
-}
-
-.conflict-link {
-  display: inline-block;
-  align-self: flex-start;
-  padding: 8px 14px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  text-decoration: none;
-  border-radius: var(--r-sm);
-  font-weight: 600;
-  font-size: 12px;
-  transition: filter 0.15s ease, transform 0.1s ease;
-}
-
-.conflict-link:hover {
-  filter: brightness(1.1);
-  text-decoration: none;
-}
-
-.conflict-link:active {
-  transform: scale(0.98);
-}
-
-.conflict-hint {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.conflict-overwrite-btn {
-  align-self: flex-start;
-  margin-top: 4px;
-  padding: 7px 12px;
-  background: transparent;
-  color: var(--err-ink);
-  border: 1px solid var(--err-stroke, rgba(255, 95, 86, 0.4));
-  border-radius: var(--r-sm);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.conflict-overwrite-btn:hover:not(:disabled) {
-  background: var(--err-bg-soft, rgba(255, 95, 86, 0.08));
-  border-color: var(--err-stroke, rgba(255, 95, 86, 0.6));
-}
-
-.conflict-overwrite-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* ------------------------------------------------------------
    CTA principal — ativar (verde leitoso) / desativar (vermelho leitoso)
    ------------------------------------------------------------ */
 .toggle-btn {
@@ -667,18 +564,6 @@ html[data-theme='dark'] .report-btn {
   background: var(--stop-hover);
 }
 
-/* outro mod: sobrescrever — amarelo leitoso (mantem os tokens do warning) */
-.toggle-btn.overwrite {
-  color: var(--warn-ink);
-  background: var(--warn-bg);
-  border: 1px solid transparent;
-}
-
-.toggle-btn.overwrite:hover:not(:disabled) {
-  background: var(--warn-bg);
-  filter: brightness(1.05);
-}
-
 /* loading */
 .toggle-btn.loading {
   cursor: wait;
@@ -705,8 +590,7 @@ html[data-theme='dark'] .report-btn {
   animation: spin 0.7s linear infinite;
 }
 
-.deactivate .spinner,
-.overwrite .spinner {
+.deactivate .spinner {
   border-color: currentColor;
   border-top-color: transparent;
 }
@@ -1061,6 +945,11 @@ html[data-theme='dark'] .switch-row input:checked + .switch-track .switch-thumb 
   color: var(--ink-strong);
   font-size: 11.5px;
 }
+.proton-btn--action .icon-refresh {
+  flex: 0 0 auto;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
 
 .proton-btn--action:hover:not(:disabled) {
   background: rgba(109, 74, 255, 0.1);
@@ -1333,7 +1222,8 @@ html[data-theme='dark'] .switch-row input:checked + .switch-track .switch-thumb 
   z-index: 40;
   display: grid;
   gap: 3px;
-  max-height: 164px;
+  /* border-box global: 2x48px + 3px gap + 2x5px padding + 2x1px border = 111px para dois itens padrão. */
+  max-height: 111px;
   overflow-y: auto;
   padding: 5px;
   border: 1px solid var(--line-strong);
@@ -1621,194 +1511,6 @@ html[data-theme='dark'] .switch-row input:checked + .switch-track .switch-thumb 
   color: var(--ok-ink);
   border: 1px solid rgba(34, 197, 94, 0.25);
 }
-
-
-.net-mode-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 2px 16px;
-}
-
-.segmented {
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 14px;
-}
-
-.seg-btn {
-  position: relative;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 8px 6px;
-  border: none;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease;
-}
-
-/* Etiqueta flutuante no topo do botao (recomendado / instavel). Visual de
-   contorno: fundo da superficie, borda e texto na cor do semantico. */
-.seg-badge {
-  position: absolute;
-  top: -9px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 2.5px 7px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  line-height: 1;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.seg-badge--reco { color: var(--ok-ink); }
-.seg-badge--insta { color: var(--warn-ink); }
-
-.seg-btn:hover {
-  color: var(--ink);
-  background: rgba(128, 128, 128, 0.08);
-}
-
-.seg-btn--active {
-  background: var(--ink);
-  color: var(--canvas);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
-}
-
-html[data-theme='dark'] .seg-btn--active {
-  background: var(--ink-strong);
-  color: #101014;
-}
-
-.seg-label {
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.seg-hint {
-  font-size: 9px;
-  opacity: 0.7;
-  line-height: 1.1;
-  white-space: nowrap;
-}
-
-.tor-status {
-  font-size: 11px;
-  color: var(--faint);
-  min-height: 13px;
-}
-
-.tor-status--ok { color: #2e9e5b; }
-
-/* Campo de proxy com label flutuante (so no modo Personalizado) */
-.float-field {
-  position: relative;
-}
-
-.float-field input {
-  width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  color: var(--ink);
-  padding: 14px 12px 6px;
-  border-radius: var(--r-sm);
-  font-family: var(--mono);
-  font-size: 12px;
-  outline: none;
-  transition: border-color 200ms ease, box-shadow 200ms ease;
-}
-
-.float-field label {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--faint);
-  font-size: 12px;
-  font-family: var(--mono);
-  pointer-events: none;
-  transition: top 160ms ease, font-size 160ms ease, color 160ms ease;
-}
-
-.float-field input:focus + label,
-.float-field input:not(:placeholder-shown) + label {
-  top: 7px;
-  font-size: 9px;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.float-field input:focus {
-  border-color: var(--ink-strong);
-  box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.06);
-}
-
-html[data-theme='dark'] .float-field input:focus {
-  box-shadow: 0 0 0 3px rgba(245, 245, 247, 0.1);
-}
-
-.proxy-input-group small {
-  font-size: 11px;
-  color: var(--faint);
-}
-
-.proxy-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.proxy-test-btn {
-  align-self: flex-start;
-  padding: 7px 12px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 160ms ease, border-color 160ms ease;
-}
-
-.proxy-test-btn:hover:not(:disabled) {
-  border-color: var(--ink-strong);
-  background: rgba(128, 128, 128, 0.08);
-}
-
-.proxy-test-btn:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
-
-.proxy-test-status {
-  font-size: 11px;
-  color: var(--faint);
-  min-height: 13px;
-  line-height: 1.35;
-}
-
-.proxy-test-status--ok { color: #2e9e5b; }
-.proxy-test-status--bad { color: #c44b4b; }
 
 .vps-guide {
   margin-top: 10px;
@@ -2325,10 +2027,36 @@ body.logs-window {
   color: var(--ink-strong);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
+.settings-route-option {
+  position: relative;
+}
+.settings-route-option:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.settings-route-option.theme-opt--active::after {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  color: var(--ink-strong);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  content: '✓';
+  transform: translateY(-50%);
+}
 .settings-section--behavior {
   gap: 7px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+}
+.settings-route-preference__feedback {
+  margin: 0 2px;
+  color: var(--err-ink);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.settings-route-preference__feedback[hidden] {
+  display: none;
 }
 .settings-switch {
   display: flex;
@@ -2532,8 +2260,6 @@ html[data-theme='dark'] .settings-switch input:checked + .switch-track .switch-t
   .status-card,
   .toggle-btn,
   .switch-row,
-  .net-mode-group,
-  .warning-alert,
   .footer {
     animation: none;
   }

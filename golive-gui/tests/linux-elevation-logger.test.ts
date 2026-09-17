@@ -150,6 +150,22 @@ describe("persistencia dos eventos de elevacao Linux", () => {
     expect(JSON.stringify(sink.calls)).not.toContain("senha-super-secreta");
     expect(JSON.stringify(sink.calls)).not.toContain("abc123");
   });
+  it("persiste eventos do provedor askpass sem aceitar campos extras", () => {
+    const sink = makeSink();
+    const { consumeLinuxElevationEvents } = loadElevationConsumer(sink.logger);
+    const state = { pending: "" };
+    consumeLinuxElevationEvents([
+      "[elevation] prompt.requested provider=askpass result=requested input=unknown phase=dialog",
+      "[elevation] prompt.finished provider=askpass result=not_attempted input=nonempty code=0 stderr=present",
+      "[elevation] sudo.validation provider=askpass result=accepted code=0 phase=password",
+    ].join("\n") + "\n", state);
+    expect(sink.calls.map((call) => call[2])).toEqual([
+      "elevation.prompt.requested",
+      "elevation.prompt.finished",
+      "elevation.sudo.validation",
+    ]);
+    expect(JSON.stringify(sink.calls)).not.toContain("benign-provider-warning");
+  });
 
   it("liga o consumidor ao callback da ativacao sem mudar o canal publico", () => {
     const activationStart = mainSource.indexOf("async function linuxActivate");

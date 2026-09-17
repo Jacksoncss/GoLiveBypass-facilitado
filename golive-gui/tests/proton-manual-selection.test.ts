@@ -5,6 +5,10 @@ import {
   isManualRouteSelectable,
   recommendManualRoute,
   reduceManualRouteEvent,
+  PROTON_ROUTE_PING_FALLBACK_FEEDBACK,
+  shouldDiscoverProtonRoutesAfterPreferenceChange,
+  shouldMeasurePingForRouteDiscovery,
+  shouldShowProtonRoutePingFallbackFeedback,
   sortManualRouteCandidates,
   type ManualRouteCandidate,
 } from '../src/proton-manual-selection';
@@ -154,7 +158,28 @@ describe('agregado de seleção manual de rotas Proton', () => {
     expect(recommendManualRoute([cataloged])).toBeUndefined();
   });
 
+  it('mede ping somente no modo manual sem candidata selecionável', () => {
+    const measuredCandidates = [candidate('US#8', 188)];
+    const unmeasuredCandidates = [candidate('NL#2', undefined, 'not-tested')];
+    const hasMeasuredCandidate = measuredCandidates.some(isManualRouteSelectable);
+    const hasUnmeasuredCandidate = unmeasuredCandidates.some(isManualRouteSelectable);
+
+    expect(hasMeasuredCandidate).toBe(true);
+    expect(hasUnmeasuredCandidate).toBe(false);
+    expect(shouldMeasurePingForRouteDiscovery('manual', hasUnmeasuredCandidate)).toBe(true);
+    expect(shouldMeasurePingForRouteDiscovery('manual', hasMeasuredCandidate)).toBe(false);
+    expect(shouldMeasurePingForRouteDiscovery('auto', hasUnmeasuredCandidate)).toBe(false);
+  });
+
+  it('descobre rotas ao mudar para manual somente com sessão autenticada', () => {
+    expect(shouldDiscoverProtonRoutesAfterPreferenceChange('manual', true)).toBe(true);
+    expect(shouldDiscoverProtonRoutesAfterPreferenceChange('manual', false)).toBe(false);
+    expect(shouldDiscoverProtonRoutesAfterPreferenceChange('auto', true)).toBe(false);
+    expect(shouldDiscoverProtonRoutesAfterPreferenceChange('auto', false)).toBe(false);
+  });
+
   it('ordena ping válido crescente e deixa desconhecidos no fim', () => {
+
     const state = new Map([
       ['US#8', candidate('US#8', 188)],
       ['US#5', candidate('US#5', 197)],
@@ -165,6 +190,14 @@ describe('agregado de seleção manual de rotas Proton', () => {
 
     expect(sortManualRouteCandidates(state.values()).map((route) => route.server))
       .toEqual(['US#8', 'US#5', 'US#50', 'US#72', 'US#99']);
+  });
+
+  it('orienta para Otimizar rota uma única vez quando nenhum ping responde', () => {
+    expect(shouldShowProtonRoutePingFallbackFeedback(true, false, false)).toBe(true);
+    expect(shouldShowProtonRoutePingFallbackFeedback(true, false, true)).toBe(false);
+    expect(shouldShowProtonRoutePingFallbackFeedback(true, true, false)).toBe(false);
+    expect(shouldShowProtonRoutePingFallbackFeedback(false, false, false)).toBe(false);
+    expect(PROTON_ROUTE_PING_FALLBACK_FEEDBACK).toContain('Otimizar rota');
   });
 
   it('resolve empates de ping pelo nome da rota', () => {

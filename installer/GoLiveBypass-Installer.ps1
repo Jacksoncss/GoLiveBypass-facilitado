@@ -64,6 +64,7 @@ $RepoRaw = 'https://raw.githubusercontent.com/bezumiya/GoLiveBypass/main'
 $PluginFiles = @(
     'goLiveBypass/index.tsx',
     'goLiveBypass/native.ts',
+    'goLiveBypass/plugin-build.ts',
     'goLiveBypass/plugin-log.ts',
     'goLiveBypass/bug-report.ts',
     'goLiveBypass/update-channel.ts',

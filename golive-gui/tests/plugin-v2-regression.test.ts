@@ -121,7 +121,7 @@ describe("plugin v2 WireSock ownership regression", () => {
         );
         expect(controllerSource).toContain("watchdog não confirmou o WireSock próprio");
         expect(controllerSource).toMatch(
-            /if \(inspection\.reliable && inspection\.active && !inspection\.owned\) \{[\s\S]*?this\.blockExternal\(reason\)/,
+            /if \(inspection\.reliable && inspection\.active && !inspection\.owned(?: && !operationInProgress)?\) \{[\s\S]*?this\.blockExternal\(reason\)/,
         );
         expect(controllerSource).toMatch(
             /if \(!confirmation\.active\) \{[\s\S]*?this\.state = "inactive";[\s\S]*?this\.discordPid = null;[\s\S]*?this\.stopWatchdog\(\);/,

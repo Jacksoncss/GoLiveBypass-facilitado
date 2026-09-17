@@ -48,6 +48,24 @@ describe('classificação dos erros de login Proton', () => {
     }
   });
 
+  it('classifica commit de migração da sessão como persistência, não como senha', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'golive-login-session-'));
+    try {
+      state.json = {
+        success: false,
+        error: 'authentication failed: failed to read session file: failed to migrate session file: failed to commit session file: Acesso negado.',
+        code: 'SESSION_PERSISTENCE',
+        retryable: true,
+      };
+      const res = await loginProton(dir, 'teste_golive', 'senha');
+      expect(res).toMatchObject({ success: false, code: 'SESSION_PERSISTENCE', retryable: true });
+      expect(res.message).toContain('senha não foi verificada');
+      expect(res.message).not.toContain('senha incorretos');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('honra o código estruturado INVALID_CREDENTIALS', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'golive-login-cred-'));
     try {

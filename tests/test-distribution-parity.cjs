@@ -122,8 +122,8 @@ test("plugin mantém AllowedApps estreito e network-lock desativado", () => {
 });
 
 test("plugin bloqueia WireSock externo e respeita o slot global do serviço", () => {
-    assert.match(pluginWindows, /allServicesOwned/);
-    assert.match(pluginWindows, /allProcessesOwned/);
+    assert.match(pluginWindows, /const hasOwn = ownServices\.length \+ ownProcesses\.length > 0/);
+    assert.match(pluginWindows, /const externalCount =/);
     assert.match(pluginWindows, /assertPluginServiceSlot/);
     assert.match(pluginController, /blocked_external/);
 });
@@ -235,11 +235,11 @@ test("instaladores do plugin nao distribuem o seletor de saida legado", () => {
 });
 
 test("manifesto local e linha v2 beta", () => {
-    assert.equal(manifest.version, "2.0.6-beta-19");
+    assert.equal(manifest.version, "2.0.6-beta-21");
 });
 
 test("plugin mostra versao e oferece verificacao na configuracao", () => {
-    assert.match(pluginRenderer, /PLUGIN_VERSION = "2\.0\.6-beta-19"/);
+    assert.match(pluginRenderer, /PLUGIN_VERSION = "2\.0\.6-beta-21"/);
     assert.match(pluginRenderer, /checkPluginUpdate\(/);
     assert.match(pluginRenderer, /Atualizar/);
 });
@@ -268,12 +268,11 @@ test("updater do plugin nunca substitui o bundle dist do Vencord/Equicord", () =
     assert.doesNotMatch(pluginNative, /const target = __dirname;/);
 });
 
-test("updater localiza pnpm e recompila pelo cmd.exe no Windows", () => {
+test("updater localiza pnpm e recompila por comando seguro no Windows", () => {
     assert.match(pluginNative, /function resolveWindowsPnpm\(\)/);
     assert.match(pluginNative, /AppData.*npm.*pnpm\.cmd/);
     assert.match(pluginNative, /ProgramFiles.*nodejs.*pnpm\.cmd/);
-    assert.match(pluginNative, /windowsRoot, "System32", "cmd\.exe"/);
-    assert.match(pluginNative, /"call",\s*pnpm,\s*"build"/);
+    assert.match(pluginNative, /resolveWindowsPnpmBuildCommand/);
     assert.match(pluginNative, /shell: false/);
     assert.match(pluginNative, /env,/);
     assert.match(pluginNative, /failure\.message/);

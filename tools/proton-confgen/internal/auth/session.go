@@ -196,8 +196,12 @@ func (s *SessionStore) SaveContext(ctx context.Context, session *api.Session, us
 			return fmt.Errorf("failed to protect session: %w", err)
 		}
 		defer clear(protected)
-		return s.writeAtomic(protected)
+		if err := s.writeAtomic(protected); err != nil {
+			return &SessionPersistenceError{Err: err}
+		}
+		return nil
 	})
+
 }
 
 func (s *SessionStore) writeAtomic(data []byte) error {
@@ -257,15 +261,21 @@ func (s *SessionStore) readPayloadLocked() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = file.Close() }()
 	if size, statErr := file.Stat(); statErr != nil {
+		_ = file.Close()
 		return nil, statErr
 	} else if !size.Mode().IsRegular() || size.Size() > maxSessionFileBytes {
+		_ = file.Close()
 		return nil, fmt.Errorf("session file exceeds the permitted size")
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxSessionFileBytes+1))
-	if err != nil {
-		return nil, err
+	raw, readErr := io.ReadAll(io.LimitReader(file, maxSessionFileBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		clear(raw)
+		return nil, closeErr
 	}
 	if int64(len(raw)) > maxSessionFileBytes {
 		clear(raw)
@@ -277,18 +287,18 @@ func (s *SessionStore) readPayloadLocked() ([]byte, error) {
 		return nil, fmt.Errorf("failed to decrypt session file: %w", err)
 	}
 	if !encrypted && sessionStorageUsesEncryption() {
-		// Migrate the old private JSON format as soon as it is successfully
-		// read. A DPAPI failure cannot silently fall back to plaintext.
+		// The legacy handle is closed before replacement. On Windows this is
+		// required for MoveFileEx to replace the same cache atomically.
 		protected, protectErr := sealSessionPayload(payload)
 		if protectErr != nil {
 			clear(payload)
-			return nil, fmt.Errorf("failed to migrate session file: %w", protectErr)
+			return nil, &SessionPersistenceError{Err: fmt.Errorf("failed to migrate session file: %w", protectErr)}
 		}
 		writeErr := s.writeAtomic(protected)
 		clear(protected)
 		if writeErr != nil {
 			clear(payload)
-			return nil, fmt.Errorf("failed to migrate session file: %w", writeErr)
+			return nil, &SessionPersistenceError{Err: fmt.Errorf("failed to migrate session file: %w", writeErr)}
 		}
 	}
 	return payload, nil

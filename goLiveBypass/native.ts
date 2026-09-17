@@ -8,7 +8,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import { RendererSettings } from "@main/settings";
 import { execFile, execFileSync, spawn } from "child_process";
 import { createHash, randomUUID } from "crypto";
-import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import {
     appendFileSync,
     closeSync,
@@ -60,6 +60,7 @@ import {
     type PluginUpdateChannel,
 } from "./update-channel";
 import { isCompatiblePluginManifest, releaseAssetUrl, securePluginUpdateUrl } from "./update-security";
+import { resolveWindowsPnpmBuildCommand } from "./plugin-build";
 import { defaultPluginVpnDataDir, PluginVpnController, type ProtonLoginPayload, type ProtonOptimizationOptions } from "./vpn-controller";
 import { disposeWireSockSnapshotWorker } from "./vpn-snapshot-worker";
 import {
@@ -73,7 +74,7 @@ import * as proton from "./vpn-proton";
 import { safeDiagnosticDetail } from "./vpn-types";
 import { createOperationId, createPluginLogger, trimJsonlTailByBytes, type PluginLogContext } from "./plugin-log";
 
-const PLUGIN_VERSION = "2.0.6-beta-19";
+const PLUGIN_VERSION = "2.0.6-beta-21";
 const PLUGIN_ASSET = "goLiveBypass-vencord.zip";
 const PLUGIN_CHECKSUM_ASSET = `${PLUGIN_ASSET}.sha256`;
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/bezumiya/GoLiveBypass/releases?per_page=20";
@@ -97,6 +98,7 @@ function requiredFilesForPlatform(platform: NodeJS.Platform = process.platform, 
     const common = [
         "index.tsx",
         "native.ts",
+        "plugin-build.ts",
         "plugin-log.ts",
         "bug-report.ts",
         "update-channel.ts",
@@ -1202,6 +1204,27 @@ export function importWireGuardConfig(_: IpcMainInvokeEvent, sourcePath: unknown
     return typeof sourcePath === "string"
         ? controller.importCustomConfig(sourcePath)
         : Promise.resolve({ success: false as const, error: "Informe o caminho de um arquivo WireGuard." });
+}
+export async function selectWireGuardConfig(event: IpcMainInvokeEvent) {
+    try {
+        const parent = BrowserWindow.fromWebContents(event.sender);
+        const options = {
+            title: "Selecionar configuração WireGuard",
+            properties: ["openFile"] as const,
+            filters: [{ name: "Configuração WireGuard", extensions: ["conf"] }],
+        };
+        const selected = parent
+            ? await dialog.showOpenDialog(parent, options)
+            : await dialog.showOpenDialog(options);
+        const sourcePath = selected.filePaths[0];
+        if (selected.canceled || !sourcePath) return { success: false as const, cancelled: true as const };
+        return await controller.importCustomConfig(sourcePath);
+    } catch (error) {
+        return {
+            success: false as const,
+            error: `Não foi possível importar a configuração WireGuard: ${safeDiagnosticDetail(error, 300)}`,
+        };
+    }
 }
 
 export function testWireGuardConfig(_: IpcMainInvokeEvent, sourcePath?: unknown) {
@@ -2499,24 +2522,16 @@ function resolveWindowsPnpm(): string {
 
 function rebuildUserplugin(projectRoot: string): void {
     const windows = process.platform === "win32";
-    const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
     const pnpm = windows ? resolveWindowsPnpm() : "pnpm";
-    const command = windows
-        ? (process.env.ComSpec && existsSync(process.env.ComSpec) ? process.env.ComSpec : join(windowsRoot, "System32", "cmd.exe"))
-        : pnpm;
-    const args = windows ? ["/d", "/s", "/c", "call", pnpm, "build"] : ["build"];
+    const build = windows
+        ? resolveWindowsPnpmBuildCommand(pnpm, process.env)
+        : { command: pnpm, args: ["build"], pathEntries: [] };
     const env = { ...process.env };
     if (windows) {
-        const nodeDirs = [
-            dirname(pnpm),
-            process.env.ProgramW6432 ? join(process.env.ProgramW6432, "nodejs") : undefined,
-            process.env.ProgramFiles ? join(process.env.ProgramFiles, "nodejs") : undefined,
-            join(windowsRoot, "System32"),
-        ].filter((value): value is string => typeof value === "string" && value.length > 0);
-        env.Path = [...new Set([...nodeDirs, env.Path ?? env.PATH ?? ""].filter(Boolean))].join(";");
+        env.Path = [...new Set([...build.pathEntries, env.Path ?? env.PATH ?? ""].filter(Boolean))].join(";");
     }
     try {
-        execFileSync(command, args, { cwd: projectRoot, env, stdio: "pipe", windowsHide: true, shell: false, timeout: USERPLUGIN_BUILD_TIMEOUT_MS });
+        execFileSync(build.command, build.args, { cwd: projectRoot, env, stdio: "pipe", windowsHide: true, shell: false, timeout: USERPLUGIN_BUILD_TIMEOUT_MS });
     } catch (error) {
         const failure = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
         const detail = [failure.message, failure.stderr, failure.stdout].filter(Boolean).map(value => String(value).trim()).join("\n").slice(-1200);

@@ -74,6 +74,11 @@ func jsonErrorResponse(err error) map[string]any {
 		response["retryable"] = false
 		return response
 	}
+	if auth.IsSessionPersistenceError(err) {
+		response["code"] = "SESSION_PERSISTENCE"
+		response["retryable"] = true
+		return response
+	}
 	if auth.IsTemporarySessionError(err) {
 		response["code"] = "NETWORK_ERROR"
 		response["retryable"] = true
@@ -391,7 +396,13 @@ func generateConfig(cfg *config.Config, vpnClient *vpn.Client) error {
 			}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		healthyCandidates, probeErr := speedtest.FilterReachableCandidatesConcurrent(ctx, cfg.ClientPrivateKey, candidates, pingTriageLimit, preflightConcurrency, progress)
+		var healthyCandidates []api.LogicalServer
+		var probeErr error
+		if cfg.RequireDiscord {
+			healthyCandidates, probeErr = speedtest.FilterDiscordReachableCandidatesConcurrent(ctx, cfg.ClientPrivateKey, candidates, pingTriageLimit, preflightConcurrency, progress)
+		} else {
+			healthyCandidates, probeErr = speedtest.FilterReachableCandidatesConcurrent(ctx, cfg.ClientPrivateKey, candidates, pingTriageLimit, preflightConcurrency, progress)
+		}
 		if probeErr != nil {
 			cancel()
 			return probeErr
@@ -854,30 +865,113 @@ func attachRouteCatalogPings(entries []routeCatalogEntry, pings map[string]int) 
 	}
 }
 
-func emitRouteCatalogProgress(entries []routeCatalogEntry, emit func(speedtest.ProgressEvent)) {
+// catalogHeader announces the size of the catalog before any route row.
+type catalogHeader struct {
+	Phase     string `json:"phase"`
+	Total     int    `json:"total"`
+	Tested    int    `json:"tested"`
+	Succeeded int    `json:"succeeded"`
+}
+
+// catalogRow is one catalogued route. Unlike speedtest.ProgressEvent it always
+// serializes load and score, including zero, so a consumer never drops a route
+// whose load or score is exactly 0. A measurement update reuses the announced
+// server name and metadata and only adds pingMs when the probe produced a valid
+// latency.
+type catalogRow struct {
+	Phase     string  `json:"phase"`
+	Total     int     `json:"total"`
+	Tested    int     `json:"tested"`
+	Succeeded int     `json:"succeeded"`
+	Server    string  `json:"server"`
+	Country   string  `json:"country,omitempty"`
+	City      string  `json:"city,omitempty"`
+	Tier      string  `json:"tier,omitempty"`
+	Load      int     `json:"load"`
+	Score     float64 `json:"score"`
+	PingMs    int     `json:"pingMs,omitempty"`
+	Status    string  `json:"status,omitempty"`
+}
+
+// catalogProgress publishes the progressive -route-catalog stream consumed by
+// the GUI and the plugin. The complete row set is announced before the first
+// probe and every completed measurement then updates its own row by exact
+// server name. It stays inert when no progress sink is configured.
+type catalogProgress struct {
+	emit      func(any)
+	index     map[string]routeCatalogEntry
+	total     int
+	tested    int
+	succeeded int
+}
+
+func newCatalogProgress(entries []routeCatalogEntry, emit func(any)) *catalogProgress {
 	if emit == nil {
+		return nil
+	}
+	index := make(map[string]routeCatalogEntry, len(entries))
+	for _, entry := range entries {
+		index[entry.Server] = entry
+	}
+	return &catalogProgress{emit: emit, index: index, total: len(entries)}
+}
+
+// announce reports the catalog header plus one metadata event per route as soon
+// as the service list is filtered, before any ping measurement starts, so a
+// consumer renders every row while the probes are still pending. The announced
+// fields are exactly the public metadata the final JSON carries.
+func (p *catalogProgress) announce(entries []routeCatalogEntry) {
+	if p == nil {
 		return
 	}
-	emit(speedtest.ProgressEvent{
-		Phase: "catalog",
-		Total: len(entries),
-	})
-	for index, entry := range entries {
-		emit(speedtest.ProgressEvent{
-			Phase:     "catalog",
-			Total:     len(entries),
-			Tested:    index + 1,
-			Succeeded: index + 1,
-			Server:    entry.Server,
-			Country:   entry.Country,
-			City:      entry.City,
-			Tier:      entry.Tier,
-			Load:      entry.Load,
-			Score:     entry.Score,
-			PingMs:    entry.PingMs,
-			Status:    "success",
+	p.emit(catalogHeader{Phase: "catalog", Total: p.total})
+	for _, entry := range entries {
+		p.emit(catalogRow{
+			Phase:   "catalog",
+			Total:   p.total,
+			Server:  entry.Server,
+			Country: entry.Country,
+			City:    entry.City,
+			Tier:    entry.Tier,
+			Load:    entry.Load,
+			Score:   entry.Score,
+			Status:  "success",
 		})
 	}
+}
+
+// record reports one finished probe for the row it belongs to. Only a finite
+// measurement between 1 ms and 998 ms becomes a ping: a missing or failed probe
+// is published without a latency, keeping the announced metadata, and never
+// aborts the catalog. Probed servers outside the catalog stay silent.
+func (p *catalogProgress) record(event vpn.PingProgressEvent) {
+	if p == nil {
+		return
+	}
+	entry, catalogued := p.index[event.Server]
+	if !catalogued {
+		return
+	}
+	p.tested++
+	update := catalogRow{
+		Phase:   "catalog",
+		Total:   p.total,
+		Tested:  p.tested,
+		Server:  entry.Server,
+		Country: entry.Country,
+		City:    entry.City,
+		Tier:    entry.Tier,
+		Load:    entry.Load,
+		Score:   entry.Score,
+		Status:  "failed",
+	}
+	if event.PingMs > 0 && event.PingMs < 999 {
+		p.succeeded++
+		update.PingMs = event.PingMs
+		update.Status = "success"
+	}
+	update.Succeeded = p.succeeded
+	p.emit(update)
 }
 
 func catalogServers(cfg *config.Config, vpnClient *vpn.Client) error {
@@ -894,16 +988,27 @@ func catalogServers(cfg *config.Config, vpnClient *vpn.Client) error {
 		}
 		return fmt.Errorf("no online servers found")
 	}
-	if cfg.AutoPing {
-		_, pings, _ := vpn.NewServerSelector(cfg).SpeedCandidatesWithProgress(eligible, len(eligible), nil)
-		attachRouteCatalogPings(entries, pings)
-	}
 
+	// The catalog uses its own event shape so load and score are always present,
+	// even when they are exactly zero.
+	var emit func(any)
 	if cfg.ProgressJSON {
-		emitRouteCatalogProgress(entries, func(event speedtest.ProgressEvent) {
+		emit = func(event any) {
 			data, _ := json.Marshal(event)
 			fmt.Fprintf(os.Stderr, "GOLIVE_PROGRESS %s\n", data)
-		})
+		}
+	}
+	progress := newCatalogProgress(entries, emit)
+	// The catalog is complete as soon as the service list is filtered, so every
+	// row is published before the first probe instead of after the whole batch.
+	progress.announce(entries)
+
+	if cfg.AutoPing {
+		// The regional ping keeps its existing bounded concurrency, deadline and
+		// candidate set; each finished probe updates its own row, so an individual
+		// failure never aborts the catalog.
+		_, pings, _ := vpn.NewServerSelector(cfg).SpeedCandidatesWithProgress(eligible, len(eligible), progress.record)
+		attachRouteCatalogPings(entries, pings)
 	}
 
 	if cfg.JSONOutput {

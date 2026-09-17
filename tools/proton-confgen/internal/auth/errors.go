@@ -132,6 +132,32 @@ func (e *ProtocolError) Error() string {
 	return fmt.Sprintf("Proton %s returned an invalid response", e.Operation)
 }
 
+// SessionPersistenceError reports that the local encrypted session could not
+// be committed without weakening the on-disk protection. Its public message is
+// intentionally independent of the filesystem error, which may include a
+// user-specific path.
+type SessionPersistenceError struct {
+	Err error
+}
+
+func (e *SessionPersistenceError) Error() string {
+	return "Proton session storage could not be updated"
+}
+
+func (e *SessionPersistenceError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// IsSessionPersistenceError reports whether a local session write or migration
+// failed after the previous cache was preserved.
+func IsSessionPersistenceError(err error) bool {
+	var target *SessionPersistenceError
+	return errors.As(err, &target)
+}
+
 func newAuthenticationError(code int) error {
 	switch code {
 	case CodeWrongPassword, CodeWrongPasswordFormat:

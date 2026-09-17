@@ -176,6 +176,30 @@ export function isManualRouteSelectable(
     && hasValidManualRoutePing(candidate)
   );
 }
+export function shouldMeasurePingForRouteDiscovery(
+  preference: 'auto' | 'manual',
+  hasSelectableCandidate: boolean,
+): boolean {
+  return preference === 'manual' && !hasSelectableCandidate;
+}
+
+export function shouldDiscoverProtonRoutesAfterPreferenceChange(
+  preference: 'auto' | 'manual',
+  isAuthenticated: boolean,
+): boolean {
+  return preference === 'manual' && isAuthenticated;
+}
+
+export const PROTON_ROUTE_PING_FALLBACK_FEEDBACK =
+  'Nenhuma rota respondeu ao ping. Clique em "Otimizar rota" para tentar uma medição por HTTPS.';
+
+export function shouldShowProtonRoutePingFallbackFeedback(
+  measurePing: boolean,
+  hasSelectableCandidate: boolean,
+  feedbackAlreadyShown: boolean,
+): boolean {
+  return measurePing && !hasSelectableCandidate && !feedbackAlreadyShown;
+}
 
 export function recommendManualRoute(
   candidates: Iterable<ManualRouteCandidate>,

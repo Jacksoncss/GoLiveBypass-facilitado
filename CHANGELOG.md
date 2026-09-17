@@ -4,6 +4,26 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.0.6-beta-21] - 2026-09-17
+
+### GUI Linux: autorização sudo no Wayland
+
+- Respostas válidas do `zenity` e do `kdialog` com aviso benigno no `stderr` agora seguem para a validação real do `sudo`. Quando o `pkexec` falha por falta de agente polkit, a GUI tenta o `sudo askpass` com arquivos temporários protegidos e informa como instalar/iniciar um agente quando essa alternativa também não está disponível.
+- O ambiente dos prompts remove `LD_LIBRARY_PATH`/`LD_PRELOAD`, e senha, logs e arquivos temporários continuam sem exposição. Sem `sudo` configurado, prompt disponível ou credencial válida, a ativação continua sendo recusada de forma segura.
+
+### GUI Linux: estado real do botão após a ativação
+
+- A janela agora acompanha as mudanças de estado observadas pelo watchdog de saúde Linux, inclusive quando o namespace é perdido ou o Discord é encerrado sem um clique. Estados repetidos não geram atualizações redundantes.
+- A confirmação do processo no namespace tenta primeiro a leitura sem privilégio e só usa a autorização elevada já existente quando a leitura é inconclusiva; probes e status continuam não interativos.
+
+### GUI Linux: `--status`/`--probe` sem bloqueio de stdin
+
+- O spawn da GUI ignora o stdin herdado do Electron, e o modo `--probe` despacha diretamente o diagnóstico JSON. Isso impede que o relatório leia um socket aberto esperando EOF e bloqueie o watchdog.
+
+### Relatórios de erro com orçamento limitado
+
+- O envio por `curl` e `wget` agora tem timeouts explícitos de conexão e execução. A cobertura do cenário de serviço que não responde usa um orçamento curto e limitado, sem aguardar indefinidamente.
+
 ## [Unreleased]
 ### Instaladores: canais stable/beta do plugin
 

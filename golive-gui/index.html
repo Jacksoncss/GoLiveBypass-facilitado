@@ -424,7 +424,28 @@
             </div>
 
             <div class="settings-section settings-section--behavior">
-              <span class="settings-group__label">Comportamento</span>
+              <span class="settings-group__label" id="protonRoutePreferenceLabel">Otimização de rota</span>
+              <div class="theme-opts settings-route-preference__options" role="radiogroup" aria-labelledby="protonRoutePreferenceLabel">
+                <button type="button" id="protonRoutePreferenceAuto" class="theme-opt settings-route-option theme-opt--active" data-route-pref="auto" role="radio" aria-checked="true" tabindex="0">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 12a8 8 0 0 1 13.7-5.7L20 8.5" />
+                    <path d="M20 4v4.5h-4.5" />
+                    <path d="M20 12a8 8 0 0 1-13.7 5.7L4 15.5" />
+                    <path d="M4 20v-4.5h4.5" />
+                  </svg>
+                  <span>Automática</span>
+                </button>
+                <button type="button" id="protonRoutePreferenceManual" class="theme-opt settings-route-option" data-route-pref="manual" role="radio" aria-checked="false" tabindex="-1">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 12h12" />
+                    <path d="m12 8 4 4-4 4" />
+                    <path d="M4 5h16" />
+                    <path d="M4 19h16" />
+                  </svg>
+                  <span>Manual</span>
+                </button>
+              </div>
+              <p id="protonRoutePreferenceFeedback" class="settings-route-preference__feedback" role="status" aria-live="polite" hidden></p>
 
               <label class="settings-switch" id="autoUpdateRow">
                 <span class="settings-switch__icon" aria-hidden="true">

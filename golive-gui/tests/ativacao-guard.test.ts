@@ -75,14 +75,6 @@ describe("guarda de ativacao duplicada", () => {
     expect(src).toContain('getStatus() === "ACTIVE"');
   });
 
-  it("a reativacao de boot atualiza janela e bandeja no fim (sucesso ou falha)", () => {
-    // Relato do testador na beta 4 (#149): a janela carregava no meio da
-    // reativacao e o botao ficava em "Ativar" com o bypass ja de pe.
-    const src = fs.readFileSync(path.resolve(process.cwd(), "electron/main.ts"), "utf8");
-    expect(src).toMatch(/autoInject: bypass reativado"[\s\S]{0,600}refreshWindowStatus\(\);/);
-    expect(src).toMatch(/autoInject falhou:[\s\S]{0,600}refreshWindowStatus\(\);/);
-  });
-
   it("o boot migra o estado legado para WireGuard", () => {
     const src = fs.readFileSync(path.resolve(process.cwd(), "electron/main.ts"), "utf8");
     expect(src).toContain("sistema WireGuard ativo; configuracao legada removida");
@@ -153,7 +145,7 @@ describe("guarda de ativacao duplicada", () => {
     expect(src).toContain("assertWindowsRouteGeneration(generation)");
     expect(src).toContain('if (IS_WINDOWS && sessaoAtiva())');
     expect(src).toContain('await activateBypass({});');
-    const statusStart = src.indexOf("function getStatus():");
+    const statusStart = src.indexOf("function getStatus(options: WindowsDiscoveryReadOptions");
     const status = src.slice(statusStart, src.indexOf("async function linuxStatus", statusStart));
     expect(status).toContain('return "CONNECTING"');
     expect(status).toContain('return "RECOVERY_REQUIRED"');
@@ -223,7 +215,7 @@ describe("guarda de ativacao duplicada", () => {
 
   it("nao altera a rota enquanto o Discord anterior ainda esta vivo", () => {
     const src = fs.readFileSync(path.resolve(process.cwd(), "electron/main.ts"), "utf8");
-    const kill = src.slice(src.indexOf("async function killDiscord"), src.indexOf("function assertResourcesWritable"));
+    const kill = src.slice(src.indexOf("async function killDiscord"), src.indexOf("function startDiscord"));
     expect(src).toContain('logger.error("discord", "encerramento.timeout"');
     expect(kill).toContain("discordDidNotStop()");
     const activation = src.slice(src.indexOf("async function executarAtivacao"), src.indexOf("async function deactivateAll"));
@@ -246,14 +238,14 @@ describe("guarda de ativacao duplicada", () => {
     expect(updaterProbe).toContain('return "unknown"');
     expect(updaterProbe).toContain("waitUntilDiscordUpdaterGone");
 
-    const kill = src.slice(src.indexOf("async function killDiscord"), src.indexOf("function assertResourcesWritable"));
+    const kill = src.slice(src.indexOf("async function killDiscord"), src.indexOf("function startDiscord"));
     expect(kill).toMatch(/killDiscordUpdater\(\);[\s\S]{0,500}waitUntilDiscordUpdaterGone/);
     expect(kill).toContain("discordUpdaterDidNotStop()");
   });
 
   it("nao declara recuperacao concluida se o Discord nao voltar depois da rede", () => {
     const src = fs.readFileSync(path.resolve(process.cwd(), "electron/main.ts"), "utf8");
-    const restart = src.slice(src.indexOf("async function startDiscordAndConfirm"), src.indexOf("function isOurInjection"));
+    const restart = src.slice(src.indexOf("async function startDiscordAndConfirm"), src.indexOf("function waitForWindowsRouteSettle"));
     expect(restart).toContain("waitUntilDiscordRunning()");
     expect(restart).toContain('"reinicio.timeout"');
 
@@ -262,8 +254,29 @@ describe("guarda de ativacao duplicada", () => {
     expect(deactivation).toContain("A rede foi restaurada, mas o Discord não iniciou");
 
     const restore = src.slice(src.indexOf('ipcMain.handle("restore-internet"'), src.indexOf('ipcMain.handle("get-platform"'));
-    expect(restore).toContain('startDiscordAndConfirm(getDiscordInstalls(), "restaurar-internet")');
+    const discovery = restore.indexOf("getDiscordInstalls({ forceRefresh: true })");
+    const kill = restore.indexOf("await killDiscord()");
+    expect(discovery).toBeGreaterThanOrEqual(0);
+    expect(discovery).toBeLessThan(kill);
+    expect(restore).toContain('startDiscordAndConfirm(installs, "restaurar-internet")');
+    expect(restore).not.toContain('startDiscordAndConfirm(getDiscordInstalls(), "restaurar-internet")');
+    expect(restore).toContain("const installs = hadWireSock");
     expect(restore).toContain("ok: false");
+  });
+
+  it("integra discovery bounded sem bloquear LOCALAPPDATA ausente", () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), "electron/main.ts"), "utf8");
+    const discovery = src.slice(src.indexOf("function getWinDiscordInstalls"), src.indexOf("function getMacDiscordInstalls"));
+    expect(discovery).toContain("windowsDiscoveryCache.read(options)");
+    expect(discovery).toContain("withNoAsar");
+    expect(discovery).not.toContain("if (!localAppData) return []");
+    expect(src).toContain("collectWindowsDiscoverySnapshot");
+    expect(src).toContain("createWindowsDiscoveryCache");
+    expect(src).toContain('import { findWindowsDiscordInstall } from "./windows-discord-install";');
+    expect(src).toContain("function withNoAsar<T>(fn: () => T): T");
+    expect(src).toContain("interface DiscordInstall");
+    expect(src).toContain('app.on("window-all-closed", () => {});');
+    expect(src).toContain("diskFs.lstatSync");
   });
 
   it("valida o tunel antes de iniciar o Discord e desfaz WireSock quando o spawn nao produz processo", () => {
@@ -277,7 +290,7 @@ describe("guarda de ativacao duplicada", () => {
     );
     expect(activation).toContain('withWireSockLifecycle("ativacao.rollback"');
     expect(activation).toContain("await recoverWireSockNetwork()");
-    const start = src.slice(src.indexOf("function startDiscord"), src.indexOf("function isOurInjection"));
+    const start = src.slice(src.indexOf("function startDiscord"), src.indexOf("function windowsAllowedAppPaths"));
     expect(start).toContain('child.once("error"');
   });
 

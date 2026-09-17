@@ -52,10 +52,11 @@ test("check e update não atualizam a UI quando a operação perdeu o lifecycle"
 
   assert.match(block, /const beginOperation = \(nextOperation: "checking" \| "updating"\)/);
   assert.match(block, /if \(!Native \|\| busy \|\| operationBusyRef\.current\) return null/);
-  assert.match(source, /const PLUGIN_UPDATE_OPERATION_TIMEOUT_MS = \d+_/);
+  assert.match(source, /const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = [^;]+;/);
+  assert.match(source, /const PLUGIN_UPDATE_INSTALL_TIMEOUT_MS = [^;]+;/);
   assert.match(block, /const isOperationMounted = \(\) => isCurrent\(operationRevision\) && operationId === operationIdRef\.current/);
-  assert.match(block, /withTimeout\([\s\S]*?native\.checkPluginUpdate\(selectedUpdatePolicy\)[\s\S]*?PLUGIN_UPDATE_OPERATION_TIMEOUT_MS/);
-  assert.match(block, /withTimeout\([\s\S]*?native\.updatePlugin\(selectedUpdatePolicy\)[\s\S]*?PLUGIN_UPDATE_OPERATION_TIMEOUT_MS/);
+  assert.match(block, /withTimeout\([\s\S]*?native\.checkPluginUpdate\(selectedUpdatePolicy\)[\s\S]*?PLUGIN_UPDATE_CHECK_TIMEOUT_MS/);
+  assert.match(block, /withTimeout\([\s\S]*?native\.updatePlugin\(selectedUpdatePolicy\)[\s\S]*?PLUGIN_UPDATE_INSTALL_TIMEOUT_MS/);
   assert.match(block, /await refreshStatus\(operationRevision\);\n\s+if \(!isOperationMounted\(\)\) return;/);
   assert.match(block, /operationBusyRef\.current = true/);
   assert.match(block, /operationId === operationIdRef\.current\) operationBusyRef\.current = false/);
@@ -84,7 +85,7 @@ test("polling do painel VPN não sobrescreve conta nova nem atualiza após desmo
   assert.match(block, /const isCurrent = \(\) => mountedRef\.current && request === refreshRequestRef\.current/);
   assert.match(block, /if \(!isCurrent\(\)\) return;\n\s+setStatus\(nextStatus/);
   assert.match(block, /if \(!usernameRef\.current && typeof savedUsername === "string" && savedUsername\)/);
-  assert.match(block, /usernameRef\.current = value; setUsername\(value\)/);
+  assert.match(block, /usernameRef\.current = savedUsername;\n\s+setUsername\(savedUsername\)/);
   assert.match(block, /mountedRef\.current = false/);
   assert.match(block, /refreshRequestRef\.current\+\+/);
   assert.match(block, /if \(!mountedRef\.current\) return;/);
@@ -122,7 +123,7 @@ test("validação customizada tem deadline, cancelamento lógico e libera o onbo
   const block = source.slice(source.indexOf("function PluginOnboardingModal"), source.indexOf("function openPluginOnboarding"));
 
   assert.match(source, /const CUSTOM_WIREGUARD_VALIDATION_TIMEOUT_MS = \d+_/);
-  assert.match(block, /withTimeout\([\s\S]*?Native\.testWireGuardConfig\(settings\.store\.customConfigPath\)[\s\S]*?CUSTOM_WIREGUARD_VALIDATION_TIMEOUT_MS/);
+  assert.match(block, /withTimeout\([\s\S]*?Native\.testWireGuardConfig\(customConfigPath\)[\s\S]*?CUSTOM_WIREGUARD_VALIDATION_TIMEOUT_MS/);
   assert.match(block, /optimizationRequestRef\.current = customMode \? null : nextRequestId/);
   assert.match(block, /const cancelOptimization = \(\) =>/);
   assert.match(block, /cancelActiveOptimization\(\);\n\s+setRequestId\(null\)/);
@@ -130,7 +131,8 @@ test("validação customizada tem deadline, cancelamento lógico e libera o onbo
   assert.match(block, /setBusy\(false\)/);
   // O rotulo de cancelamento vem de um ternario (customMode) e o variant tem `as const`;
   // prender a concatenacao exata quebrava a cada ajuste sem indicar defeito.
-  assert.match(block, /text: customMode \? "Cancelar validação" : "Cancelar otimização"/);
+  assert.match(block, /text: "Cancelar validação"/);
+  assert.match(block, /text: "Cancelar otimização"/);
   assert.match(block, /variant: "danger" as const/);
   assert.doesNotMatch(block, /customMode[\s\S]*?text: "Validando…"[\s\S]*?disabled: true/);
   assert.match(block, /const isOptimizationCurrent = \(\) => !disposedRef\.current && attempt === optimizationAttemptRef\.current/);

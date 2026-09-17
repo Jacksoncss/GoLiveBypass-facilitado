@@ -1,43 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   cortarDoFim,
-  extrairSegredosDaProxy,
   l1Padroes, // eslint-disable-line
 } from "../electron/redact";
 import { redigir, segredosRemanescentes } from "../electron/redact";
 
-const segredos = extrairSegredosDaProxy("socks5://maria:s3nha@proxy.maria.com.br:1080");
-
-describe("extrairSegredosDaProxy", () => {
-  it("extrai usuario, senha, host:porta e URL inteira", () => {
-    expect(segredos).toContain("maria");
-    expect(segredos).toContain("s3nha");
-    expect(segredos).toContain("proxy.maria.com.br:1080");
-    expect(segredos).toContain("socks5://maria:s3nha@proxy.maria.com.br:1080");
-  });
-
-  it("ignora proxy vazia e mascara host mesmo em proxy minima", () => {
-    expect(extrairSegredosDaProxy("")).toEqual([]);
-    expect(extrairSegredosDaProxy("   ")).toEqual([]);
-    // Sem esquema (sem ://), a direcao segura e mascarar a string INTEIRA.
-    expect(extrairSegredosDaProxy("a:b@c.de")).toContain("a:b@c.de");
-  });
-
-  it("proxy seca sem credenciais tambem vira segredo", () => {
-    expect(extrairSegredosDaProxy("203.0.113.7:1080")).toEqual(["203.0.113.7:1080"]);
-  });
-
-  it("extrai a senha inteira mesmo com @ nao codificado dentro dela", () => {
-    // Espelha PROXY_RE (standalone/golivebypass.js): credenciais sao gulosas
-    // ate o ULTIMO @ antes do host, entao uma senha como "p@ss" nao pode
-    // cortar a extracao no primeiro @ dela.
-    const s = extrairSegredosDaProxy("socks5://user:p@ss@1.2.3.4:1080");
-    expect(s).toContain("user");
-    expect(s).toContain("p@ss");
-    expect(s).not.toContain("p"); // fragmento truncado do bug antigo
-    expect(s).toContain("1.2.3.4:1080");
-  });
-});
+// Fixture do pipeline L2: segredos literais que NAO podem aparecer no report.
+// Era gerada pela extracao de segredos da proxy personalizada (removida junto
+// com o mecanismo de proxy da GUI); mantida literal para exercitar a redacao.
+const segredos = [
+  "maria",
+  "s3nha",
+  "proxy.maria.com.br:1080",
+  "socks5://maria:s3nha@proxy.maria.com.br:1080",
+];
 
 describe("l1Padroes", () => {
   it("mascara credenciais embutidas na URL", () => {

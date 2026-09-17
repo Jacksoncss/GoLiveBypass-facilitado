@@ -42,41 +42,6 @@ export function l1Padroes(texto: string): string {
   );
 }
 
-// Extrai os segredos da proxy personalizada salva pelo usuario. A proxy vem como
-// socks5://usuario:senha@host:porta (ou host:porta seca). Devolve as variantes
-// literais que NAO PODEM aparecer no report.
-export function extrairSegredosDaProxy(proxySalva: string): SegredosConhecidos {
-  const segredos: SegredosConhecidos = [];
-  const p = proxySalva.trim();
-  if (!p) return segredos;
-
-  // Credenciais podem conter "@" nao codificado (o parser real da proxy em
-  // standalone/golivebypass.js, PROXY_RE, aceita isso via ".+" guloso). Usar
-  // aqui uma classe que exclui "@" cortava a senha no primeiro "@" dela,
-  // extraindo so um fragmento (as vezes <3 chars, descartado pelo filtro
-  // final) em vez da senha inteira — a senha real nunca entrava na lista de
-  // segredos a redigir. Espelha o mesmo "guloso ate o ultimo @" do parser.
-  const m = /^[a-z][a-z0-9+.-]*:\/\/(.+)@([^/@]+)$/i.exec(p);
-  if (m) {
-    const [, auth, resto] = m;
-    const doisPontos = auth.indexOf(":");
-    if (doisPontos > 0) {
-      segredos.push(auth.slice(0, doisPontos)); // usuario
-      segredos.push(auth.slice(doisPontos + 1)); // senha
-    } else {
-      segredos.push(auth); // so usuario
-    }
-    const hostPorta = resto.split(/[/?#]/)[0];
-    if (hostPorta) segredos.push(hostPorta); // host:porta
-    segredos.push(p); // a URL inteira
-  }
-  // Proxy sem credencial: o host:porta identifica o provedor do usuario — tambem sai.
-  if (segredos.length === 0 && p.length >= 7) {
-    segredos.push(p);
-  }
-  return segredos.filter((s) => s.length >= 3);
-}
-
 export function l2Segredos(texto: string, segredos: SegredosConhecidos): string {
   let out = texto;
   for (const s of segredos) {

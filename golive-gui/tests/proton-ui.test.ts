@@ -109,7 +109,8 @@ describe("controles Proton", () => {
     expect(renderer).toContain("window.api.discoverProtonRoutes({");
     expect(renderer).toContain("protonCountrySelect?.setLoading(true)");
     expect(renderer).toContain("protonManualMeasurementId = result.measurementId");
-    expect(renderer).toContain("void discoverProtonRoutesInBackground()");
+    expect(renderer).toContain("shouldMeasurePingForCurrentProtonRoutes");
+    expect(renderer).toContain("void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes())");
     expect(renderer).toContain("let protonRouteCatalogCandidates = new Map");
     expect(renderer).toContain("function mergedProtonManualCandidates()");
     expect(renderer).toContain("function updateProtonRouteDiscoveryProgress");
@@ -124,6 +125,10 @@ describe("controles Proton", () => {
     expect(renderer).toContain("function queueProtonRouteDiscoveryAfterOptimization");
     expect(renderer).toContain("queueProtonRouteDiscoveryAfterOptimization(needsManualPingRecovery)");
     expect(renderer).toContain("Rota manual salva · execute uma nova medição para trocar");
+    expect(renderer).toContain("shouldShowProtonRoutePingFallbackFeedback");
+    expect(renderer).toContain("PROTON_ROUTE_PING_FALLBACK_FEEDBACK");
+    expect(renderer).toContain("protonRoutePingFallbackFeedbackShown = true");
+    expect(renderer).toContain("protonOptimizeBtn.disabled = protonManualSelectionInFlight || protonOptimizationInFlight");
     expect(renderer).toContain("protonRouteDiscoveryRetryPending");
     expect(renderer).toContain("rota de boot ainda está sendo restaurada");
     expect(renderer).not.toContain("protonManualCatalogRetryBtn");
@@ -146,7 +151,7 @@ describe("controles Proton", () => {
     expect(select).not.toContain("descriptionRow.appendChild(badge)");
     expect(select).not.toContain("label: 'Automático'");
     expect(select).not.toContain("proton-route-select__group");
-    expect(styles).toContain("max-height: 164px;");
+    expect(styles).toContain("max-height: 111px;");
     expect(styles).toContain("min-height: 48px;");
     expect(styles).toContain("grid-template-rows: minmax(0, 1fr) auto;");
     expect(styles).toContain("overflow-y: auto;");
@@ -157,6 +162,72 @@ describe("controles Proton", () => {
     expect(styles).toContain("width: 5px;");
     expect(styles).toContain(".vpn-config-card:has(.proton-route-select.is-open)");
     expect(styles).toContain("grid-template-columns: auto minmax(0, 1fr);");
+  });
+
+
+  it("oferece a preferência horizontal no mesmo padrão do seletor de tema", () => {
+    const html = fs.readFileSync(path.resolve(process.cwd(), "index.html"), "utf8");
+    expect(html).toContain('class="theme-opts settings-route-preference__options"');
+    expect(html).toContain('id="protonRoutePreferenceAuto"');
+    expect(html).toContain('id="protonRoutePreferenceManual"');
+    expect(html).toContain('data-route-pref="auto" role="radio" aria-checked="true"');
+    expect(html).toContain('data-route-pref="manual" role="radio" aria-checked="false"');
+    expect(html).toContain(">Automática</span>");
+    expect(html).toContain(">Manual</span>");
+    expect(html).not.toContain("settings-route-option__indicator");
+    expect(html).not.toContain("settings-route-preference__hint");
+    expect(html).not.toContain("Uma rota automática por sessão");
+    expect(html).not.toContain("Meça usando o botão quando quiser");
+    const styles = fs.readFileSync(path.resolve(process.cwd(), "src/style.css"), "utf8");
+    expect(styles).not.toContain(".settings-route-preference__options {");
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/main.ts"), "utf8");
+    expect(source).toContain("document.getElementById('protonRoutePreferenceAuto')");
+    expect(source).toContain("document.getElementById('protonRoutePreferenceManual')");
+    expect(source).toContain(".theme-opt[data-theme-opt]");
+    expect(source).not.toContain("querySelectorAll<HTMLButtonElement>('.theme-opt').forEach");
+    expect(source).toContain("void refreshProtonRoutePreference();");
+    expect(source).toContain("window.api.setProtonSettings({ routePreference: next })");
+    expect(source).toContain("A escolha anterior foi mantida.");
+    expect(source).toContain("syncProtonRoutePreferenceUi(previous);");
+    expect(source).toContain("option.tabIndex = active ? 0 : -1;");
+    expect(source).toContain("event.key === 'ArrowRight'");
+    expect(source).toContain("event.key === 'Home'");
+  });
+  it("marca a seleção imediatamente e exibe check integrado, revertendo no erro", () => {
+    const html = fs.readFileSync(path.resolve(process.cwd(), "index.html"), "utf8");
+    const styles = fs.readFileSync(path.resolve(process.cwd(), "src/style.css"), "utf8");
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/main.ts"), "utf8");
+    expect(html).toContain('class="theme-opt settings-route-option theme-opt--active" data-route-pref="auto"');
+    expect(styles).toContain(".settings-route-option.theme-opt--active::after");
+    expect(styles).toContain("content: '✓';");
+    const optimistic = source.indexOf("syncProtonRoutePreferenceUi(next);");
+    const persist = source.indexOf("window.api.setProtonSettings({ routePreference: next })");
+    expect(optimistic).toBeGreaterThanOrEqual(0);
+    expect(persist).toBeGreaterThan(optimistic);
+    expect(source).toContain("syncProtonRoutePreferenceUi(previous);");
+    expect(styles).toContain(".settings-route-option:active:not(:disabled)");
+  });
+
+
+  it("mantém o botão manual nos dois modos e desliga os gatilhos automáticos no modo manual", () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/main.ts"), "utf8");
+    expect(source).toContain("return protonRoutePreference === 'auto';");
+    expect(source).toContain("protonOptimizeBtn?.addEventListener('click', () => void optimizeProtonRoute());");
+    expect(source).toContain("if (onStartup) {");
+    expect(source).toContain("syncProtonRoutePreferenceUi(protonRoutePreference);");
+    expect(source).toContain("shouldDiscoverProtonRoutesAfterPreferenceChange(next, isProtonAuthenticated)");
+    expect(source).toContain("void discoverProtonRoutesInBackground(shouldMeasurePingForCurrentProtonRoutes())");
+  });
+
+  it("anima apenas o ícone durante a medição e respeita reduced-motion", () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/main.ts"), "utf8");
+    expect(source).toContain("const protonOptimizeMotion = gsap.matchMedia();");
+    expect(source).toContain("protonOptimizeMotion.add");
+    expect(source).toContain("reduceMotion: '(prefers-reduced-motion: reduce)'");
+    expect(source).toContain("gsap.to(protonOptimizeIcon");
+    expect(source).toContain("stopProtonOptimizeAnimation();");
+    expect(source).toContain("protonOptimizeMotion.revert();");
+    expect(source).not.toContain("gsap.to(protonOptimizeBtn");
   });
 
 

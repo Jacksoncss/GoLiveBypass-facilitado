@@ -5,6 +5,53 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
+### GUI Linux: autorização sudo no Wayland
+
+- Causa confirmada: o `zenity` da sessão Wayland podia retornar a senha válida com um aviso benigno no `stderr`; a regra anterior descartava qualquer resposta com `stderr` e, sem agente polkit, o `pkexec` falhava com código 127.
+- Correção: respostas com código zero e senha não vazia agora seguem para a validação real do `sudo`; o ambiente dos prompts remove `LD_LIBRARY_PATH`/`LD_PRELOAD`; quando o polkit não tem agente, há uma tentativa alternativa controlada pelo `sudo askpass`, com credencial temporária protegida e limpeza no encerramento. A mensagem final orienta instalar/iniciar um agente (`polkit-gnome`, `lxqt-policykit` ou `hyprpolkitagent`) ou executar o standalone em um terminal com `sudo`.
+- Limitação real: o askpass ainda depende de `sudo` configurado para o usuário e de `zenity`/`kdialog`; sem senha válida, com cancelamento ou sem esses componentes a ativação continua sendo recusada, sem fechar o Discord. Não houve ativação, encerramento do Discord ou alteração de rede neste host.
+### GUI Linux: estado ativo após autorização sem timestamp sudo
+
+- Causa confirmada: o polling de `--status`/`--probe` força `NONINTERACTIVE=1`; sem timestamp sudo reutilizável, a checagem elevada falhava mesmo com o Discord já dentro de `discord-vpn`, fazendo a GUI pintar **INACTIVE**.
+- Correção: a confirmação tenta primeiro `ip netns identify` e a comparação device:inode de `stat -L` sem privilégio, inclusive para o bind mount nsfs em `/run/netns`; somente uma leitura inconclusiva usa `sudo -n`/o caminho elevado existente. Probes continuam sem prompts interativos.
+- Limitação real: `wg_stats_json` ainda depende de `sudo -n` no `--status` isolado; sem timestamp reutilizável, handshake/RX/TX podem aparecer indisponíveis no diagnóstico, sem bloquear a ativação nem alterar o estado real do túnel.
+### GUI Linux: janela acompanha o estado real do watchdog
+
+- A janela agora é atualizada quando o watchdog de saúde Linux detecta uma mudança no estado real, inclusive quando a mudança ocorre sem clique (por exemplo, perda do namespace ou encerramento do Discord). Estados repetidos não geram atualizações redundantes.
+- Limitação: a verificação visual do botão não foi feita neste host; a cobertura disponível valida o wiring e o typecheck/testes automatizados.
+### GUI Linux: probe não bloqueia com stdin herdado
+
+- Causa confirmada: `report_error` fazia uma substituição de comando com `cat` sem arquivo; quando a GUI herdava o socket stdin do Electron, o `--probe` ficava esperando EOF indefinidamente, travando o primeiro ciclo do watchdog.
+- Correção: relatórios usam somente arquivo de contexto explícito, o spawn da GUI ignora stdin e o modo `--probe` despacha diretamente o diagnóstico JSON. Assim o watchdog volta a rodar e o botão pode acompanhar o estado real.
+- Efeito: `--status` e `--probe` terminam mesmo com stdin aberto e continuam sem abrir prompts. Não houve ativação nem alteração de rede nesta correção.
+
+
+
+
+
+### GUI: preferência da otimização Proton
+
+- A seção **Comportamento** agora permite escolher entre otimizar a rota ao abrir (uma vez por sessão) ou somente ao clicar em **Otimizar rota**. A escolha fica salva entre sessões, sem remover uma rota manual existente quando o seletor é alterado.
+- O botão **Otimizar rota** ganhou um carregamento discreto no ícone de atualização com GSAP, interrompido e limpo ao concluir, cancelar ou falhar, e desativado para quem prefere reduzir movimentos.
+
+
+### GUI: catálogo de rotas Proton no modo manual
+
+- Causa: a descoberta do catálogo no modo manual não solicitava a medição de ping, e o renderer filtrava as rotas sem `pingMs` válido; por isso o dropdown ficava sem candidatas selecionáveis.
+- Correção: a GUI agora solicita ping somente quando o modo manual não tem nenhuma candidata selecionável; quando já há rotas medidas, a descoberta continua barata e não repete a medição. O botão **Otimizar rota** permanece disponível como alternativa se o ping falhar.
+
+### GUI Linux: carregamento automático do módulo WireGuard
+
+- Causa: o preflight reconhecia `wireguard.ko` disponível pelo `modinfo`, mas a ativação falhava em kernels onde o módulo ainda não estava carregado; isso ocorria depois do fechamento do Discord e podia iniciar uma preparação incompleta.
+- Correção: a GUI agora pede ao standalone para carregar `wireguard` via `elevate modprobe` somente quando `/sys/module/wireguard` ainda não existe, confirma a carga antes de criar a interface e aborta de forma sanitizada antes de fechar o Discord quando não consegue fazê-lo. O preflight distingue módulo carregado, disponível porém descarregado e ausente, sem executar `modprobe` em modo somente leitura.
+- Testes cobrem a idempotência, a carga delegada à elevação e o rollback sem fechamento do Discord/namespace quando a carga falha. Não houve ativação real nem prova de carga neste host.
+
+### GUI Linux: confirmação de processo no namespace (#278)
+
+- Causa confirmada no caminho reportado: `wait_discord_started` aceitava qualquer processo `Discord` encontrado por `pgrep`, sem provar que o PID correto tinha entrado em `discord-vpn`; o watchdog/status também podiam concluir `INACTIVE` porque a inspeção do namespace era feita sem elevação.
+- Correção: a ativação só conclui após confirmar, pelo caminho elevado já autorizado na própria ativação, o PID do cliente no namespace. Falha nessa confirmação fecha o processo observado, remove o namespace e propaga uma causa sanitizada; status, probe e watchdog usam apenas consultas readonly não interativas (`sudo -n`) e permanecem log-only.
+- A guarda serial existente continua tratando uma ativação concorrente/duplicada como no-op quando o estado confirmado é `ACTIVE`, sem encerrar uma sessão recém-confirmada. `portal=ausente`, updater 404 e falhas de handshake/HTTP/IP continuam diagnósticos, não bloqueios.
+- Hipótese restante: um encerramento espontâneo posterior do Electron (por Wayland/Flatpak/portal ou atualização) não pode ser atribuído à confirmação de namespace sem log de crash correspondente. Limitação: não houve ativação real, `sudo`/`pkexec`, encerramento do Discord ou alteração de rede/namespace neste host.
 
 ### GUI Windows: descoberta de instalações Discord fora de `%LOCALAPPDATA%` (#300)
 

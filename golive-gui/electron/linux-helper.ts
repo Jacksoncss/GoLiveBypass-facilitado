@@ -36,6 +36,9 @@ export function runScript(args: string[], onChunk?: (chunk: string) => void): Pr
         // O standalone publico esta temporariamente bloqueado durante a portabilidade.
         // Somente a GUI, que e a variante mantida, pode usar o motor interno por esta marca.
         env: { ...process.env, GOLIVE_GUI: '1' },
+        // Nunca herdar o socket stdin do Electron: status/probe/report nao podem
+        // ficar bloqueados aguardando EOF de um processo pai vivo.
+        stdio: ['ignore', 'pipe', 'pipe'],
         // A reversao do bypass roda em background depois do app.quit(); sem detached o filho
         // morreria junto com o processo pai e o Discord ficaria com a injecao pendurada.
         detached: true,

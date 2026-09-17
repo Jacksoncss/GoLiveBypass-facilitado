@@ -347,10 +347,6 @@ export async function runRouteProbeFrom(exePath: string | undefined, timeoutMs =
   };
 }
 
-export async function runRouteProbe(timeoutMs = 10_000): Promise<RouteProbeResult> {
-  return runRouteProbeFrom(undefined, timeoutMs);
-}
-
 export function classifyProtonError(error: unknown, stderr = '', stdout = ''): { code: ProtonLoginErrorCode; message: string; retryable: boolean } {
   const raw = `${error instanceof Error ? error.message : String(error)} ${stderr} ${stdout}`.toLowerCase();
   if (/captcha_invalid|captcha.*expired|human verification.*(invalid|expired)/.test(raw)) return { code: 'CAPTCHA_INVALID', message: 'A verificação de segurança expirou ou foi recusada. Abra um novo CAPTCHA e tente novamente.', retryable: true };

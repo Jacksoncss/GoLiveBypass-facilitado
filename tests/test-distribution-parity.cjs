@@ -95,9 +95,10 @@ test("plugin mantém AllowedApps estreito e network-lock desativado", () => {
     assert.match(pluginController, /Update\.exe/);
 });
 
-test("plugin bloqueia WireSock externo e respeita o slot global do serviço", () => {
-    assert.match(pluginWindows, /allServicesOwned/);
-    assert.match(pluginWindows, /allProcessesOwned/);
+test("plugin distingue WireSock gerenciado do externo e respeita o slot global", () => {
+    assert.match(pluginWindows, /configArgumentEquals/);
+    assert.match(pluginWindows, /origin = "mixed"/);
+    assert.match(pluginWindows, /stopManagedWireSock/);
     assert.match(pluginWindows, /assertPluginServiceSlot/);
     assert.match(pluginController, /blocked_external/);
 });
@@ -203,6 +204,51 @@ test("instalador Windows distribui todas as fontes do plugin WireGuard", () => {
     assert.match(windowsInstaller, /Copy-PluginHelper/);
     assert.match(windowsInstaller, /Get-LatestBetaHelperAsset/);
     assert.match(windowsInstaller, /Get-FileHash.*SHA256/);
+
+    // #270/#276: a remocao da pasta do plugin nunca pode ficar no Remove-Item cru
+    // sem retry — UnauthorizedAccessException transiente (AV, nuvem, Discord aberto)
+    // abortava Uninstall/Restore/Update. Os tres pontos de remocao usam o mesmo
+    // caminho com retry e erro acionavel.
+    assert.match(windowsInstaller, /function Remove-PluginTarget/);
+    assert.equal(
+        (windowsInstaller.match(/Remove-PluginTarget \$target \| Out-Null/g) || []).length,
+        3,
+        "os tres pontos de remocao (Uninstall, Restore, UpdateFromZip) devem passar por Remove-PluginTarget",
+    );
+    assert.match(windowsInstaller, /apos 3 tentativas/);
+    assert.match(windowsInstaller, /Feche o Discord/);
+
+    // #272: o throw do helper carrega diagnostico da consulta (tags/assets) e
+    // cada descarte da busca fica registrado — release sem helper fica
+    // distinguivel de falha de rede/API no relato automatico.
+    assert.match(windowsInstaller, /HelperAssetScan/);
+    assert.match(windowsInstaller, /Consulta: \$detalhes/);
+    assert.match(windowsInstaller, /manifest aponta .* mas o asset nao esta na release/);
+    assert.match(windowsInstaller, /sem companion \.sha256/);
+    assert.match(windowsInstaller, /invalido ou ausente/);
+});
+
+    // #270/#276: a remocao da pasta do plugin nunca pode ficar no Remove-Item cru
+    // sem retry — UnauthorizedAccessException transiente (AV, nuvem, Discord aberto)
+    // abortava Uninstall/Restore/Update. Os tres pontos de remocao usam o mesmo
+    // caminho com retry e erro acionavel.
+    assert.match(windowsInstaller, /function Remove-PluginTarget/);
+    assert.equal(
+        (windowsInstaller.match(/Remove-PluginTarget \$target \| Out-Null/g) || []).length,
+        3,
+        "os tres pontos de remocao (Uninstall, Restore, UpdateFromZip) devem passar por Remove-PluginTarget",
+    );
+    assert.match(windowsInstaller, /apos 3 tentativas/);
+    assert.match(windowsInstaller, /Feche o Discord/);
+
+    // #272: o throw do helper carrega diagnostico da consulta (tags/assets) e
+    // cada descarte da busca fica registrado — release sem helper fica
+    // distinguivel de falha de rede/API no relato automatico.
+    assert.match(windowsInstaller, /HelperAssetScan/);
+    assert.match(windowsInstaller, /Consulta: \$detalhes/);
+    assert.match(windowsInstaller, /manifest aponta .* mas o asset nao esta na release/);
+    assert.match(windowsInstaller, /sem companion \.sha256/);
+    assert.match(windowsInstaller, /invalido ou ausente/);
 });
 
 test("instaladores do plugin nao distribuem o seletor de saida legado", () => {

@@ -14,7 +14,6 @@
     "build": "npm run compile && electron-builder --publish never",
     "build:win": "npm run compile && electron-builder --win --x64 --publish never",
     "build:mac": "npm run compile && electron-builder --mac --arm64 --publish never",
-    "preview": "vite preview",
     "sync-bypass": "node scripts/sync-bypass.mjs",
     "check-bypass": "node scripts/sync-bypass.mjs --check",
     "test": "vitest run",
@@ -104,6 +103,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "gsap": "^3.15.0"
   }
 }

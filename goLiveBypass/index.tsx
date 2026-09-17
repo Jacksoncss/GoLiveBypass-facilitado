@@ -2254,7 +2254,7 @@ function VpnPanel() {
         ? (status?.externalReason || "Plataforma não suportada")
         : isDependencyMissing
             ? (status?.dependencies?.length ? `Dependências ausentes: ${status.dependencies.join(", ")}` : (status?.externalReason || "Dependências ausentes"))
-            : isBlockedExternal
+            : isBlockedExternal && !status?.managedConflict
                 ? (status?.externalReason || "Túnel externo ativo")
                 : isRecoveryRequired
                     ? "Recuperação de rede pendente"

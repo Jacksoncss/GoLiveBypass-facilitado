@@ -1681,7 +1681,7 @@ function VpnPanel() {
 
             {isDependencyMissing && (
                 <Paragraph role="alert" aria-live="polite">
-                    <strong>Dependências ausentes:</strong> {status?.dependencies?.length ? status.dependencies.join(", ") : (status?.externalReason || "Dependências de rede não encontradas")}. No Linux, certifique-se de que <code>iproute2</code>, <code>wireguard-tools</code> e <code>pkexec</code> estão instalados.
+                    <strong>Dependências ausentes:</strong> {status?.dependencies?.length ? status.dependencies.join(", ") : (status?.externalReason || "Dependências de rede não encontradas")}. No Linux, certifique-se de que <code>iproute2</code>, <code>wireguard-tools</code>, <code>pkexec</code> e o módulo WireGuard do kernel em execução estão disponíveis; depois de atualizar o kernel, reinicie antes de tentar novamente.
                 </Paragraph>
             )}
 

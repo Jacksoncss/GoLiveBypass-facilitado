@@ -5,6 +5,11 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
+### Plugin Linux: preflight do módulo e elevação única
+
+- A ativação verifica o módulo WireGuard do kernel antes de abrir o prompt administrativo. Em kernel atualizado sem os módulos correspondentes, o plugin informa o release em execução e orienta reiniciar no kernel instalado, sem pedir senha.
+- A criação do namespace, interface, configuração, rotas e DNS agora usa uma única chamada privilegiada com rollback próprio, evitando uma senha por comando e preservando o isolamento por aplicativo.
+
 ### Instalador Linux: recuperação de locks órfãos
 
 - Antes de reabrir o Discord nativo, o instalador remove links `Singleton*` deixados por crash ou encerramento forçado somente quando nenhum processo Discord nativo está ativo; uma instância paralela não impede essa recuperação. Locks nativos de uma instância viva são preservados.

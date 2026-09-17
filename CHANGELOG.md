@@ -5,6 +5,11 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
+### Instalador Linux: identidade do mod e clientes paralelos
+
+- A guarda que preserva o mod existente agora considera somente injeções no Discord oficial. Equibop, Vesktop e Legcord são clientes paralelos e não bloqueiam um checkout compatível escolhido para a instalação; conflitos reais no Discord oficial continuam recusados.
+- A regressão cobre Equibop paralelo permitido e mod diferente no Discord oficial bloqueado.
+
 ### Instaladores: canais stable/beta do plugin
 
 - Windows (`-Channel stable|beta`) e Linux (`--channel stable|beta`) usam stable por padrão. Em modo interativo, stable é a opção recomendada, com o canal mais previsível e somente releases estáveis; beta é opt-in: um canal de testes em que você ajuda a comunidade ao testar, encontrar e corrigir erros antes da versão estável. Nenhum canal promete estabilidade.

@@ -986,6 +986,9 @@ EOF
 }
 injection_identities() {
     local resources path
+    # `discord_resources` inclui Equibop/Vesktop/Legcord para o patch direto. Esses
+    # clientes paralelos já carregam o mod dentro do próprio app e não podem ser tratados
+    # como conflito do checkout escolhido para o Discord oficial.
     while IFS= read -r resources; do
         path="$(injected_path "$resources" || true)"
         [ -n "$path" ] || continue
@@ -998,7 +1001,7 @@ injection_identities() {
             *) printf 'desconhecido\n' ;;
         esac
     done <<EOF
-$(discord_resources)
+$(discord_installs)
 EOF
 }
 

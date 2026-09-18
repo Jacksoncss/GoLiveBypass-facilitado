@@ -4,6 +4,125 @@ Todas as mudanças notáveis deste projeto são documentadas aqui. O formato seg
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento
 segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+## [2.0.6] - 2026-09-18
+
+### Devlog da release estável
+
+- **Login Proton destravado:** a sessão Proton passa a ser migrada para DPAPI com substituição atômica e nova tentativa quando o arquivo está somente-leitura ou bloqueado por outro processo no Windows. Falha persistente de armazenamento deixa de ser exibida como senha incorreta e a sessão anterior é preservada para nova tentativa (#280, #302, #308, #310).
+- **Discord encontrado fora de `%LOCALAPPDATA%` (Windows):** a varredura passa a cobrir `%ProgramFiles%`, `%ProgramFiles(x86)%` e `%ProgramW6432%`, o processo em execução (`ExecutablePath`), `App Paths`, handlers de URL, entradas de desinstalação e atalhos conhecidos. Restore, desativação e troca de rota reutilizam o snapshot capturado antes de fechar o Discord (#300).
+- **Ativação Linux confiável:** a ativação só conclui depois de confirmar o PID correto dentro de `discord-vpn`; o botão acompanha o watchdog mesmo sem clique, `--status`/`--probe` não travam com stdin herdado e a autorização no Wayland aceita respostas válidas do diálogo, recorrendo ao `sudo askpass` quando não há agente polkit (#278).
+- **Rotas Proton:** catálogo manual com ping progressivo e destaque da melhor candidata; cada candidato precisa alcançar o gateway do Discord pelo próprio túnel antes de ser escolhido; opção de otimizar ao abrir ou somente ao clicar em **Otimizar rota**.
+- **Instaladores:** canal stable/beta no Windows e Linux (stable é o padrão), injeção verificada por alvo em vez do exit code, preservação do Vencord/Equicord existente, recuperação de locks órfãos e log de instalação local em JSONL com redaction (#289, #293).
+- **Updater:** o portable Windows troca o executável por helper externo depois que o processo antigo sai, com identidade, tamanho, SHA-256 e rollback; o canal estável não recebe beta nem downgrade.
+- **Observabilidade:** GUI, plugin e instaladores mantêm registro local limitado e redigido; o `/golivebypass` continua sendo um relatório manual, sem telemetria automática.
+
+### Detalhes por área
+
+### Plugin Linux: preflight do módulo e elevação única
+
+- A ativação verifica o módulo WireGuard do kernel antes de abrir o prompt administrativo. Em kernel atualizado sem os módulos correspondentes, o plugin informa o release em execução e orienta reiniciar no kernel instalado, sem pedir senha.
+- A criação do namespace, interface, configuração, rotas e DNS agora usa uma única chamada privilegiada com rollback próprio, evitando uma senha por comando e preservando o isolamento por aplicativo.
+
+### Instalador Linux: recuperação de locks órfãos
+
+- Antes de reabrir o Discord nativo, o instalador remove links `Singleton*` deixados por crash ou encerramento forçado somente quando nenhum processo Discord nativo está ativo; uma instância paralela não impede essa recuperação. Locks nativos de uma instância viva são preservados.
+- A regressão cobre remoção segura de locks órfãos, preservação durante uma execução ativa e coexistência com cliente paralelo.
+
+### Instalador Linux: identidade do mod e clientes paralelos
+
+- A guarda que preserva o mod existente agora considera somente injeções no Discord oficial. Equibop, Vesktop e Legcord são clientes paralelos e não bloqueiam um checkout compatível escolhido para a instalação; conflitos reais no Discord oficial continuam recusados.
+- A regressão cobre Equibop paralelo permitido e mod diferente no Discord oficial bloqueado.
+
+### Instaladores: canais stable/beta do plugin
+
+- Windows (`-Channel stable|beta`) e Linux (`--channel stable|beta`) usam stable por padrão. Em modo interativo, stable é a opção recomendada, com o canal mais previsível e somente releases estáveis; beta é opt-in: um canal de testes em que você ajuda a comunidade ao testar, encontrar e corrigir erros antes da versão estável. Nenhum canal promete estabilidade.
+- A preferência é persistida separadamente em `plugins.GoLiveBypass.updateChannel` no `settings.json` do Equicord/Vencord, preservando `autoUpdate` e as demais chaves; as configurações da GUI e do standalone não são tocadas.
+- Checagens e instalações escolhem a maior versão SemVer válida do canal, exigem release publicada com ZIP e SHA-256, rejeitam metadata inconsistente e nunca fazem downgrade. `--check-update`/`-Mode CheckUpdate` consultam a API sem baixar o ZIP, mas podem persistir a preferência de canal após uma operação válida.
+- Como o canal selecionado exige um ZIP e seu SHA-256 da mesma release, uma release sem esses assets agora falha de forma explícita e não cai silenciosamente em `RepoRaw`; use `--plugin-source`/`-PluginSource` somente quando quiser uma fonte local explícita.
+- O menu principal agora oferece `Mudar canal de atualizacoes` com submenu Stable/Beta/Cancelar. A troca salva imediatamente e retorna ao menu sem instalar, atualizar, compilar, injetar ou reiniciar; sem checkout, mostra como preparar um mod primeiro e não grava configuração ambígua. No fallback textual, `uninstall`/`restore` passam de `[4]`/`[5]` para `[5]`/`[6]`.
+
+
+### Instalador Windows: injeção e fonte ausente
+
+- A injeção oficial verifica o stub de cada alvo selecionado, em vez de confiar no exit code do `pnpm`; a chamada não passa o separador extra e limita detalhes de falha.
+- Sem checkout fonte válido, detectar Vencord ou Equicord no Discord não bloqueia mais a escolha/download explícito de um mod. Nenhuma fonte ambígua ou distribuição instalada é aceita como checkout.
+
+### Observabilidade local/manual do plugin e dos instaladores
+
+- O plugin Vencord/Equicord passa a manter eventos JSONL locais com correlação por operação/tentativa, view textual compatível em `getLog()`, redaction recursiva, retenção limitada, dedupe de watchdog/progresso e métricas do helper sem stdout/stderr bruto. O `/golivebypass` continua sendo um relatório manual e limitado.
+- Os instaladores Windows/Linux registram `installer.log` local em JSONL, com timestamp UTC em milissegundos, rotação por bytes sem linhas parciais, redaction de credenciais/URLs/caminhos e tolerância a falha de escrita.
+- A #293 fica distinguível por evento `MOD_INSTALLED_WITHOUT_CHECKOUT`: o gate preserva `app.asar`/`_app.asar` quando Vencord/Equicord é detectado sem checkout comprovado. A causa específica do checkout ausente continua hipótese sem evidência adicional.
+- Não há telemetria nem envio automático de bug report. Downloads normais do GitHub para instalar/atualizar o plugin continuam no fluxo existente; nenhuma decisão de roteamento, WireGuard/WireSock, ownership, relaunch ou rollback foi alterada.
+- Cobertura segura: `test-installer-log.sh` valida redaction, timestamp, rotação, falha de escrita, ausência de POST e #293; os testes de logger/helper do plugin cobrem JSONL, correlação, dedupe, restore, limites e dados sintéticos sem credenciais reais.
+
+### Instalador Linux: seleção direta do cliente Discord
+
+- No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.
+
+### Instalador Linux: pergunta de qual cliente vem antes de mexer no checkout
+
+- Relato: com vários clientes e TUI, a pergunta "Quais Discords recebem o plugin?" só aparecia depois de instalar dependências, baixar/compilar o plugin — ou seja, depois de `ensure_toolchain`, `install_plugin_source` e `build_mod`. Quem queria apenas escolher o cliente esperava a build inteira, e um **Esc** no menu chegava tarde demais.
+- **Correção:** `do_install` agora chama `selecionar_alvos_inject` logo após `select_target` definir o checkout e **antes** de `ensure_toolchain`, `install_plugin_source` e `build_mod`. A lista escolhida é reaproveitada em `alvos_ja_injetados`/`injetar_alvos`, então o seletor roda uma única vez. Com vários clientes e TTY, a pergunta aparece primeiro e **Esc cancela sem instalar dependências, sem compilar o plugin e sem tocar em nenhum Discord**. Um único alvo e `--yes`/não-interativo continuam idênticos (sem pergunta).
+- `tests/test-installer-client-selector-full-flow.sh` ganhou duas verificações de comportamento: a ordem real (`seletor` antes de `ensure_toolchain`/`install_plugin_source`/`build_mod`, chamado exatamente uma vez) e o cancelamento (`Esc` derruba o `do_install` sem executar nenhuma etapa de mutação). O contador de vereditos do teste foi corrigido — o `ok` do próprio instalador sombreava o do teste, então o resumo sempre dizia "0 OK".
+- Evidência: `sh tests/test-installer-client-selector-full-flow.sh` → 14 OK, 0 falhas; `tests/test-inject-selector.sh` 18/18 e `tests/test-selector.sh` 19/19 sem regressão; smoke PTY real (TUI de verdade, HOME falso, nenhuma etapa toca Discord) mostrou o menu antes das mutações e o `Esc` cancelando sem efeitos.
+
+### Teste: regressão end-to-end do seletor de clientes do instalador Linux
+
+- `tests/test-installer-client-selector-full-flow.sh` dirige o fluxo completo (`main_menu` → `do_install` → `select_target` → `selecionar_alvos_inject` → `escolher_alvos_inject` → `tui_menu_multi`) com HOME/XDG temporários e clientes falsos (oficial + Vesktop + Legcord + Canary + flatpak), sem PTY e sem tocar Discord real. Garante que o seletor aparece com todos os clientes detectados, que o caminho pós-criação do checkout também oferece o menu, e que `--yes`/`ASSUME_YES` mantém o comportamento não-interativo (sem seletor, oficiais vão direto para injeção).
+
+### GUI Linux: confirmação de processo no namespace (#278)
+
+- Causa confirmada no caminho reportado: `wait_discord_started` aceitava qualquer processo `Discord` encontrado por `pgrep`, sem provar que o PID correto tinha entrado em `discord-vpn`; o watchdog/status também podiam concluir `INACTIVE` porque a inspeção do namespace era feita sem elevação.
+- Correção: a ativação só conclui após confirmar, pelo caminho elevado já autorizado na própria ativação, o PID do cliente no namespace. Falha nessa confirmação fecha o processo observado, remove o namespace e propaga uma causa sanitizada; status, probe e watchdog usam apenas consultas readonly não interativas (`sudo -n`) e permanecem log-only.
+- A guarda serial existente continua tratando uma ativação concorrente/duplicada como no-op quando o estado confirmado é `ACTIVE`, sem encerrar uma sessão recém-confirmada. `portal=ausente`, updater 404 e falhas de handshake/HTTP/IP continuam diagnósticos, não bloqueios.
+- Hipótese restante: um encerramento espontâneo posterior do Electron (por Wayland/Flatpak/portal ou atualização) não pode ser atribuído à confirmação de namespace sem log de crash correspondente. Limitação: não houve ativação real, `sudo`/`pkexec`, encerramento do Discord ou alteração de rede/namespace neste host.
+
+### GUI Windows: descoberta de instalações Discord fora de `%LOCALAPPDATA%` (#300)
+
+- A GUI Windows passa a procurar as raízes conhecidas `%ProgramFiles%`, `%ProgramFiles(x86)%` e `%ProgramW6432%` além de `%LOCALAPPDATA%`, nos layouts `<raiz>\<cliente>` e `<raiz>\Programs\<cliente>`, sem depender só das raízes fixas antigas.
+- Instalações em execução são reconhecidas pelo `ExecutablePath` do processo; instalações paradas, por `App Paths`, handlers de URL (`discord`/`discordptb`/`discordcanary`/`vesktop`/`equibop`/`legcord`), entradas `Uninstall` limitadas e atalhos conhecidos (Start Menu do usuário e comum, Desktop do usuário e público). Não há varredura de disco, enumeração recursiva de volume nem inventário irrestrito da máquina.
+- Restore, desativação, troca de rota (manual/Proton) e rollback capturam o snapshot de instalações **antes** de encerrar o Discord e reutilizam a mesma lista ao relançar, sem depender de um novo scan depois que o processo terminou.
+- Falhas parciais (timeout, CIM/registro indisponível, truncamento de enumeração) ficam restritas ao diagnóstico (`scan.fonte`) e não apagam candidatos de outras fontes nem transformam indisponibilidade em ausência comprovada.
+- `windowsAllowedAppPaths()`/`AllowedApps` permanecem sem alteração; Linux, macOS, plugin e standalone não mudam.
+- `scan.inicio`, `scan.raiz` e `scan.install` agora sanitizam o caminho antes de registrar: raízes conhecidas viram placeholders (`%LOCALAPPDATA%`, `%PROGRAMFILES%`, `<usuario>`), trechos fora do layout conhecido viram hash curto e o valor passa por clipping — sem expor usuário nem caminhos customizados.
+- Limitação: uma instalação portable sem registro, atalho ou processo em execução continua invisível; MSIX/MS Store não tem inventário AppX completo nesta versão (só é detectada quando processo, registro consultado ou atalho fornecem o executável exato).
+
+### GUI Windows: migração segura da sessão Proton (#288, #290)
+
+- O helper fecha a sessão legada antes de migrá-la para DPAPI e mantém a substituição atômica. Em arquivo readonly ou bloqueio transitório de compartilhamento, remove somente o atributo readonly e tenta novamente por janela limitada; em falha persistente preserva o cache anterior e devolve `SESSION_PERSISTENCE`, sem acusar senha incorreta ou aceitar fallback em texto claro.
+- A GUI passa a obter apenas a identidade pelo contrato bloqueado `-session-username` do helper, compatível com cache DPAPI, e informa que a senha não foi verificada quando a persistência falha.
+- Coberto por sessão sintética no Windows: arquivo readonly, handle sem share-delete, falha persistente que preserva o arquivo e estresse concorrente. Não inclui login Proton nem Discord reais.
+
+### Instalador Windows: injeção verificável por alvo (#289)
+
+- A chamada oficial usa `pnpm run inject --location <raiz>` sem o separador extra; stdout/stderr e exceções são limitados no diagnóstico.
+- O exit code deixou de ser a autoridade: cada `resources` oficial só é aprovado quando seu stub aponta para o checkout selecionado. Código não-zero ou exceção com pós-condição confirmada fica como aviso; código zero sem pós-condição falha.
+- Testes seguros cobrem argumentos, saída limitada, exceção, código não-zero e dois alvos independentes; não executam Discord real.
+
+### Plugin Windows: retomada segura do WireSock da GUI
+
+- Ao clicar em **Ativar agora**, o plugin reconhece pelo argumento `-config` uma instância WireSock pertencente à GUI GoLiveBypass ou ao pool de rotas dela, encerra somente os serviços e PIDs comprovadamente gerenciados e assume o serviço com a configuração privada `plugin-vpn\wiresock-discord.conf`. A ativação automática do boot e o watchdog continuam sem encerrar processos.
+- Perfis WireSock externos, mistos ou com origem desconhecida continuam bloqueados e preservados. A comparação exige o caminho exato do argumento de configuração, aceita caminhos Windows entre aspas e não confunde sufixos como `.bak`.
+- Verificado no Equicord da VM Windows x64: o painel inicialmente identificou a configuração da GUI, manteve **Ativar agora** disponível, registrou a retomada, relançou o Discord e confirmou serviço/PID próprios, HTTPS do Discord e isolamento por `AllowedApps`. Linux, standalone e o transporte legado não foram alterados.
+
+## [2.0.6-beta-12] - 2026-09-12
+
+### Plugin Vencord/Equicord
+
+- O plugin sai da linha de testes: tem transporte WireGuard/WireSock próprio (Windows x64 e Linux x64), seleção manual de rota Proton, updater com canal stable/beta, relato de bug pelo Discord e não depende da GUI nem do standalone.
+- No Windows, a ativação explícita retoma com segurança uma instância WireSock que pertença à GUI ou ao pool de rotas dela; perfis externos continuam preservados. No Linux, a ativação verifica o módulo WireGuard do kernel, pede elevação uma única vez por ativação e mantém o isolamento por aplicativo.
+
+### Limitação conhecida: macOS
+
+- Esta versão não inclui suporte a macOS: os auxiliares específicos da plataforma não fazem parte da árvore e o updater do app permanece desligado nessa plataforma. Não há validação de release em macOS neste ciclo.
+
+### Agradecimentos
+
+- Obrigado a @bezu, criador do projeto.
+- Obrigado a todos os beta testers que rodaram as betas 2.0.6-beta-1 a 2.0.6-beta-22 e relataram problemas com log.
+
 ## [2.0.6-beta-22] - 2026-09-17
 
 ### GUI: correção do empacotamento da animação Proton
@@ -34,29 +153,6 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Limitação conhecida: macOS
 
 - Os auxiliares `writeError`, `macPermissionDenied`, `openAppManagementSettings`, `enclosingApp` e o deep-link `x-apple.systempreferences` não estão presentes na árvore desta beta e não são referenciados pelo renderer, IPC ou preload. O canal beta não publica macOS; não há alteração de comportamento a validar nessa plataforma.
-
-## [Unreleased]
-### Instaladores: canais stable/beta do plugin
-
-- Windows (`-Channel stable|beta`) e Linux (`--channel stable|beta`) usam stable por padrão. Em modo interativo, stable é a opção recomendada, com o canal mais previsível e somente releases estáveis; beta é opt-in: um canal de testes em que você ajuda a comunidade ao testar, encontrar e corrigir erros antes da versão estável. Nenhum canal promete estabilidade.
-- A preferência é persistida separadamente em `plugins.GoLiveBypass.updateChannel` no `settings.json` do Equicord/Vencord, preservando `autoUpdate` e as demais chaves; as configurações da GUI e do standalone não são tocadas.
-- Checagens e instalações escolhem a maior versão SemVer válida do canal, exigem release publicada com ZIP e SHA-256, rejeitam metadata inconsistente e nunca fazem downgrade. `--check-update`/`-Mode CheckUpdate` consultam a API sem baixar o ZIP, mas podem persistir a preferência de canal após uma operação válida.
-- Como o canal selecionado exige um ZIP e seu SHA-256 da mesma release, uma release sem esses assets agora falha de forma explícita e não cai silenciosamente em `RepoRaw`; use `--plugin-source`/`-PluginSource` somente quando quiser uma fonte local explícita.
-- O menu principal agora oferece `Mudar canal de atualizacoes` com submenu Stable/Beta/Cancelar. A troca salva imediatamente e retorna ao menu sem instalar, atualizar, compilar, injetar ou reiniciar; sem checkout, mostra como preparar um mod primeiro e não grava configuração ambígua. No fallback textual, `uninstall`/`restore` passam de `[4]`/`[5]` para `[5]`/`[6]`.
-
-
-### Instalador Windows: injeção e fonte ausente
-
-- A injeção oficial verifica o stub de cada alvo selecionado, em vez de confiar no exit code do `pnpm`; a chamada não passa o separador extra e limita detalhes de falha.
-- Sem checkout fonte válido, detectar Vencord ou Equicord no Discord não bloqueia mais a escolha/download explícito de um mod. Nenhuma fonte ambígua ou distribuição instalada é aceita como checkout.
-
-### Observabilidade local/manual do plugin e dos instaladores
-
-- O plugin Vencord/Equicord passa a manter eventos JSONL locais com correlação por operação/tentativa, view textual compatível em `getLog()`, redaction recursiva, retenção limitada, dedupe de watchdog/progresso e métricas do helper sem stdout/stderr bruto. O `/golivebypass` continua sendo um relatório manual e limitado.
-- Os instaladores Windows/Linux registram `installer.log` local em JSONL, com timestamp UTC em milissegundos, rotação por bytes sem linhas parciais, redaction de credenciais/URLs/caminhos e tolerância a falha de escrita.
-- A #293 fica distinguível por evento `MOD_INSTALLED_WITHOUT_CHECKOUT`: o gate preserva `app.asar`/`_app.asar` quando Vencord/Equicord é detectado sem checkout comprovado. A causa específica do checkout ausente continua hipótese sem evidência adicional.
-- Não há telemetria nem envio automático de bug report. Downloads normais do GitHub para instalar/atualizar o plugin continuam no fluxo existente; nenhuma decisão de roteamento, WireGuard/WireSock, ownership, relaunch ou rollback foi alterada.
-- Cobertura segura: `test-installer-log.sh` valida redaction, timestamp, rotação, falha de escrita, ausência de POST e #293; os testes de logger/helper do plugin cobrem JSONL, correlação, dedupe, restore, limites e dados sintéticos sem credenciais reais.
 
 ## [2.0.6-beta-19] - 2026-09-14
 
@@ -97,23 +193,6 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 - Os instaladores Linux e Windows preservam um Discord já patchado por Vencord/Equicord quando a origem não pode ser resolvida, recusando o alvo em vez de substituir `app.asar` ou `_app.asar`.
 - Os modos temporário e **Restaurar tudo** removem e recompilam somente `goLiveBypass`; não executam `pnpm uninject` nem desfazem o patch do mod.
 - Evidência: `tests/test-vencord-preserve.sh` e `tests/test-vencord-preserve.ps1`, com validação de BOM/AST no PS1.
-
-## [Unreleased]
-### Instalador Linux: seleção direta do cliente Discord
-
-- No menu com vários clientes detectados, as setas destacam o destino e **Enter** agora seleciona esse cliente imediatamente quando ainda não há marcações. **Espaço** e `a` continuam disponíveis para instalar em vários clientes; **Esc** continua cancelando.
-
-### Instalador Linux: pergunta de qual cliente vem antes de mexer no checkout
-
-- Relato: com vários clientes e TUI, a pergunta "Quais Discords recebem o plugin?" só aparecia depois de instalar dependências, baixar/compilar o plugin — ou seja, depois de `ensure_toolchain`, `install_plugin_source` e `build_mod`. Quem queria apenas escolher o cliente esperava a build inteira, e um **Esc** no menu chegava tarde demais.
-- **Correção:** `do_install` agora chama `selecionar_alvos_inject` logo após `select_target` definir o checkout e **antes** de `ensure_toolchain`, `install_plugin_source` e `build_mod`. A lista escolhida é reaproveitada em `alvos_ja_injetados`/`injetar_alvos`, então o seletor roda uma única vez. Com vários clientes e TTY, a pergunta aparece primeiro e **Esc cancela sem instalar dependências, sem compilar o plugin e sem tocar em nenhum Discord**. Um único alvo e `--yes`/não-interativo continuam idênticos (sem pergunta).
-- `tests/test-installer-client-selector-full-flow.sh` ganhou duas verificações de comportamento: a ordem real (`seletor` antes de `ensure_toolchain`/`install_plugin_source`/`build_mod`, chamado exatamente uma vez) e o cancelamento (`Esc` derruba o `do_install` sem executar nenhuma etapa de mutação). O contador de vereditos do teste foi corrigido — o `ok` do próprio instalador sombreava o do teste, então o resumo sempre dizia "0 OK".
-- Evidência: `sh tests/test-installer-client-selector-full-flow.sh` → 14 OK, 0 falhas; `tests/test-inject-selector.sh` 18/18 e `tests/test-selector.sh` 19/19 sem regressão; smoke PTY real (TUI de verdade, HOME falso, nenhuma etapa toca Discord) mostrou o menu antes das mutações e o `Esc` cancelando sem efeitos.
-
-### Teste: regressão end-to-end do seletor de clientes do instalador Linux
-
-- `tests/test-installer-client-selector-full-flow.sh` dirige o fluxo completo (`main_menu` → `do_install` → `select_target` → `selecionar_alvos_inject` → `escolher_alvos_inject` → `tui_menu_multi`) com HOME/XDG temporários e clientes falsos (oficial + Vesktop + Legcord + Canary + flatpak), sem PTY e sem tocar Discord real. Garante que o seletor aparece com todos os clientes detectados, que o caminho pós-criação do checkout também oferece o menu, e que `--yes`/`ASSUME_YES` mantém o comportamento não-interativo (sem seletor, oficiais vão direto para injeção).
-
 
 ## [2.0.6-beta-8] - 2026-09-11
 

@@ -41,6 +41,9 @@ printf '\n== 1. Patch existente sem checkout fonte ==\n'
 new_tree no-source
 REPORT_NO_AUTO=1 SCRIPT_PATH="$REPO/installer/golivebypass-installer.sh" SCRIPT_DIR="$REPO/installer" PLUGIN_DIR_NAME=goLiveBypass ASSUME_YES=1 . "$HARNESS"
 discord_resources() { printf '%s\n' "$RES"; }
+# O instalador também define `ok`; reinstalar o contador depois do source evita que o
+# resumo fique em zero mesmo quando as asserções passam.
+ok() { PASS=$((PASS + 1)); printf '  [OK] %s\n' "$1"; }
 before_app="$(sha256sum "$RES/app.asar" | cut -d' ' -f1)"
 before_backup="$(sha256sum "$RES/_app.asar" | cut -d' ' -f1)"
 if (find_checkout >/dev/null 2>"$TMP/no-source.err"); then
@@ -122,6 +125,83 @@ if [ ! -e "$ROOT/src/userplugins/goLiveBypass" ] && [ "$before_app" = "$after_ap
 else
     bad 'Restaurar tudo desfez ou alterou o patch do mod'
 fi
+
+printf '\n== 5. Cliente paralelo não bloqueia checkout escolhido ==\n'
+MIXED_HOME="$TMP/home-mixed"
+OFFICIAL="$MIXED_HOME/.config/discord/app-1.0.0/resources"
+PARALLEL="$MIXED_HOME/.local/share/equibop/resources"
+ROOT="$TMP/Equicord-mixed"
+mkdir -p "$OFFICIAL/app" "$PARALLEL/app" "$ROOT/src/utils"
+printf 'official-original\n' > "$OFFICIAL/app.asar"
+printf 'require("%s/Equibop/dist/desktop")\n' "$TMP" > "$PARALLEL/app/index.js"
+printf '{"name":"equicord"}\n' > "$ROOT/package.json"
+printf types > "$ROOT/src/utils/types.ts"
+
+# O cliente paralelo pode apontar para outro build, mas isso não é conflito do
+# Discord oficial: o patch direto tem uma guarda própria em patch_parallel_one().
+discord_resources() { printf '%s\n' "$OFFICIAL" "$PARALLEL"; }
+select_target() { printf '%s\n' "$ROOT"; }
+select_update_channel() { printf 'stable\n'; }
+installer_log() { :; }
+ensure_toolchain() { :; }
+install_plugin_source() { :; }
+build_mod() { :; }
+selecionar_alvos_inject() { printf 'O|%s\n' "$OFFICIAL"; }
+select_persistence() { return 0; }
+alvos_ja_injetados() { return 0; }
+stop_discord() { :; }
+set_plugin_settings() { :; }
+start_discord() { :; }
+injected_flatpak_id() { return 1; }
+
+if (do_install "$ROOT" >/dev/null 2>"$TMP/mixed-ok.err"); then
+    ok 'Equibop paralelo não bloqueou checkout Equicord'
+else
+    bad 'Equibop paralelo bloqueou checkout Equicord'
+fi
+
+# A mesma guarda continua protegendo o Discord oficial contra trocar o mod.
+printf 'require("%s/Vencord/dist/desktop")\n' "$TMP" > "$OFFICIAL/app/index.js"
+if (do_install "$ROOT" >/dev/null 2>"$TMP/mixed-conflict.err"); then
+    bad 'mod diferente no Discord oficial foi aceito'
+else
+    case "$(cat "$TMP/mixed-conflict.err")" in
+        *Vencord*Equicord*|*Equicord*Vencord*) ok 'mod diferente no Discord oficial continua bloqueado' ;;
+        *) bad 'bloqueio do Discord oficial não cita os dois mods' ;;
+    esac
+fi
+
+printf '\n== 6. Locks órfãos não impedem reabertura ==\n'
+LOCK_HOME="$TMP/home-lock"
+LOCK_DIR="$LOCK_HOME/.config/discord"
+mkdir -p "$LOCK_DIR"
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    ln -s "$TMP/missing-$item" "$LOCK_DIR/$item"
+done
+XDG_CONFIG_HOME="$LOCK_HOME/.config"
+discord_running() { return 0; }
+native_discord_running() { return 1; }
+clear_stale_discord_locks
+stale=0
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    [ -L "$LOCK_DIR/$item" ] && stale=1
+done
+[ "$stale" -eq 0 ] \
+    && ok 'locks órfãos foram removidos sem processo Discord' \
+    || bad 'locks órfãos permaneceram sem processo Discord'
+
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    ln -s "$TMP/live-$item" "$LOCK_DIR/$item"
+done
+native_discord_running() { return 0; }
+clear_stale_discord_locks
+alive=0
+for item in SingletonCookie SingletonLock SingletonSocket; do
+    [ -L "$LOCK_DIR/$item" ] || alive=1
+done
+[ "$alive" -eq 0 ] \
+    && ok 'locks foram preservados enquanto havia processo Discord' \
+    || bad 'locks ativos foram removidos indevidamente'
 
 printf '\n== Resultado: %s ok, %s falhas ==\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

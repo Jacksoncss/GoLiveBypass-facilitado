@@ -125,7 +125,7 @@ const RTCConnectionStore: DiagnosticStore = findStoreLazy("RTCConnectionStore");
 
 const VIDEO_GUARD = "2026-08-video-guard";
 
-const PLUGIN_VERSION = "2.0.6-beta-22";
+const PLUGIN_VERSION = "2.0.6";
 const PLUGIN_UPDATE_STATUS_POLL_INTERVAL_MS = 15_000;
 const PLUGIN_UPDATE_STATUS_TIMEOUT_MS = 10_000;
 const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 2 * 60_000 + 15_000;
@@ -2293,7 +2293,7 @@ function VpnPanel() {
 
             {isDependencyMissing && (
                 <Paragraph role="alert" aria-live="polite">
-                    <strong>Dependências ausentes:</strong> {status?.dependencies?.length ? status.dependencies.join(", ") : (status?.externalReason || "Dependências de rede não encontradas")}. No Linux, certifique-se de que <code>iproute2</code>, <code>wireguard-tools</code> e <code>pkexec</code> estão instalados.
+                    <strong>Dependências ausentes:</strong> {status?.dependencies?.length ? status.dependencies.join(", ") : (status?.externalReason || "Dependências de rede não encontradas")}. No Linux, certifique-se de que <code>iproute2</code>, <code>wireguard-tools</code>, <code>pkexec</code> e o módulo WireGuard do kernel em execução estão disponíveis; depois de atualizar o kernel, reinicie antes de tentar novamente.
                 </Paragraph>
             )}
 

@@ -1793,22 +1793,6 @@ export class PluginVpnController {
                 return { success: false, state: this.state, error: detail };
             }
 
-            this.state = "authorizing";
-            const authorization = await linux.requestLinuxAuthorization();
-            if (!authorization.authorized) {
-                const code = authorization.code === "CANCELLED"
-                    ? "AUTHORIZATION_CANCELLED"
-                    : authorization.code === "TIMEOUT"
-                        ? "AUTHORIZATION_TIMEOUT"
-                        : "AUTHORIZATION_FAILED";
-                const detail = authorization.error || "Não foi possível obter autorização administrativa via polkit.";
-                this.state = "inactive";
-                this.diagnosticGeneration++;
-                this.setDiagnostic("dependency", false, detail);
-                this.options.log("warn", "autorização administrativa Linux recusada", { code });
-                return { success: false, state: this.state, code, error: detail };
-            }
-            this.state = "preparing";
 
             if (existingInspection.active) {
                 const cleanupTarget = existing?.namespace && existing.interfaceName
@@ -1854,7 +1838,7 @@ export class PluginVpnController {
             const raw = fs.readFileSync(this.profilePath, "utf8");
             const validation = validateWireGuardConfig(raw);
             if (!validation.valid) throw new Error(validation.error);
-            this.state = "starting";
+            this.state = "authorizing";
             await linux.startLinuxNetwork(owner, raw, this.dataDir, {
                 namespace: owner.namespace,
                 interfaceName: owner.interfaceName,
@@ -1900,6 +1884,15 @@ export class PluginVpnController {
             this.diagnosticGeneration++;
             this.setDiagnostic("wireguard", false, message);
             this.options.log("error", "ativação VPN Linux falhou", { erro: message });
+            const authorizationCode = linux.linuxAuthorizationErrorCode(error);
+            if (authorizationCode) {
+                const code = authorizationCode === "CANCELLED"
+                    ? "AUTHORIZATION_CANCELLED"
+                    : authorizationCode === "TIMEOUT"
+                        ? "AUTHORIZATION_TIMEOUT"
+                        : "AUTHORIZATION_FAILED";
+                return { success: false, state: this.state, code, error: message };
+            }
             return { success: false, state: this.state, error: message };
         }
     }

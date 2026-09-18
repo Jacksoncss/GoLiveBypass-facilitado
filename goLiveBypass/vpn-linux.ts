@@ -8,6 +8,7 @@ import { execFileSync, spawn } from "child_process";
 import { randomUUID } from "crypto";
 import fs from "fs";
 import net from "net";
+import os from "os";
 import path from "path";
 
 import {
@@ -40,6 +41,7 @@ export interface LinuxDependencyStatus {
     elevationOk: boolean;
     hasIp: boolean;
     hasWg: boolean;
+    wireGuardModule: LinuxWireGuardModuleState;
     hasPkexec: boolean;
     hasFlatpakSpawn: boolean;
     hasSystemdRun: boolean;
@@ -51,6 +53,7 @@ export interface LinuxDependencyStatus {
     paths: {
         ip: string | null;
         wg: string | null;
+        modprobe: string | null;
         pkexec: string | null;
         systemdRun: string | null;
         flatpakSpawn: string | null;
@@ -60,6 +63,7 @@ export interface LinuxDependencyStatus {
     };
 }
 export type LinuxAuthorizationCode = "AUTHORIZED" | "CANCELLED" | "TIMEOUT" | "FAILED";
+export type LinuxWireGuardModuleState = "loaded" | "available" | "missing";
 
 export interface LinuxAuthorizationResult {
     authorized: boolean;
@@ -113,7 +117,7 @@ const DEFAULT_SYSTEM_DIRS = Object.freeze([
 const FLATPAK_HOST_BINARIES = new Set([
     "ip",
     "wg",
-    "pkexec",
+    "modprobe",
     "systemd-run",
     "install",
     "mkdir",
@@ -166,6 +170,54 @@ export function isLinux(platform: string = process.platform): boolean {
 
 export function isFlatpak(env: NodeJS.ProcessEnv = process.env): boolean {
     return Boolean(env.FLATPAK_ID || env.FLATPAK_SANDBOX_DIR || fs.existsSync("/.flatpak-info"));
+}
+
+export function formatLinuxWireGuardModuleIssue(
+    state: LinuxWireGuardModuleState,
+    kernelRelease: string,
+    modulesDirectoryAvailable: boolean,
+): string | null {
+    if (state !== "missing") return null;
+    const release = kernelRelease.trim() || "atual";
+    if (!modulesDirectoryAvailable) {
+        return `O kernel Linux em execução (${release}) não possui os módulos instalados. Reinicie no kernel instalado ou instale os módulos correspondentes antes de ativar.`;
+    }
+    return `O módulo WireGuard não está disponível no kernel Linux em execução (${release}). Instale ou ative o módulo WireGuard antes de ativar.`;
+}
+
+export function linuxWireGuardModuleState(env: NodeJS.ProcessEnv = process.env): LinuxWireGuardModuleState {
+    if (!isLinux()) return "missing";
+    if (fs.existsSync("/sys/module/wireguard")) return "loaded";
+
+    const modprobe = findSystemBinary("modprobe", env);
+    if (!modprobe) return "missing";
+    try {
+        if (isFlatpak(env)) {
+            const flatpakSpawn = findSystemBinary("flatpak-spawn", env);
+            if (!flatpakSpawn) return "missing";
+            execFileSync(flatpakSpawn, ["--host", modprobe, "-n", "-v", "wireguard"], {
+                stdio: "ignore",
+                timeout: 2000,
+            });
+        } else {
+            execFileSync(modprobe, ["-n", "-v", "wireguard"], {
+                stdio: "ignore",
+                timeout: 2000,
+            });
+        }
+        return "available";
+    } catch {
+        return "missing";
+    }
+}
+
+export function linuxWireGuardModuleIssue(env: NodeJS.ProcessEnv = process.env): string | null {
+    if (!isLinux()) return null;
+    const release = os.release().trim() || "atual";
+    const state = linuxWireGuardModuleState(env);
+    const modulesDirectoryAvailable = fs.existsSync(`/lib/modules/${release}`)
+        || fs.existsSync(`/usr/lib/modules/${release}`);
+    return formatLinuxWireGuardModuleIssue(state, release, modulesDirectoryAvailable);
 }
 
 export function isProtectedLinuxName(name: string): boolean {
@@ -392,6 +444,93 @@ class LinuxAuthorizationError extends Error {
     }
 }
 
+export type LinuxPrivilegedCommand = readonly [file: string, args: readonly string[]];
+
+function shellQuote(value: string): string {
+    return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+export function buildLinuxPrivilegedScript(
+    commands: readonly LinuxPrivilegedCommand[],
+    rollback: readonly LinuxPrivilegedCommand[] = [],
+): string {
+    if (commands.length === 0) throw new Error("Nenhum comando privilegiado foi informado.");
+    const render = (command: LinuxPrivilegedCommand): string =>
+        [command[0], ...command[1]].map(shellQuote).join(" ");
+    const lines = ["set -e"];
+    if (rollback.length > 0) {
+        lines.push("cleanup() {");
+        for (const command of rollback) {
+            lines.push(`    ${render(command)} >/dev/null 2>&1 || true`);
+        }
+        lines.push("}");
+        lines.push("trap cleanup 0");
+        lines.push("trap 'cleanup; exit 143' HUP INT TERM");
+    }
+    commands.forEach((command, index) => {
+        lines.push(`printf '%s\\n' ${shellQuote(`__GOLIVE_STEP__${index}`)} >&2`);
+        lines.push(render(command));
+    });
+    if (rollback.length > 0) lines.push("trap - 0 HUP INT TERM");
+    return `${lines.join("\n")}\n`;
+}
+
+async function execPrivilegedSequence(
+    commands: readonly LinuxPrivilegedCommand[],
+    options?: {
+        timeoutMs?: number;
+        signal?: AbortSignal;
+        env?: NodeJS.ProcessEnv;
+        rollback?: readonly LinuxPrivilegedCommand[];
+    },
+): Promise<CommandResult> {
+    const env = options?.env || process.env;
+    const shellPath = findSystemBinary("sh", env) || "/bin/sh";
+    const inNamespace = isProcessInNamespace(undefined, env);
+    const script = buildLinuxPrivilegedScript(commands, options?.rollback);
+    const spec = resolveCommandInvocation(shellPath, ["-c", script], {
+        elevated: true,
+        inNamespace,
+        isFlatpakEnv: isFlatpak(env),
+        env,
+    });
+    let result = await runCommandAsync(spec, options);
+    const initialFailure = result.exitCode === null || result.exitCode === 0
+        ? null
+        : new LinuxAuthorizationError(
+            safeDiagnosticDetail(result.stderr || result.stdout || `Exit code ${result.exitCode}`),
+            result.exitCode,
+        );
+    if (initialFailure && shouldUseTerminalAuthorizationFallback(initialFailure)) {
+        const pkexec = findSystemBinary("pkexec", env);
+        const terminalSpec = pkexec
+            ? resolveTerminalAuthorizationSpec(pkexec, shellPath, env, ["-c", script])
+            : null;
+        if (terminalSpec) result = await runCommandAsync(terminalSpec, options);
+    }
+    if (result.exitCode !== 0) {
+        const match = /__GOLIVE_STEP__(\d+)/.exec(result.stderr);
+        const step = match ? Number(match[1]) : -1;
+        const failedCommand = Number.isInteger(step) && step >= 0 && step < commands.length
+            ? commands[step]
+            : null;
+        const detail = safeDiagnosticDetail(
+            result.stderr.replace(/__GOLIVE_STEP__\d+/g, "").trim()
+                || result.stdout
+                || `Exit code ${result.exitCode}`,
+        );
+        if (result.exitCode === 126) {
+            throw new LinuxAuthorizationError("A autorização administrativa foi cancelada.", result.exitCode);
+        }
+        throw new Error(`Falha ao executar ${failedCommand ? path.basename(failedCommand[0]) : "comando privilegiado"}: ${detail}`);
+    }
+    return result;
+}
+
+export function linuxAuthorizationErrorCode(error: unknown): LinuxAuthorizationCode | null {
+    return error instanceof LinuxAuthorizationError ? classifyLinuxAuthorizationError(error) : null;
+}
+
 async function runAuthorizationCommand(
     spec: CommandSpec,
     options: { timeoutMs: number; signal?: AbortSignal },
@@ -420,22 +559,28 @@ function shouldUseTerminalAuthorizationFallback(error: unknown): boolean {
 const AUTHORIZATION_TERMINAL_TITLE = "GoLiveBypass — autorização do sistema";
 const AUTHORIZATION_TERMINALS = ["alacritty", "foot", "kitty", "xterm", "gnome-terminal", "konsole"] as const;
 
-function resolveTerminalAuthorizationSpec(pkexec: string, truePath: string, env: NodeJS.ProcessEnv): CommandSpec | null {
+function resolveTerminalAuthorizationSpec(
+    pkexec: string,
+    commandPath: string,
+    env: NodeJS.ProcessEnv,
+    commandArgs: string[] = [],
+): CommandSpec | null {
+    const elevatedArgs = [pkexec, commandPath, ...commandArgs];
     for (const name of AUTHORIZATION_TERMINALS) {
         const terminal = findSystemBinary(name, env);
         if (!terminal) continue;
 
         const terminalArgs = name === "alacritty"
-            ? ["--title", AUTHORIZATION_TERMINAL_TITLE, "--command", pkexec, truePath]
+            ? ["--title", AUTHORIZATION_TERMINAL_TITLE, "--command", ...elevatedArgs]
             : name === "foot"
-                ? [`--title=${AUTHORIZATION_TERMINAL_TITLE}`, pkexec, truePath]
+                ? [`--title=${AUTHORIZATION_TERMINAL_TITLE}`, ...elevatedArgs]
                 : name === "kitty"
-                    ? ["--title", AUTHORIZATION_TERMINAL_TITLE, pkexec, truePath]
+                    ? ["--title", AUTHORIZATION_TERMINAL_TITLE, ...elevatedArgs]
                     : name === "xterm"
-                        ? ["-T", AUTHORIZATION_TERMINAL_TITLE, "-e", pkexec, truePath]
+                        ? ["-T", AUTHORIZATION_TERMINAL_TITLE, "-e", ...elevatedArgs]
                         : name === "gnome-terminal"
-                            ? ["--wait", `--title=${AUTHORIZATION_TERMINAL_TITLE}`, "--", pkexec, truePath]
-                            : ["--wait", "--title", AUTHORIZATION_TERMINAL_TITLE, "-e", pkexec, truePath];
+                            ? ["--wait", `--title=${AUTHORIZATION_TERMINAL_TITLE}`, "--", ...elevatedArgs]
+                            : ["--wait", "--title", AUTHORIZATION_TERMINAL_TITLE, "-e", ...elevatedArgs];
 
         if (!isFlatpak(env)) return { file: terminal, args: terminalArgs };
         const flatpakSpawn = findSystemBinary("flatpak-spawn", env);
@@ -530,6 +675,10 @@ export function linuxDependencyIssues(env: NodeJS.ProcessEnv = process.env): str
     if (!hasPkexec) {
         issues.push("Utilitário 'pkexec' (polkit) não encontrado. Instale o pacote polkit para autorização administrativa.");
     }
+    const moduleIssue = linuxWireGuardModuleIssue(env);
+    if (moduleIssue) {
+        issues.push(moduleIssue);
+    }
     if (isFlat) {
         const hasFlatpakSpawn = Boolean(findSystemBinary("flatpak-spawn", env));
         if (!hasFlatpakSpawn) {
@@ -557,6 +706,7 @@ export async function linuxDependencyStatus(
 
     const ipPath = findSystemBinary("ip", env);
     const wgPath = findSystemBinary("wg", env);
+    const modprobePath = findSystemBinary("modprobe", env);
     const pkexecPath = findSystemBinary("pkexec", env);
     const systemdRunPath = findSystemBinary("systemd-run", env);
     const flatpakSpawnPath = findSystemBinary("flatpak-spawn", env);
@@ -566,6 +716,8 @@ export async function linuxDependencyStatus(
 
     const hasIp = Boolean(ipPath);
     const hasWg = Boolean(wgPath);
+    const wireGuardModule = linuxWireGuardModuleState(env);
+    const moduleIssue = linuxWireGuardModuleIssue(env);
     const hasPkexec = Boolean(pkexecPath);
     const hasFlatpakSpawn = Boolean(flatpakSpawnPath);
     const hasSystemdRun = Boolean(systemdRunPath);
@@ -574,6 +726,7 @@ export async function linuxDependencyStatus(
     const missing: string[] = [];
     if (!hasIp) missing.push("ip");
     if (!hasWg) missing.push("wg");
+    if (moduleIssue) missing.push("wireguard-kernel-module");
     if (!hasPkexec) missing.push("pkexec");
     if (isFlat && !hasFlatpakSpawn) missing.push("flatpak-spawn");
     if (!isFlat && inNs && !hasSystemdRun) missing.push("systemd-run");
@@ -581,7 +734,7 @@ export async function linuxDependencyStatus(
     let elevationOk = hasPkexec;
     let authError: string | undefined;
 
-    if (prompt && hasPkexec && isLinuxEnv) {
+    if (prompt && hasPkexec && isLinuxEnv && !moduleIssue) {
         const authorization = await requestLinuxAuthorization({
             timeoutMs: options?.timeoutMs ?? DEFAULT_AUTH_PROMPT_TIMEOUT_MS,
             env,
@@ -601,6 +754,7 @@ export async function linuxDependencyStatus(
         elevationOk,
         hasIp,
         hasWg,
+        wireGuardModule,
         hasPkexec,
         hasFlatpakSpawn,
         hasSystemdRun,
@@ -612,6 +766,7 @@ export async function linuxDependencyStatus(
         paths: {
             ip: ipPath,
             wg: wgPath,
+            modprobe: modprobePath,
             pkexec: pkexecPath,
             systemdRun: systemdRunPath,
             flatpakSpawn: flatpakSpawnPath,
@@ -989,8 +1144,13 @@ export async function startLinuxNetwork(
     if (!wgPath) {
         throw new Error("Utilitário 'wg' (wireguard-tools) não encontrado. Instale o pacote wireguard-tools.");
     }
+    const modprobePath = findSystemBinary("modprobe");
+    const moduleState = linuxWireGuardModuleState();
+    const moduleIssue = linuxWireGuardModuleIssue();
+    if (moduleIssue) throw new Error(moduleIssue);
     const installPath = findSystemBinary("install");
     const mkdirPath = findSystemBinary("mkdir");
+    const rmPath = findSystemBinary("rm");
 
     const addresses = parseWireGuardAddresses(rawConfig);
     const dnsServers = parseWireGuardDns(rawConfig);
@@ -1015,68 +1175,72 @@ export async function startLinuxNetwork(
     const timeoutMs = options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     const signal = options?.signal;
 
-        options?.log?.("info", "linux.network.started", { phase: "preparing" });
+    options?.log?.("info", "linux.network.started", { phase: "preparing" });
     try {
-        // 1. Criar network namespace
-        await execPrivileged(ipPath, ["netns", "add", namespace], { timeoutMs, signal });
-        options?.log?.("info", "linux.network.phase", { phase: "namespace" });
-
-        // 2. Criar interface WireGuard no namespace host
-        await execPrivileged(ipPath, ["link", "add", interfaceName, "type", "wireguard"], { timeoutMs, signal });
-        options?.log?.("info", "linux.network.phase", { phase: "interface" });
-
-        // 3. Configurar WireGuard ainda no host (socket permanece vinculado ao host para alcançar endpoint)
-        await execPrivileged(wgPath, ["setconf", interfaceName, tempConfigFile], { timeoutMs, signal });
-
-        // 4. Mover interface WireGuard para o namespace dedicado
-        await execPrivileged(ipPath, ["link", "set", interfaceName, "netns", namespace], { timeoutMs, signal });
-
-        // 5. Subir loopback no namespace
-        await execPrivileged(ipPath, ["-n", namespace, "link", "set", "lo", "up"], { timeoutMs, signal });
-
-        // 6. Adicionar endereços IP à interface dentro do namespace
-        for (const addr of addresses) {
-            await execPrivileged(ipPath, ["-n", namespace, "addr", "add", addr, "dev", interfaceName], { timeoutMs, signal });
+        const commands: LinuxPrivilegedCommand[] = [];
+        if (moduleState === "available") {
+            if (!modprobePath) throw new Error("Utilitário 'modprobe' não encontrado para carregar o módulo WireGuard.");
+            commands.push([modprobePath, ["wireguard"]]);
         }
 
-        // 7. Subir a interface WireGuard no namespace
-        await execPrivileged(ipPath, ["-n", namespace, "link", "set", interfaceName, "up"], { timeoutMs, signal });
-        options?.log?.("info", "linux.network.phase", { phase: "routes" });
+        // A sequência inteira roda sob uma única autorização; o rollback permanece dentro do
+        // mesmo processo root para não abrir uma segunda janela de senha em caso de falha.
+        commands.push(
+            [ipPath, ["netns", "add", namespace]],
+            [ipPath, ["link", "add", interfaceName, "type", "wireguard"]],
+            [wgPath, ["setconf", interfaceName, tempConfigFile]],
+            [ipPath, ["link", "set", interfaceName, "netns", namespace]],
+            [ipPath, ["-n", namespace, "link", "set", "lo", "up"]],
+        );
+        for (const addr of addresses) {
+            commands.push([ipPath, ["-n", namespace, "addr", "add", addr, "dev", interfaceName]]);
+        }
+        commands.push(
+            [ipPath, ["-n", namespace, "link", "set", interfaceName, "up"]],
+        );
 
-        // 8. Configurar rotas padrão no namespace (nunca no host)
+        // Rotas padrão ficam exclusivamente dentro do namespace.
         const hasIPv4 = addresses.some(a => net.isIP(a.split("/")[0]) === 4);
         const hasIPv6 = addresses.some(a => net.isIP(a.split("/")[0]) === 6);
-
         if (hasIPv4) {
-            await execPrivileged(ipPath, ["-n", namespace, "route", "add", "default", "dev", interfaceName], { timeoutMs, signal });
+            commands.push([ipPath, ["-n", namespace, "route", "add", "default", "dev", interfaceName]]);
         }
         if (hasIPv6) {
-            await execPrivileged(ipPath, ["-n", namespace, "-6", "route", "add", "default", "dev", interfaceName], { timeoutMs, signal });
+            commands.push([ipPath, ["-n", namespace, "-6", "route", "add", "default", "dev", interfaceName]]);
         }
 
-        // 9. Configurar DNS privado em /etc/netns/<ns>/resolv.conf se houver DNS
         if (dnsServers.length > 0) {
-            if (!installPath || !mkdirPath) {
-                throw new Error("Os utilitários 'install' e 'mkdir' são necessários para configurar o DNS privado do namespace Linux.");
+            if (!installPath || !mkdirPath || !rmPath) {
+                throw new Error("Os utilitários 'install', 'mkdir' e 'rm' são necessários para configurar o DNS privado do namespace Linux.");
             }
             const resolvLines = dnsServers.map(ip => `nameserver ${ip}\n`).join("");
             tempResolvFile = path.join(dataDir, `resolv-${randomSuffix.slice(0, 8)}.tmp`);
             fs.writeFileSync(tempResolvFile, resolvLines, { mode: 0o600 });
             const netnsDir = `/etc/netns/${namespace}`;
-            await execPrivileged(mkdirPath, ["-p", netnsDir], { timeoutMs, signal });
-            await execPrivileged(installPath, ["-m", "600", tempResolvFile, path.join(netnsDir, "resolv.conf")], { timeoutMs, signal });
+            commands.push(
+                [mkdirPath, ["-p", netnsDir]],
+                [installPath, ["-m", "600", tempResolvFile, path.join(netnsDir, "resolv.conf")]],
+            );
         }
+
+        const rollback: LinuxPrivilegedCommand[] = [
+            [ipPath, ["-n", namespace, "link", "del", interfaceName]],
+            [ipPath, ["link", "del", interfaceName]],
+            [ipPath, ["netns", "del", namespace]],
+        ];
+        if (tempResolvFile && rmPath) {
+            rollback.unshift([rmPath, ["-rf", `/etc/netns/${namespace}`]]);
+        }
+        await execPrivilegedSequence(commands, { timeoutMs, signal, rollback });
+        options?.log?.("info", "linux.network.phase", { phase: "namespace" });
+        options?.log?.("info", "linux.network.phase", { phase: "interface" });
+        options?.log?.("info", "linux.network.phase", { phase: "routes" });
 
         owner.namespace = namespace;
         owner.interfaceName = interfaceName;
         options?.log?.("info", "linux.network.ready", { phase: "active" });
     } catch (error) {
         options?.log?.("error", "linux.network.failed", { phase: "failed", error: safeDiagnosticDetail(error, 300) });
-        try {
-            await stopLinuxNetwork({ namespace, interfaceName }, { timeoutMs: 5000 });
-        } catch {
-            // Manter erro original da inicialização
-        }
         throw error;
     } finally {
         try {

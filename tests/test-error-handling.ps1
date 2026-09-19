@@ -301,6 +301,36 @@ try {
     Invoke-Pnpm @('run', 'inject', '--location', (Split-Path -Parent (Split-Path -Parent $resourcesOne)))
     Assert-Equal $script:PnpmExitCode 127 "Invoke-Pnpm usa exit=127 quando nao ha application pnpm"
 
+    # Regressao do log real da VM: no Windows PowerShell 5.1 a primeira linha que um processo
+    # nativo escreve em stderr vira erro TERMINATIVO com ErrorActionPreference=Stop, mesmo com
+    # 2>&1 — era assim que a injecao morria em exit=-1/POSTCONDITION_NOT_CONFIRMED no banner do
+    # pnpm antes de chamar o Equilotl (que loga tudo em stderr). O wrapper real tem que seguir,
+    # guardar o codigo de saida e manter o texto no detalhe.
+    $originalResolvePnpmInvocation = ${function:Resolve-PnpmInvocation}
+    function Resolve-PnpmInvocation([string[]]$Arguments) {
+        $hostExe = (Get-Process -Id $PID).Path
+        # -Command com aspas cai no quoting do Windows PowerShell 5.1: o argumento com
+        # espacos chega fatiado ao processo nativo, o stub nem compila e o teste mede
+        # outra coisa. -EncodedCommand e um argumento base64 unico — o caso real fica
+        # isolado: stderr do filho nativo e codigo de saida 7.
+        $payload = '[Console]::Error.WriteLine("banner-de-teste"); exit 7'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
+        return [pscustomobject]@{
+            Command = $hostExe
+            Arguments = @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded)
+        }
+    }
+    try {
+        $saidaStderr = @()
+        $saidaStderr = @(Invoke-Pnpm @('run', 'inject'))
+        Assert-Equal $script:PnpmExitCode 7 "stderr nativo nao interrompe o Invoke-Pnpm real"
+        Assert-Equal (($saidaStderr -join ' ') -match 'banner-de-teste') $true "stderr fica capturado na saida do Invoke-Pnpm"
+    } catch {
+        Assert-Equal $false $true "stderr nativo lancou do Invoke-Pnpm real: $($_.Exception.Message)"
+    } finally {
+        Set-Item -Path Function:Resolve-PnpmInvocation -Value $originalResolvePnpmInvocation
+    }
+
     function Invoke-Pnpm([string[]]$Arguments) {
         $script:mockInjectionArgs = @($Arguments)
         switch ($script:mockInjectionMode) {

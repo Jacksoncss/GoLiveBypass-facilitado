@@ -14,6 +14,9 @@
       .\GoLiveBypass-Installer.ps1 -Mode Uninstall
       .\GoLiveBypass-Installer.ps1 -Mode CheckUpdate   # consulta a API e pode persistir o canal, sem baixar ZIP
       .\GoLiveBypass-Installer.ps1 -Mode Update        # aplica update se houver
+      .\GoLiveBypass-Installer.ps1 -Mode ClientStatus  # estado da injecao em cada cliente (nao altera nada)
+      .\GoLiveBypass-Installer.ps1 -Mode RestoreClient # devolve o app.asar original (cliente que nao abre)
+      .\GoLiveBypass-Installer.ps1 -Mode RestoreClient -Client Equibop -Force
 
     Obrigado ao Vithor (https://github.com/Vith0r), que escreveu o primeiro instalador do
     GoLiveBypass e abriu o caminho para este aqui.
@@ -21,7 +24,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Install', 'Uninstall', 'Restore', 'CheckUpdate', 'Update')]
+    [ValidateSet('Menu', 'Install', 'Uninstall', 'Restore', 'CheckUpdate', 'Update', 'RestoreClient', 'ClientStatus')]
     [string] $Mode = 'Menu',
 
     [ValidateSet('Equicord', 'Vencord')]
@@ -37,7 +40,14 @@ param(
     [ValidateSet('stable', 'beta')]
     [string] $Channel = 'stable',
 
-    [switch] $Yes
+    [switch] $Yes,
+
+    # -Mode RestoreClient: nome do cliente a restaurar (Equibop, Vesktop, Legcord, Discord).
+    # Vazio restaura todos os que tem patch/backup.
+    [string] $Client = '',
+
+    # Desfaz tambem um mod Vencord/Equicord que esta funcionando (o cliente perde o mod).
+    [switch] $Force
 )
 
 $script:ChannelExplicit = $PSBoundParameters.ContainsKey('Channel')
@@ -195,6 +205,15 @@ function Resolve-PnpmInvocation([string[]]$Arguments) {
     return [pscustomobject]@{ Command = $cmd; Arguments = @('/d', '/s', '/c', 'call', $fallbackShim) + $Arguments }
 }
 
+# Stderr de processo nativo e diagnostico, nunca falha — mas no Windows PowerShell 5.1 a
+# primeira linha que chega por ele vira erro TERMINATIVO enquanto ErrorActionPreference=Stop,
+# mesmo com 2>&1 (o mesmo caso que ja derrubava o probe do corepack mais abaixo). O pnpm
+# escreve o proprio banner (`$ node scripts/runInstaller.mjs ...`) em stderr e o Equilotl,
+# injetor atual do Equicord, loga TUDO em stderr: sem esta guarda a injecao morria em menos de
+# um segundo com exit=-1 e "pos-condicao nao confirmada", sem nunca ter chamado o injetor
+# (log do instalador na VM: installer.inject failure/POSTCONDITION_NOT_CONFIRMED com o banner
+# do pnpm como unico detalhe). O codigo de saida continua sendo lido aqui e a pos-condicao
+# segue autoridade sobre ele.
 function Invoke-Pnpm([string[]]$Arguments) {
     $invocation = Resolve-PnpmInvocation $Arguments
     if (-not $invocation) {
@@ -204,8 +223,14 @@ function Invoke-Pnpm([string[]]$Arguments) {
 
     $command = $invocation.Command
     $commandArguments = @($invocation.Arguments)
-    & $command @commandArguments
-    $script:PnpmExitCode = $LASTEXITCODE
+    $anterior = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $command @commandArguments 2>&1
+        $script:PnpmExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $anterior
+    }
 }
 
 
@@ -958,6 +983,216 @@ function Copy-PatchParallel($root, $resources) {
     return [pscustomobject]@{ Ok = $true; Motivo = '' }
 }
 
+# ---------------------------------------------------------------- restauracao de cliente
+#
+# Copy-PatchParallel troca o app.asar do cliente paralelo pelo dist\<cliente>.asar do checkout e
+# guarda o original em _app.asar. Se o checkout, o build ou a versao do mod mudarem depois, o
+# cliente fica sem abrir -- e nao havia caminho de volta: Uninstall/Restore removiam o userplugin
+# e recompilavam, deixando o app.asar patchado no lugar. Estas funcoes devolvem o original.
+
+function Get-ClientLabel($resources) {
+    switch -Regex ($resources) {
+        '(?i)equibop' { return 'Equibop' }
+        '(?i)vesktop' { return 'Vesktop' }
+        '(?i)legcord' { return 'Legcord' }
+        default       { return 'Discord' }
+    }
+}
+
+function Test-AsarContainsMark($path) {
+    # O build do mod feito com o GoLiveBypass dentro carrega o nome do plugin; o stub do
+    # Vencord/Equicord (so um require, <64 KB) nunca casa.
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        # Latin-1 mapeia byte a byte (sem perder posicoes como o UTF-8 faria) e o IndexOf roda
+        # em codigo nativo: varrer 16 MB de asar em script levaria minutos.
+        $text = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+        return $text.IndexOf('GoLiveBypass', [System.StringComparison]::Ordinal) -ge 0
+    } catch {
+        return $false
+    }
+}
+
+function Get-ClientAsarState($resources) {
+    # Rotulos estaveis (menu, log e suporte):
+    #   golive       patch do GoLiveBypass (copia do dist do checkout)
+    #   mod-quebrado stub do Vencord/Equicord com alvo ausente -> o cliente nao abre
+    #   mod          stub do Vencord/Equicord funcionando (nao e nosso; so com -Force)
+    #   outro        tem _app.asar mas o app.asar atual nao e reconhecido
+    #   vanilla      sem _app.asar: nunca foi injetado
+    #   ausente      sem app.asar nesse resources
+    $app = Join-Path $resources 'app.asar'
+    $backup = Join-Path $resources '_app.asar'
+    if (-not (Test-Path -LiteralPath $app)) {
+        if (Test-Path -LiteralPath $backup) { return 'outro' }
+        return 'ausente'
+    }
+    if (Test-AsarContainsMark $app) { return 'golive' }
+    $injected = Get-InjectedPath $resources
+    if ($injected) {
+        if (Test-Path -LiteralPath $injected) { return 'mod' }
+        return 'mod-quebrado'
+    }
+    if (Test-Path -LiteralPath $backup) { return 'outro' }
+    return 'vanilla'
+}
+
+function Get-ClientStateLabel($state) {
+    switch ($state) {
+        'golive'       { return 'patch do GoLiveBypass (revertivel)' }
+        'mod-quebrado' { return 'injecao QUEBRADA: o alvo do require nao existe, o cliente nao abre' }
+        'mod'          { return 'mod Vencord/Equicord funcionando' }
+        'outro'        { return 'patch de outro programa (nao mexemos sem -Force)' }
+        'vanilla'      { return 'original, sem injecao' }
+        default        { return 'sem app.asar nesse diretorio' }
+    }
+}
+
+function Restore-ClientAsar($resources, $label, [switch]$Force) {
+    $app = Join-Path $resources 'app.asar'
+    $backup = Join-Path $resources '_app.asar'
+    $state = Get-ClientAsarState $resources
+
+    switch ($state) {
+        'golive' { }
+        'mod-quebrado' { Write-Warn "$label : a injecao do mod aponta para um alvo que nao existe mais; devolvendo o original." }
+        'mod' {
+            if (-not $Force) {
+                Write-Warn "$label : o mod Vencord/Equicord esta funcionando; restaurar tiraria o mod deste cliente. Use -Force se e isso mesmo."
+                Write-InstallerEvent 'warn' 'installer.client_restore' 'restore' @{ reason_code = 'MOD_FUNCIONANDO'; target_count = 1 }
+                return $false
+            }
+        }
+        'outro' {
+            if (-not $Force) {
+                Write-Warn "$label : o app.asar atual nao e um patch reconhecido do GoLiveBypass. Use -Force para devolver o backup mesmo assim."
+                Write-InstallerEvent 'warn' 'installer.client_restore' 'restore' @{ reason_code = 'PATCH_DESCONHECIDO'; target_count = 1 }
+                return $false
+            }
+        }
+        'vanilla' {
+            Write-Warn "$label : o app.asar ja e o original; nada para restaurar."
+            return $false
+        }
+        default {
+            Write-Warn "$label : nao encontrei app.asar em $resources."
+            return $false
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $backup)) {
+        Write-Warn "$label : nao ha backup _app.asar; sem ele nao da para devolver o original automaticamente."
+        Write-InstallerEvent 'warn' 'installer.client_restore' 'restore' @{ reason_code = 'BACKUP_AUSENTE'; target_count = 1 }
+        return $false
+    }
+
+    Write-InstallerEvent 'info' 'installer.client_restore' 'restore' @{ reason_code = $state; target_count = 1 }
+
+    # Preserva o patch atual: se o cliente voltar a precisar do mod, o arquivo fica ali.
+    try { Copy-Item -LiteralPath $app -Destination "$app.golive-patched.bak" -Force } catch { }
+
+    # Copia para um temporario no MESMO diretorio e so entao troca: um erro no meio nao deixa o
+    # cliente sem app.asar nenhum.
+    try {
+        Copy-Item -LiteralPath $backup -Destination "$app.restore.tmp" -Force
+        $hashTmp = (Get-FileHash -LiteralPath "$app.restore.tmp" -Algorithm SHA256).Hash
+        $hashBackup = (Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash
+        if ($hashTmp -ne $hashBackup) {
+            Remove-Item -LiteralPath "$app.restore.tmp" -Force -ErrorAction SilentlyContinue
+            Write-Warn "$label : a copia de restauracao saiu diferente do backup; nao toquei no app.asar."
+            return $false
+        }
+        Move-Item -LiteralPath "$app.restore.tmp" -Destination $app -Force
+    } catch {
+        Write-Warn "$label : falhei ao devolver o app.asar ($($_.Exception.Message))."
+        return $false
+    }
+
+    if ((Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash) {
+        Write-Warn "$label : o app.asar restaurado nao confere com o backup; o _app.asar foi preservado."
+        return $false
+    }
+
+    # O backup cumpriu o papel; sai do caminho para o proximo install criar um limpo.
+    Move-Item -LiteralPath $backup -Destination "$resources\_app.asar.restaurado.bak" -Force -ErrorAction SilentlyContinue
+
+    Write-Ok "$label : app.asar original restaurado (patch anterior em app.asar.golive-patched.bak)"
+    Write-InstallerEvent 'info' 'installer.client_restore' 'done' @{ reason_code = $state; target_count = 1 }
+    return $true
+}
+
+function Show-ClientStates {
+    $seen = 0
+    foreach ($resources in Get-DiscordResources) {
+        if (-not $resources) { continue }
+        $label = Get-ClientLabel $resources
+        $state = Get-ClientAsarState $resources
+        Write-Host ("    {0,-9} {1}" -f $label, (Get-ClientStateLabel $state)) -ForegroundColor DarkGray
+        Write-Host ("      {0}" -f $resources) -ForegroundColor DarkGray
+        $seen++
+    }
+    if ($seen -eq 0) { Write-Host '    nenhum cliente encontrado' -ForegroundColor DarkGray }
+}
+
+function Invoke-RestoreClient($alvo = '') {
+    $alvo = "$alvo".Trim().ToLowerInvariant()
+    $alvos = @()
+    foreach ($resources in Get-DiscordResources) {
+        if (-not $resources) { continue }
+        $label = Get-ClientLabel $resources
+        $state = Get-ClientAsarState $resources
+        if ($state -eq 'vanilla' -or $state -eq 'ausente') { continue }
+        if ($alvo -and -not $label.ToLowerInvariant().StartsWith($alvo)) { continue }
+        $alvos += , @{ Resources = $resources; Label = $label }
+    }
+
+    if ($alvos.Count -eq 0) {
+        Write-Warn 'Nenhum cliente com injecao ou backup para restaurar.'
+        return
+    }
+
+    # O app.asar restaurado so vale no proximo inicio, e deixar o cliente aberto rodando o patch
+    # antigo confunde o diagnostico.
+    Stop-Discord
+    $algum = $false
+    foreach ($item in $alvos) {
+        if (Restore-ClientAsar $item.Resources $item.Label -Force:$Force) { $algum = $true }
+    }
+    Start-Discord
+    if (-not $algum) { throw 'Nenhum cliente pode ser restaurado com os argumentos dados.' }
+}
+
+function Update-ParallelPatches($root) {
+    # Depois de remover o userplugin, um cliente paralelo continuaria rodando o build antigo (que
+    # ainda tem o GoLiveBypass dentro): recopia o asar recem-buildado, quando ele existir.
+    if (-not $root) { return }
+    $mod = Get-CheckoutMod $root
+    foreach ($resources in Get-DiscordResources) {
+        if (-not $resources) { continue }
+        if ($resources -notmatch '(?i)equibop|vesktop|legcord') { continue }
+        $app = Join-Path $resources 'app.asar'
+        if (-not (Test-AsarContainsMark $app)) { continue }
+        $label = Get-ClientLabel $resources
+        $asarName = $ParallelAsarPorMod[$mod][$label]
+        if (-not $asarName) {
+            Write-Warn "$label : patch antigo preservado (o checkout $mod nao gera build para ele)."
+            continue
+        }
+        $asar = Join-Path $root "dist\$asarName"
+        if (-not (Test-Path -LiteralPath $asar)) {
+            Write-Warn "$label : rode 'pnpm build' em $root e reinstale para tirar o plugin do cliente."
+            continue
+        }
+        try {
+            Copy-Item -LiteralPath $asar -Destination $app -Force
+            Write-Ok "$label : patch atualizado com o build sem o plugin."
+        } catch {
+            Write-Warn "$label : nao consegui atualizar o patch; o cliente segue com o build antigo."
+        }
+    }
+}
+
 function Show-ModChoice {
     if ($Mod) { return $Mod }
 
@@ -1399,7 +1634,9 @@ function Invoke-Injection($root, $targets) {
             try {
                 # O pnpm recebe os argumentos do script diretamente; o separador -- extra
                 # fazia alguns wrappers repassarem --location como argumento posicional.
-                $saida = @(Invoke-Pnpm @('run', 'inject', '--location', $loc) 2>&1)
+                # O Invoke-Pnpm ja junta o stderr na propria saida; aqui so capturamos tudo
+                # para o detalhe do erro que vira POSTCONDITION_NOT_CONFIRMED.
+                $saida = @(Invoke-Pnpm @('run', 'inject', '--location', $loc))
             } catch {
                 $excecao = $_.Exception.Message
                 if ($null -eq $script:PnpmExitCode) { $script:PnpmExitCode = -1 }
@@ -1534,6 +1771,9 @@ function Invoke-Uninstall {
     Remove-Tor
     Build-Mod $root
     Stop-Discord
+    # Cliente paralelo patchado continuaria rodando o build antigo, que ainda tem o plugin
+    # dentro: atualiza o patch com o build recem-saido (sem o plugin).
+    Update-ParallelPatches $root
     Start-Discord
 
     Write-Host ''
@@ -1906,6 +2146,8 @@ function Show-MainMenu {
                 'Mudar canal de atualizacoes',
                 'Remover so o plugin (o mod continua)',
                 'Restaurar tudo (remove o plugin; preserva o mod)',
+                'Ver estado dos clientes (injecao/backup)',
+                'Restaurar cliente que nao abre (devolve o app.asar)',
                 'Sair'
             )
             switch ($tui) {
@@ -1915,6 +2157,8 @@ function Show-MainMenu {
                 4 { Invoke-ChangeChannel $root; continue menuLoop }
                 5 { Invoke-Uninstall; return }
                 6 { Invoke-RestoreEverything; return }
+                7 { Show-ClientStates; continue menuLoop }
+                8 { Invoke-RestoreClient $Client; continue menuLoop }
                 default { Write-Host '  Ate mais.' -ForegroundColor DarkGray; return }
             }
         }
@@ -1927,6 +2171,8 @@ function Show-MainMenu {
         Write-Host '    [4] Mudar canal de atualizacoes' -ForegroundColor Cyan
         Write-Host '    [5] Remover so o plugin (o mod continua)' -ForegroundColor Yellow
         Write-Host '    [6] Restaurar tudo (remove o plugin; preserva o mod)' -ForegroundColor Red
+        Write-Host '    [7] Ver estado dos clientes (injecao/backup)' -ForegroundColor Cyan
+        Write-Host '    [8] Restaurar cliente que nao abre (devolve o app.asar)' -ForegroundColor Yellow
         Write-Host '    [0] Sair' -ForegroundColor Gray
         Write-Host ''
 
@@ -1937,6 +2183,8 @@ function Show-MainMenu {
             '4' { Invoke-ChangeChannel $root; continue menuLoop }
             '5' { Invoke-Uninstall; return }
             '6' { Invoke-RestoreEverything; return }
+            '7' { Show-ClientStates; continue menuLoop }
+            '8' { Invoke-RestoreClient $Client; continue menuLoop }
             default { Write-Host '  Ate mais.' -ForegroundColor DarkGray; return }
         }
     }
@@ -2300,6 +2548,8 @@ try {
         'Install'     { Invoke-Install (Find-Checkout) }
         'Uninstall'   { Invoke-Uninstall }
         'Restore'     { Invoke-RestoreEverything }
+        'RestoreClient' { Invoke-RestoreClient $Client }
+        'ClientStatus'  { Show-ClientStates }
         'CheckUpdate' { Invoke-CheckUpdate }
         'Update'      { Invoke-Update }
         default       { Show-MainMenu }

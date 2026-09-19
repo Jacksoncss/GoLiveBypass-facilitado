@@ -337,11 +337,28 @@ try {
             'zero' { $script:PnpmExitCode = 0; Write-Output 'injecao sintetica'; return }
             'nine' { $script:PnpmExitCode = 9; Write-Output ('diagnostico sintetico ' + ('x' * 700)); return }
             'exception' { $script:PnpmExitCode = $null; throw ('erro sintetico ' + ('x' * 700)) }
+            # Primeiro tiro: o Equilotl avisa que o arquivo esta em uso e a pos-condicao
+            # falha; segundo tiro: injeta e confirma. E o caminho do cliente reaberto pelo
+            # Update.exe entre o Stop-Discord e o injetor.
+            'lockonce' {
+                $script:mockLockCalls = [int]$script:mockLockCalls + 1
+                if ($script:mockLockCalls -eq 1) {
+                    $script:PnpmExitCode = 1
+                    $script:mockInjectedPaths.Remove([string]$script:mockLockKey)
+                    Write-Output "INFO Patching $($script:mockLockKey) INFO is already patched. Unpatching first... ERROR Cannot patch because the files are used by a different process."
+                    return
+                }
+                $script:PnpmExitCode = 0
+                $script:mockInjectedPaths[[string]$script:mockLockKey] = Join-Path $injectionRoot 'dist\desktop'
+                Write-Output 'injecao aplicada na segunda tentativa'
+                return
+            }
             default { $script:PnpmExitCode = -1; Write-Output ('diagnostico sintetico ' + ('x' * 700)) }
         }
     }
     function Get-InjectedPath($resources) { return $script:mockInjectedPaths[$resources] }
-    function Stop-Discord {}
+    $script:mockStopDiscordCalls = 0
+    function Stop-Discord { $script:mockStopDiscordCalls = [int]$script:mockStopDiscordCalls + 1 }
     $env:GLB_INSTALLER_LOG_DIR = $injectionLogDir
 
     $targetOne = [pscustomobject]@{ Flavour = 'Discord'; Resources = $resourcesOne; Tipo = 'O' }
@@ -382,6 +399,19 @@ try {
     } catch {
         Assert-Equal ($_.Exception.Message -match 'DiscordPTB: pos-condicao nao confirmada') $true "Pos-condicao e independente por alvo"
     }
+
+    # Cliente reaberto pelo Update.exe entre o Stop-Discord e o injetor: o Equilotl avisa
+    # que o arquivo esta em uso e desfaz o patch. O instalador tem que fechar de novo
+    # (agora esperando a trava sair) e repetir UMA vez em vez de deixar o cliente sem o mod.
+    $script:mockInjectionMode = 'lockonce'
+    $script:mockLockCalls = 0
+    $script:mockLockKey = $resourcesOne
+    $script:mockInjectedPaths[$resourcesOne] = Join-Path $injectionRoot 'dist\desktop'
+    $script:mockStopDiscordCalls = 0
+    Invoke-Injection $injectionRoot @($targetOne)
+    Assert-Equal $script:mockLockCalls 2 "injetor que acusa arquivo em uso e repetido uma vez"
+    Assert-Equal $script:mockStopDiscordCalls 2 "a repeticao fecha o Discord de novo (1 inicial + 1 do retry)"
+    Assert-Equal $script:PnpmExitCode 0 "segunda tentativa confirmada nao falha"
 } finally {
     $env:GLB_INSTALLER_LOG_DIR = $origInjectionLogDir
     Set-Item -Path Function:Invoke-Pnpm -Value $originalInvokePnpm
@@ -389,6 +419,44 @@ try {
     Set-Item -Path Function:Get-InjectedPath -Value $originalGetInjectedPath
     Set-Item -Path Function:Stop-Discord -Value $originalStopDiscord
     if (Test-Path -LiteralPath $injectionRoot) { Remove-Item -LiteralPath $injectionRoot -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Write-Host "`n-- 2.8 Travas de arquivo do Discord (app.asar) --" -ForegroundColor Yellow
+# O standalone define o proprio Stop-Discord e, por ser dot-sourced depois do instalador,
+# ele sombreia o do instalador. Estas provas sao do instalador: recarrega as funcoes dele
+# e devolve o standalone ao lugar no fim.
+. $tempInstaller
+$lockRoot = Join-Path ([System.IO.Path]::GetTempPath()) "GoLiveBypassLock_$([Guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $lockRoot -Force | Out-Null
+$lockFile = Join-Path $lockRoot 'app.asar'
+Set-Content -LiteralPath $lockFile -Value 'asar sintetico' -Encoding UTF8
+$originalGetDiscordProcesses = ${function:Get-DiscordProcesses}
+$trava = $null
+try {
+    # Nada de tocar em processos reais do Discord numa maquina de desenvolvimento.
+    function Get-DiscordProcesses { return @() }
+    Assert-Equal (Test-ArquivoLivre $lockFile) $true "app.asar sem trava passa"
+    $trava = [IO.File]::Open($lockFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    Assert-Equal (Test-ArquivoLivre $lockFile) $false "app.asar com handle aberto nao passa"
+    $travados = @(Get-DiscordResourcesTravados @($lockRoot))
+    Assert-Equal ($travados.Count -eq 1 -and $travados[0] -eq $lockFile) $true "Get-DiscordResourcesTravados aponta o app.asar travado"
+    try {
+        Stop-Discord -Resources @($lockRoot) -TentativasProcessos 1 -TentativasTravas 2
+        Assert-Equal $false $true "Stop-Discord nao pode liberar a injecao com o arquivo travado"
+    } catch {
+        Assert-Equal ($_.Exception.Message -match 'continuam em uso') $true "Stop-Discord explica a trava antes do unpatch do cliente"
+    }
+    $trava.Close(); $trava = $null
+    Assert-Equal ((@(Get-DiscordResourcesTravados @($lockRoot))).Count -eq 0) $true "trava liberada sai da lista"
+    $erroLivre = $null
+    try { Stop-Discord -Resources @($lockRoot) -TentativasProcessos 1 -TentativasTravas 2 } catch { $erroLivre = $_.Exception.Message }
+    Assert-Equal $erroLivre $null "Stop-Discord segue quando o arquivo esta livre"
+} finally {
+    if ($trava) { $trava.Close() }
+    Set-Item -Path Function:Get-DiscordProcesses -Value $originalGetDiscordProcesses
+    Remove-Item -LiteralPath $lockRoot -Recurse -Force -ErrorAction SilentlyContinue
+    # A secao 3 volta a medir o standalone: devolve as definicoes dele ao lugar.
+    . $tempStandalone
 }
 
 Write-Host "`n========================================================" -ForegroundColor Cyan

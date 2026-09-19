@@ -1363,18 +1363,111 @@ function Install-Mod($choice) {
     return $target
 }
 
+# O Update.exe (Squirrel) mora na raiz da instalacao do Discord e e ele quem reabre o
+# cliente depois que o processo morre. Sem fecha-lo, o injetor encontra o app.asar em uso
+# no meio do unpatch (Equilotl: "Discord's files are used by a different process") e o
+# cliente pode ficar sem o mod. Outros Update.exe (Vesktop, Equibop, apps de terceiros)
+# tem outro caminho e nao entram aqui.
+function Get-DiscordUpdaterProcesses {
+    $raizes = @()
+    $localApp = Get-EffectiveLocalApp
+    foreach ($base in @($localApp, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)) {
+        if (-not $base) { continue }
+        foreach ($nome in $DiscordNames) { $raizes += (Join-Path $base $nome) }
+    }
+    $raizes = @($raizes | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+    if ($raizes.Count -eq 0) { return @() }
+
+    $achados = @()
+    foreach ($proc in @(Get-Process -Name 'Update' -ErrorAction SilentlyContinue)) {
+        $caminho = $null
+        try { $caminho = $proc.Path } catch { }
+        if (-not $caminho) { continue }
+        foreach ($raiz in $raizes) {
+            if ($caminho.StartsWith($raiz + '\', [StringComparison]::OrdinalIgnoreCase)) { $achados += $proc; break }
+        }
+    }
+    return $achados
+}
+
+function Get-DiscordProcesses {
+    return @(@(Get-Process -Name $DiscordNames -ErrorAction SilentlyContinue) + @(Get-DiscordUpdaterProcesses) | Where-Object { $_ })
+}
+
+function Stop-DiscordProcesses($processos) {
+    foreach ($proc in @($processos)) {
+        if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# Processo morto nao devolve o handle na hora, e um updater pode reabrir o cliente no meio
+# do caminho. Abrir o arquivo sem compartilhamento e a mesma prova que o injetor precisa
+# para gravar: se falha, o Equilotl vai falhar logo depois com "files are used by a
+# different process" — melhor descobrir antes de desfazer o patch do cliente.
+function Test-ArquivoLivre([string]$caminho) {
+    if (-not $caminho -or -not (Test-Path -LiteralPath $caminho)) { return $true }
+    try {
+        $fluxo = [IO.File]::Open($caminho, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $fluxo.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-DiscordResourcesTravados($resources) {
+    $travados = @()
+    foreach ($item in @($resources)) {
+        if (-not $item) { continue }
+        foreach ($nome in @('app.asar', '_app.asar')) {
+            $arquivo = Join-Path $item $nome
+            if ((Test-Path -LiteralPath $arquivo) -and -not (Test-ArquivoLivre $arquivo)) { $travados += $arquivo }
+        }
+    }
+    return $travados
+}
+
 function Stop-Discord {
-    if (-not (Get-Process -Name $DiscordNames -ErrorAction SilentlyContinue)) { return }
+    [CmdletBinding()]
+    param(
+        # Recursos que vao ser injetados: alem de fechar os processos, espera a trava de
+        # app.asar sair antes de deixar o injetor trabalhar.
+        [string[]] $Resources = @(),
+        [int] $TentativasProcessos = 30,
+        [int] $TentativasTravas = 20
+    )
 
-    Write-Step 'Fechando o Discord'
-    Get-Process -Name $DiscordNames -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-
-    for ($i = 0; $i -lt 30; $i++) {
-        Start-Sleep -Milliseconds 300
-        if (-not (Get-Process -Name $DiscordNames -ErrorAction SilentlyContinue)) { return }
+    $processos = Get-DiscordProcesses
+    if ($processos.Count -gt 0) {
+        Write-Step 'Fechando o Discord'
+        Stop-DiscordProcesses $processos
     }
 
-    throw 'O Discord nao fechou. Feche pelo icone na bandeja e rode de novo.'
+    for ($i = 0; $i -lt $TentativasProcessos; $i++) {
+        Start-Sleep -Milliseconds 300
+        $processos = Get-DiscordProcesses
+        if ($processos.Count -eq 0) { break }
+        Stop-DiscordProcesses $processos
+    }
+    if ((Get-DiscordProcesses).Count -gt 0) {
+        throw 'O Discord nao fechou. Feche pelo icone na bandeja e rode de novo.'
+    }
+
+    if (@($Resources).Count -eq 0) { return }
+
+    for ($i = 0; $i -lt $TentativasTravas; $i++) {
+        $travados = Get-DiscordResourcesTravados $Resources
+        if ($travados.Count -eq 0) { return }
+        $processos = Get-DiscordProcesses
+        if ($processos.Count -gt 0) { Stop-DiscordProcesses $processos }
+        Start-Sleep -Milliseconds 500
+    }
+
+    $travados = Get-DiscordResourcesTravados $Resources
+    if ($travados.Count -gt 0) {
+        $lista = (@($travados) | Select-Object -First 3) -join ', '
+        throw "Os arquivos do Discord continuam em uso ($lista). Feche o Discord pelo icone da bandeja, confirme no Gerenciador de Tarefas que nao sobrou nem 'Discord' nem 'Update' e rode de novo."
+    }
 }
 
 function Resolve-LocalPluginHelper($source) {
@@ -1611,7 +1704,10 @@ function Invoke-Injection($root, $targets) {
     try {
         $script:InstallerPhase = 'inject'
         Write-InstallerEvent 'info' 'installer.inject' 'inject' @{ result = 'started'; target_count = @($targets).Count }
-        Stop-Discord
+        # A trava de app.asar e conferida antes de qualquer unpatch: o Equilotl desfaz o
+        # patch atual antes de aplicar o novo, e um arquivo em uso no meio disso deixa o
+        # cliente sem o mod.
+        Stop-Discord -Resources @(@($targets) | ForEach-Object { $_.Resources })
         $falha = $false
         # Detalhe por alvo: sem isto o relato automatico chegava so com a mensagem
         # generica e o log do RUNTIME (que nada diz sobre a injecao) -- issue #120.
@@ -1628,23 +1724,37 @@ function Invoke-Injection($root, $targets) {
             Write-Step "Injetando no $($t.Flavour)"
             # O --location espera a RAIZ da instalacao (...\Discord), nao o app-1.0.x.
             $loc = Split-Path -Parent (Split-Path -Parent $t.Resources)
-            $script:PnpmExitCode = $null
-            $saida = @()
-            $excecao = $null
-            try {
-                # O pnpm recebe os argumentos do script diretamente; o separador -- extra
-                # fazia alguns wrappers repassarem --location como argumento posicional.
-                # O Invoke-Pnpm ja junta o stderr na propria saida; aqui so capturamos tudo
-                # para o detalhe do erro que vira POSTCONDITION_NOT_CONFIRMED.
-                $saida = @(Invoke-Pnpm @('run', 'inject', '--location', $loc))
-            } catch {
-                $excecao = $_.Exception.Message
-                if ($null -eq $script:PnpmExitCode) { $script:PnpmExitCode = -1 }
+            $tentativa = 0
+            while ($true) {
+                $tentativa++
+                $script:PnpmExitCode = $null
+                $saida = @()
+                $excecao = $null
+                try {
+                    # O pnpm recebe os argumentos do script diretamente; o separador -- extra
+                    # fazia alguns wrappers repassarem --location como argumento posicional.
+                    # O Invoke-Pnpm ja junta o stderr na propria saida; aqui so capturamos tudo
+                    # para o detalhe do erro que vira POSTCONDITION_NOT_CONFIRMED.
+                    $saida = @(Invoke-Pnpm @('run', 'inject', '--location', $loc))
+                } catch {
+                    $excecao = $_.Exception.Message
+                    if ($null -eq $script:PnpmExitCode) { $script:PnpmExitCode = -1 }
+                }
+                # Exit code e diagnostico, nao autoridade: o stub deste alvo precisa apontar
+                # para o checkout selecionado, sem permitir que outro Discord aprove este.
+                $confirmado = Test-TargetInjectedFromCheckout $root $t.Resources
+                $detalhe = Format-InjectionDetail @($saida, $excecao)
+                if ($confirmado) { break }
+                # O Equilotl avisa que o arquivo esta em uso e desfaz o patch antes de tentar:
+                # o Discord pode ter sido reaberto pelo updater entre o Stop-Discord e o
+                # injetor. Fecha tudo de novo (agora esperando a trava sair) e repete UMA vez.
+                if ($tentativa -lt 2 -and ($detalhe -match 'used by a different process|already patched\. Unpatching first')) {
+                    Write-Warn 'O injetor achou arquivo do Discord em uso; vou fechar de novo e repetir uma vez.'
+                    Stop-Discord -Resources @($t.Resources)
+                    continue
+                }
+                break
             }
-            # Exit code e diagnostico, nao autoridade: o stub deste alvo precisa apontar
-            # para o checkout selecionado, sem permitir que outro Discord aprove este.
-            $confirmado = Test-TargetInjectedFromCheckout $root $t.Resources
-            $detalhe = Format-InjectionDetail @($saida, $excecao)
             if (-not $confirmado) {
                 $falha = $true
                 $motivo = "pos-condicao nao confirmada (exit=$($script:PnpmExitCode))"

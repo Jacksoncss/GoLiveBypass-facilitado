@@ -115,9 +115,12 @@ describe("guarda de ativacao duplicada", () => {
     const fnStart = src.indexOf('ipcMain.handle("restore-internet"');
     const fnBody = src.slice(fnStart, src.indexOf('ipcMain.handle("get-platform"', fnStart));
     expect(fnBody).toContain('withWireSockLifecycle("restaurar-internet"');
-    expect(fnBody).toContain("const recovery = await recoverWireSockNetwork();");
+    expect(fnBody).toContain("const recovery = await recoverWireSockNetwork({ forceNetworkRestore: networkDown });");
     expect(fnBody).toContain("if (hadWireSock && recovery.ok)");
     expect(fnBody).toContain("const hadWireSock = await isWireSockActiveAsync();");
+    // Rede sem saida (instalador do WireSock quebrado, por exemplo) e o pedido
+    // explicito do botao: a recuperacao do fornecedor roda mesmo sem tunel.
+    expect(fnBody).toContain("const networkDown = !(await verifyWindowsNetwork()).ok;");
   });
 
   it("inicia o túnel antes do cliente e observa a rota em segundo plano", () => {

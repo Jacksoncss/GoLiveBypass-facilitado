@@ -4,12 +4,94 @@ import os from "node:os";
 import crypto from "node:crypto";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { classifyWireSockActivationFailure, classifyWireSockDirectResult, formatAllowedApps, limparSinalDoSupervisor, mayUseServiceCompatibility, readWireSockResult, wireSockExecError, wireSockInstallerExitKind } from "../electron/wiresock";
-import { elevatedPowerShellFileArgs, wireSockDirectScript, wireSockServiceScript } from "../electron/wiresock-service";
+import { classifyWireSockActivationFailure, classifyWireSockDirectResult, classifyWireSockInstallState, formatAllowedApps, limparSinalDoSupervisor, mayUseServiceCompatibility, parseWireSockOrphanDefaultRoutes, parseWireSockUninstallEntries, readWireSockResult, wireSockExecError, wireSockInstallFailureHint, wireSockInstallModeError, wireSockInstallerArguments, wireSockInstallerExitKind, wireSockResidueNeedsRestore, type WireSockNetworkRestoreResult } from "../electron/wiresock";
+import { elevatedPowerShellFileArgs, wireSockDirectScript, wireSockNetworkRestoreScript, wireSockServiceScript } from "../electron/wiresock-service";
 
 const sourcePath = path.resolve(process.cwd(), "electron/wiresock.ts");
 const source = fs.readFileSync(sourcePath, "utf8");
 const file = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+/** Extrai o corpo real de uma função do módulo para exercitar o fluxo de verdade. */
+function bodyOf(name: string): string {
+  let found: ts.FunctionLikeDeclaration | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionLike(node) && node.name?.getText(file) === name) found = node;
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(file);
+  if (!found?.body || !ts.isBlock(found.body)) throw new Error(`${name} não encontrada`);
+  return ts.transpileModule(found.body.getText(file).slice(1, -1), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+}
+
+/**
+ * Contexto do fluxo real de instalação: o corpo de `installOfficialWireSock`
+ * roda com o WireSock inteiro trocado por dublês, então a ordem dos modos
+ * (desinstalar -> instalar -> reparar) e a recuperação de rede são observadas
+ * no código que roda em produção, não numa reimplementação do teste.
+ */
+function makeInstallOfficial() {
+  return new Function(`return async function(ctx, onProgress) {
+    const { path, fs, os, crypto, wireSockPlatform, downloadOfficialWireSock,
+      WIRESOCK_INSTALLER_HASHES, wireSockInstallerExitKind, wireSockInstallFailureHint,
+      detalheErro, markWireSockRebootPending, detectWireSockInstallState, wireSockInstallModeError,
+      runWireSockInstaller, findCompatibleWireSockAsync, restoreWireSockNetwork,
+      verifyWindowsNetworkStable, waitForCompatibleWireSock } = ctx;
+    const esperar = async () => {};
+    const WIRESOCK_INSTALLER_TIMEOUT_MS = 1;
+    const WIRESOCK_UNINSTALL_TIMEOUT_MS = 1;
+    const WIRESOCK_SETTLE_TIMEOUT_MS = 1;
+    const WIRESOCK_INSTALL_REBOOT = "WIRESOCK_INSTALL_REBOOT";
+    const WIRESOCK_INSTALL_CANCEL = "WIRESOCK_INSTALL_CANCEL";
+    ${bodyOf("installOfficialWireSock")}
+  }`)();
+}
+
+const restoreOk: WireSockNetworkRestoreResult = {
+  ok: true, executed: true, networkLockReset: true, dnsFlushed: true, adapterRoutesCleared: true, residual: [],
+};
+
+interface InstallCtxOptions {
+  state?: "compatible" | "stale" | "none";
+  pairAfterInstall?: string | null;
+  cancelOn?: "uninstall" | "install";
+}
+
+function installCtx(options: InstallCtxOptions = {}) {
+  const modes: string[] = [];
+  const restores: Array<{ reason: string; force?: boolean }> = [];
+  let settleChecks = 0;
+  // O corpo real confere o SHA-256 do download contra o release fixado: o
+  // dublê precisa escrever exatamente o conteúdo cujo hash ele declara.
+  const fixture = "instalador-oficial";
+  const ctx = {
+    path, fs, os, crypto,
+    wireSockPlatform: () => ({ hash: "x64", query: "x64" }),
+    WIRESOCK_INSTALLER_HASHES: { x64: crypto.createHash("sha256").update(fixture).digest("hex") },
+    downloadOfficialWireSock: async (_platform: string, target: string) => fs.promises.writeFile(target, fixture),
+    wireSockInstallerExitKind,
+    wireSockInstallFailureHint,
+    wireSockInstallModeError,
+    detalheErro: (error: unknown) => String((error as Error)?.message ?? error),
+    verifyWindowsNetworkStable: async () => ({ ok: true, dnsOk: true, httpsOk: true, updaterDnsOk: true, updaterHttpsOk: true }),
+    markWireSockRebootPending: () => { throw new Error("REBOOT_PENDENTE"); },
+    detectWireSockInstallState: async () => options.state ?? "none",
+    runWireSockInstaller: async (_installer: string, mode: string) => {
+      modes.push(mode);
+      if (options.cancelOn === mode) throw Object.assign(new Error("cancelado"), { code: 1223 });
+    },
+    findCompatibleWireSockAsync: async () =>
+      options.pairAfterInstall === undefined ? "C:\\WireSock\\wiresock-client.exe" : options.pairAfterInstall,
+    waitForCompatibleWireSock: async function () {
+      settleChecks += 1;
+      return ctx.findCompatibleWireSockAsync();
+    },
+    restoreWireSockNetwork: async (reason: string, opts: { force?: boolean } = {}) => {
+      restores.push({ reason, force: opts.force });
+      return restoreOk;
+    },
+  };
+  return { ctx, modes, restores, settleChecks: () => settleChecks };
+}
 
 function ensureOnceBody(): string {
   let found: ts.FunctionLikeDeclaration | undefined;
@@ -47,35 +129,11 @@ describe("instalação WireSock extraída do fluxo real", () => {
   });
 
   it("installOfficial real calcula hash antes de executar PowerShell", async () => {
-    const fn = (() => {
-      let found: ts.FunctionLikeDeclaration | undefined;
-      const visit = (node: ts.Node) => { if (ts.isFunctionLike(node) && node.name?.getText(file) === "installOfficialWireSock") found = node; if (!found) ts.forEachChild(node, visit); };
-      visit(file); return found;
-    })();
-    if (!fn?.body || !ts.isBlock(fn.body)) throw new Error("installOfficialWireSock não encontrada");
-    const body = ts.transpileModule(fn.body.getText(file).slice(1, -1), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-    const runner = new Function(`return async function(ctx, onProgress) {
-      const { path, fs, os, crypto, wireSockPlatform, downloadOfficialWireSock,
-        WIRESOCK_INSTALLER_HASHES, execFile, wireSockInstallerExitKind,
-        markWireSockRebootPending, findCompatibleWireSockAsync } = ctx;
-      ${body}
-    }`)();
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "golive-test-install-"));
-    const fixture = Buffer.from("wrong official fixture");
-    const expected = crypto.createHash("sha256").update(fixture).digest("hex");
-    let execCalls = 0;
-    const ctx = {
-      path, fs, os, crypto,
-      wireSockPlatform: () => ({ hash: "x64", query: "x64" }),
-      WIRESOCK_INSTALLER_HASHES: { x64: `${expected.slice(0, -1)}0` },
-      downloadOfficialWireSock: async (_platform: string, target: string) => fs.promises.writeFile(target, fixture),
-      execFile: () => { execCalls++; return { once: () => {} }; },
-      wireSockInstallerExitKind, markWireSockRebootPending: () => { throw new Error("reboot"); },
-      findCompatibleWireSockAsync: async () => "new.exe",
-    };
-    await expect(runner(ctx, () => {})).rejects.toThrow("Hash do instalador");
-    expect(execCalls).toBe(0);
-    await fs.promises.rm(root, { recursive: true, force: true });
+    const run = makeInstallOfficial();
+    const { ctx, modes } = installCtx();
+    ctx.WIRESOCK_INSTALLER_HASHES = { x64: "hash-que-nao-confere" };
+    await expect(run(ctx, () => {})).rejects.toThrow("Hash do instalador");
+    expect(modes).toEqual([]);
   });
 
   it("ensureWireSock export preserva singleflight com Promise pendente", async () => {
@@ -291,5 +349,221 @@ describe("servico WireSock sempre em StartMode=Manual (#281)", () => {
     expect(script).toContain("install -start-type 3");
     expect(script).toContain("StartMode='Manual'");
     expect(script.indexOf("StartMode='Manual'")).toBeLessThan(script.indexOf("Start-Service"));
+  });
+});
+
+// Instalação pela metade (setup caindo em "Modify Setup") deixava a máquina sem
+// internet: o app agora remove antes de instalar e garante a restauração da rede.
+describe("instalação quebrada do WireSock nunca deixa a máquina sem internet", () => {
+  it.each([
+    ["pasta do pacote sobrando", { installDir: true }],
+    ["registro do Windows sobrando", { registered: true }],
+    ["driver carregado sem cliente", { driverService: true }],
+  ])("classifica %s como instalação pela metade", (_nome, residuo) => {
+    expect(classifyWireSockInstallState({ compatiblePair: false, installDir: false, registered: false, driverService: false, ...residuo })).toBe("stale");
+  });
+
+  it("máquina sem nenhum vestígio é instalação nova", () => {
+    expect(classifyWireSockInstallState({ compatiblePair: false, installDir: false, registered: false, driverService: false })).toBe("none");
+  });
+
+  it("par compatível vence qualquer resíduo", () => {
+    expect(classifyWireSockInstallState({ compatiblePair: true, installDir: true, registered: true, driverService: true })).toBe("compatible");
+  });
+
+  it("instalação pela metade é removida antes de instalar", async () => {
+    const run = makeInstallOfficial();
+    const { ctx, modes, restores } = installCtx({ state: "stale" });
+    const progress: string[] = [];
+    await expect(run(ctx, (message: string) => progress.push(message))).resolves.toContain("wiresock-client.exe");
+    expect(modes).toEqual(["uninstall", "install"]);
+    expect(progress.some((message) => /Removendo a instalação anterior/i.test(message))).toBe(true);
+    // Instalação bem-sucedida não paga UAC de restauração.
+    expect(restores).toEqual([]);
+  });
+
+  it("instalação que não deixa par compatível cai no reparo", async () => {
+    const run = makeInstallOfficial();
+    const { ctx, modes } = installCtx({ state: "stale", pairAfterInstall: null });
+    const progress: string[] = [];
+    await expect(run(ctx, (message: string) => progress.push(message))).rejects.toThrow(/não deixou um par WireSock SDK compatível/);
+    expect(modes).toEqual(["uninstall", "install", "repair"]);
+    expect(progress.some((message) => /Reparando a instalação/i.test(message))).toBe(true);
+  });
+
+  it("falha total força a recuperação de rede e avisa que a rede voltou", async () => {
+    const run = makeInstallOfficial();
+    const { ctx, restores } = installCtx({ pairAfterInstall: null });
+    await expect(run(ctx, () => {})).rejects.toThrow(/A rede do Windows foi restaurada/);
+    expect(restores).toEqual([{ reason: "instalacao-falhou", force: true }]);
+  });
+
+  it("cancelamento do usuário não mexe na rede", async () => {
+    const run = makeInstallOfficial();
+    const { ctx, restores } = installCtx({ state: "stale", cancelOn: "install" });
+    await expect(run(ctx, () => {})).rejects.toThrow(/cancelada pelo usuário/);
+    expect(restores).toEqual([]);
+  });
+
+  it.each([
+    ["rota default órfã no adaptador virtual", { adapterDefaultRoute: true, driverService: false, clientInstalled: true }],
+    ["driver carregado sem cliente", { adapterDefaultRoute: false, driverService: true, clientInstalled: false }],
+  ])("resíduo que segura a rede pede recuperação: %s", (_nome, residuo) => {
+    expect(wireSockResidueNeedsRestore(residuo)).toBe(true);
+  });
+
+  it.each([
+    ["instalado e desligado", { adapterDefaultRoute: false, driverService: true, clientInstalled: true }],
+    ["nada de WireSock", { adapterDefaultRoute: false, driverService: false, clientInstalled: false }],
+  ])("máquina saudável não abre UAC de restauração: %s", (_nome, residuo) => {
+    expect(wireSockResidueNeedsRestore(residuo)).toBe(false);
+  });
+
+  it("rota default do ProTUN é órfã; a do Wi-Fi não é", () => {
+    const protun = [
+      "Publish  Type      Subnet Prefix      Next Hop        If Metric",
+      "------  --------  -----------------  --------------  ---- ------",
+      "     0.0.0.0/0                    10.2.0.1    ProTUN     5",
+      "    0.0.0.0/0                  192.168.0.1      Wi-Fi    25",
+    ].join("\n");
+    expect(parseWireSockOrphanDefaultRoutes(protun)).toBe(true);
+    expect(parseWireSockOrphanDefaultRoutes(protun.split("\n").filter((line) => !/ProTUN/.test(line)).join("\n"))).toBe(false);
+  });
+
+  it("registro do Windows é lido do JSON do PowerShell", () => {
+    expect(parseWireSockUninstallEntries('[{"name":"WireSock Secure Connect"}]')).toEqual(["WireSock Secure Connect"]);
+    expect(parseWireSockUninstallEntries('{"name":"WGLaunch"}')).toEqual(["WGLaunch"]);
+    expect(parseWireSockUninstallEntries("[]")).toEqual([]);
+    expect(parseWireSockUninstallEntries("")).toEqual([]);
+    expect(parseWireSockUninstallEntries('[{"name":""}]')).toEqual([]);
+  });
+
+  it("script de recuperação usa o reset oficial do driver e recusa com túnel vivo", () => {
+    const script = wireSockNetworkRestoreScript(["C:\\Program Files\\WireSock Secure Connect\\wiresock-client.exe"], "C:\\Temp\\result.json");
+    expect(script).toContain("reset-network-lock");
+    // O lock só é tocado sem nenhum wiresock-client em execução.
+    expect(script.indexOf("$running = @(")).toBeLessThan(script.indexOf("reset-network-lock"));
+    expect(script).toContain("WIRESOCK_RUNNING");
+    expect(script).toContain("0.0.0.0/0");
+    expect(script).toContain("ipconfig.exe /flushdns");
+    expect(script).toContain("C:\\Temp\\result.json");
+    expect(() => wireSockNetworkRestoreScript(["ok"], 'C:\\"quebrado.json')).toThrow(/Caminho WireSock inválido/);
+  });
+
+  it("modos do setup cobrem instalar, remover e reparar", () => {
+    expect(wireSockInstallerArguments("install")).toEqual(["/quiet", "/norestart"]);
+    expect(wireSockInstallerArguments("uninstall")).toEqual(["/uninstall", "/quiet", "/norestart"]);
+    expect(wireSockInstallerArguments("repair")).toEqual(["/repair", "/quiet", "/norestart"]);
+  });
+
+  it("verifica o par depois que a instalação assenta, não no instante do setup", () => {
+    const run = makeInstallOfficial();
+    const { ctx } = installCtx();
+    let checks = 0;
+    // O msiexec continua depois do setup devolver (medido no Windows 11): o par
+    // só aparece na terceira checagem. Verificar uma vez daria falso negativo.
+    ctx.findCompatibleWireSockAsync = async () => {
+      checks += 1;
+      return checks >= 3 ? "C:\\WireSock\\wiresock-client.exe" : null;
+    };
+    ctx.waitForCompatibleWireSock = async () => {
+      for (;;) {
+        const found = await ctx.findCompatibleWireSockAsync();
+        if (found) return found;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    return expect(run(ctx, () => {})).resolves.toBe("C:\\WireSock\\wiresock-client.exe");
+  });
+
+  it("espera de assentamento tem prazo: par que não aparece vira falha, não travar", async () => {
+    const runner = new Function(`return async function(ctx, timeoutMs) {
+      const { findCompatibleWireSockAsync } = ctx;
+      const esperar = async () => {};
+      ${bodyOf("waitForCompatibleWireSock")}
+    }`)();
+    let checks = 0;
+    const found = await runner({
+      findCompatibleWireSockAsync: async () => { checks += 1; return null; },
+    }, 0);
+    expect(found).toBeNull();
+    // Com prazo zero a checagem e unica: existe, e nao trava esperando.
+    expect(checks).toBe(1);
+  });
+
+  it("dica final distingue rede restaurada de rede não confirmada", () => {
+    expect(wireSockInstallFailureHint(restoreOk)).toMatch(/rede do Windows foi restaurada/);
+    expect(wireSockInstallFailureHint({ ...restoreOk, executed: false })).toBe("");
+    // A sonda é o que autoriza a afirmação de rede recuperada.
+    expect(wireSockInstallFailureHint(restoreOk, { ok: true, dnsOk: true, httpsOk: true, updaterDnsOk: true, updaterHttpsOk: true })).toMatch(/A rede foi comprobada\./);
+    expect(wireSockInstallFailureHint(restoreOk, {
+      ok: false, dnsOk: true, httpsOk: false, updaterDnsOk: true, updaterHttpsOk: false, error: "HTTPS nao alcançou a internet",
+    })).toMatch(/A rede ainda não responde \(HTTPS nao alcançou a internet\)\./);
+    expect(wireSockInstallFailureHint({
+      ok: false, executed: true, networkLockReset: false, dnsFlushed: false, adapterRoutesCleared: false, residual: ["NETWORK_LOCK_FAILED: codigo=1"],
+    })).toMatch(/não foi possível confirmar a rede[\s\S]*NETWORK_LOCK_FAILED/);
+  });
+});
+
+describe("recuperação de rede compartilhada", () => {
+  function makeRecover() {
+    // O corpo transpilado traz o diretivo "use strict", illegal em uma lista de
+    // parâmetros com valor padrão; aqui ele é removido.
+    const body = bodyOf("recoverWireSockNetwork").replace(/^\s*(['"])use strict\1;\s*/, "");
+    return new Function(`return async function(ctx, callOptions) {
+      const { stopWireSockService, verifyWindowsNetworkStable, restoreWireSockNetwork, logger } = ctx;
+      const recoverWireSockNetwork = async function(options = {}) { ${body} };
+      return recoverWireSockNetwork(callOptions);
+    }`)();
+  }
+
+  function recoverCtx(stopped: boolean, restore: WireSockNetworkRestoreResult) {
+    const calls: Array<{ reason: string; force?: boolean }> = [];
+    return {
+      calls,
+      ctx: {
+        stopWireSockService: async () => ({
+          stopped, attempts: 1, resetNetworkLock: false, dnsCleared: true, dnsFlushed: true,
+          servicesResidual: [], processResidual: false, residual: [],
+        }),
+        verifyWindowsNetworkStable: async () => ({ ok: true, dnsOk: true, httpsOk: true, updaterDnsOk: true, updaterHttpsOk: true }),
+        restoreWireSockNetwork: async (reason: string, opts: { force?: boolean } = {}) => { calls.push({ reason, force: opts.force }); return restore; },
+        logger: { info: () => {}, warn: () => {}, logEvent: () => {} },
+      },
+    };
+  }
+
+  it("restauração de rede confirmada mantém a recuperação como sucesso", async () => {
+    const run = makeRecover();
+    const { ctx, calls } = recoverCtx(true, restoreOk);
+    const result = await run(ctx, {});
+    expect(result.ok).toBe(true);
+    expect(result.networkRestore.networkLockReset).toBe(true);
+    expect(calls).toEqual([{ reason: "recuperacao", force: undefined }]);
+  });
+
+  it("rede não confirmada derruba o ok e explica o motivo", async () => {
+    const run = makeRecover();
+    const { ctx } = recoverCtx(true, {
+      ok: false, executed: true, networkLockReset: false, dnsFlushed: true, adapterRoutesCleared: true, residual: ["WIRESOCK_CLIENT_MISSING"],
+    });
+    const result = await run(ctx, {});
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/WIRESOCK_CLIENT_MISSING/);
+  });
+
+  it("restauração ignorada por não haver resíduo não contamina o resultado", async () => {
+    const run = makeRecover();
+    const { ctx } = recoverCtx(true, { ...restoreOk, executed: false });
+    const result = await run(ctx, {});
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rede sem saída força a restauração do fornecedor", async () => {
+    const run = makeRecover();
+    const { ctx, calls } = recoverCtx(true, restoreOk);
+    await run(ctx, { forceNetworkRestore: true });
+    expect(calls).toEqual([{ reason: "recuperacao", force: true }]);
   });
 });

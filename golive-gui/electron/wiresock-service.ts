@@ -245,6 +245,63 @@ try {
 }
 
 /**
+ * Recuperacao de rede do estado em que o instalador do WireSock falha e a
+ * maquina fica sem saida. O fornecedor documenta
+ * `wiresock-client.exe reset-network-lock` para o lock de driver ficar ligado
+ * depois de uma saida anormal: enquanto ele estiver ligado, nada sai — e o
+ * instalador quebrado e justamente o que troca esse driver. A rota default
+ * orfa do adaptador virtual (que sem tunel manda tudo para o vazio) e o DNS
+ * sao o resto do mesmo estado.
+ *
+ * O script nao para nem mexe em tunel nenhum: se houver `wiresock-client` em
+ * execucao ele recusa, porque resetar o lock derrubaria a sessao de outro
+ * controlador. Os candidatos vem do app, que ja conhece os diretorios
+ * limitados do pacote oficial.
+ */
+export function wireSockNetworkRestoreScript(candidates: string[], resultPath: string): string {
+  if (!resultPath || /["\r\n\0]/.test(resultPath)) throw new Error("Caminho WireSock inválido");
+  const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
+  const clients = candidates.map((value) => {
+    if (!value || /["\r\n\0]/.test(value)) throw new Error("Caminho WireSock inválido");
+    return literal(value);
+  });
+  return `\uFEFF$ErrorActionPreference = 'Continue'
+$resultPath = ${literal(resultPath)}
+$result = [PSCustomObject]@{ ok=$false; networkLockReset=$false; dnsFlushed=$false; adapterRoutesCleared=$false; residual=@() }
+try {
+  $running = @(Get-CimInstance Win32_Process -Filter "Name='wiresock-client.exe'" -ErrorAction Stop)
+  if ($running.Count -gt 0) {
+    $result.residual += 'WIRESOCK_RUNNING: ha um WireSock em execucao; o lock de rede nao foi tocado para nao derrubar um tunel ativo'
+  } else {
+    $client = $null
+    foreach ($candidate in @(${clients.join(",")})) {
+      if (Test-Path -LiteralPath $candidate) { $client = $candidate; break }
+    }
+    if ($client) {
+      $null = & $client reset-network-lock
+      if ($LASTEXITCODE -eq 0) { $result.networkLockReset = $true }
+      else { $result.residual += "NETWORK_LOCK_FAILED: codigo=$LASTEXITCODE" }
+    } else {
+      $result.residual += 'WIRESOCK_CLIENT_MISSING: nenhum wiresock-client.exe conhecido; o lock de driver nao pode ser resetado'
+    }
+    foreach ($adapter in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'ProTUN|WireSock|WireGuard' })) {
+      $null = & netsh.exe interface ipv4 delete route 0.0.0.0/0 $adapter.Name
+      $null = & netsh.exe interface ipv6 delete route ::/0 $adapter.Name
+      $result.adapterRoutesCleared = $true
+    }
+    $null = & ipconfig.exe /flushdns
+    $result.dnsFlushed = ($LASTEXITCODE -eq 0)
+  }
+  $result.ok = ($result.residual.Count -eq 0)
+} catch {
+  $result.residual += $_.Exception.Message
+  $result.ok = $false
+}
+[IO.File]::WriteAllText($resultPath, ($result | ConvertTo-Json -Compress -Depth 4), [Text.UTF8Encoding]::new($false))
+`;
+}
+
+/**
  * Runs a PowerShell file through UAC without copying the file contents into
  * an encoded command-line argument. Windows has a relatively small command
  * line limit; the WireSock service script is intentionally detailed enough

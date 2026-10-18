@@ -30,7 +30,7 @@ import * as logger from "./logger";
 import * as discordscan from "./discordscan";
 import * as logsDir from "./logsDir";
 import { submitBugReport } from "./bugreport";
-import { ensureWireSockInstalled, listRunningImageNamesAsync, getWireSockAdapterTrafficNetshAsync, pingHostAsync, trafficSample, type TunnelStats, type WireSockAdapterTraffic, getWireSockConnectionStatus, getWireSockConnectionStatusAsync, getWireSockAdapterTraffic, getWireSockAdapterTrafficAsync, hasWireSockAdapterTrafficIncrease, isWireSockActive, isWireSockActiveAsync, startWireSockService, switchWireSockService, recoverWireSockNetwork, type WireSockConnectionStatus } from "./wiresock";
+import { ensureWireSockInstalled, listRunningImageNamesAsync, getWireSockAdapterTrafficNetshAsync, pingHostAsync, trafficSample, type TunnelStats, type WireSockAdapterTraffic, getWireSockConnectionStatus, getWireSockConnectionStatusAsync, getWireSockAdapterTraffic, getWireSockAdapterTrafficAsync, hasWireSockAdapterTrafficIncrease, isWireSockActive, isWireSockActiveAsync, startWireSockService, switchWireSockService, recoverWireSockNetwork, verifyWindowsNetwork, type WireSockConnectionStatus } from "./wiresock";
 import { classifyWgReadiness, getWgStats, getWgStatsAsync, iniciarWgStatsWatchdog, pararWgStatsWatchdog, type WgTunnelStats } from "./wgstats";
 import { classifyFailoverHealth, FailoverHealthTracker, FAILOVER_ROUTE_TIMEOUT_MS, FAILOVER_SAMPLE_INTERVAL_MS, routeCandidateUsable, routePoolDirectory, readRoutePoolManifest, makeRoutePoolManifest, routePoolMatches, ROUTE_POOL_RESERVE_COUNT, ROUTE_POOL_TOTAL, safeRoutePoolPath, writeRoutePoolManifest, type ProtonRouteMetadata, type ProtonRoutePoolManifest } from "./route-failover";
 import { validateWgConfContent } from "./wg-validator";
@@ -3275,7 +3275,15 @@ ipcMain.handle("restore-internet", async () => {
         throw error;
       }
     }
-    const recovery = await recoverWireSockNetwork();
+    // Botão pedido pelo usuário com a rede quebrada: se a sonda confirmar falta
+    // de saída, a recuperação do fornecedor (lock de driver, rota órfã, DNS)
+    // roda mesmo sem o túnel da GUI ter chegado a existir. É o caminho para a
+    // máquina que ficou sem internet depois de uma instalação falha do WireSock.
+    const networkDown = !(await verifyWindowsNetwork()).ok;
+    if (networkDown) {
+      logger.warn("wiresock", "restaurar-internet com rede sem saída", { hadWireSock });
+    }
+    const recovery = await recoverWireSockNetwork({ forceNetworkRestore: networkDown });
     windowsRouteState = recovery.ok ? "inactive" : "recovery_required";
     if (recovery.ok) persistBypassEnabled(false);
     // Nao relancar o Discord enquanto o WFP ainda pode estar instalado ou a

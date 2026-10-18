@@ -26,7 +26,7 @@ import { runWireSockSnapshotOutsideMainThread } from "./vpn-snapshot-worker";
 export const WIRESOCK_VERSION = "3.4.8.1";
 const WIRESOCK_DOWNLOAD = "https://wiresock.net/_api/download-release.php?product=wiresock-secure-connect-sdk&platform=x64&version=3.4.8.1&channel=winget";
 const WIRESOCK_INSTALLER_SHA256 = "abfeebdc645de36b95fabbed00c7fdb0bf4d0c68c5518608450619c61876d33e";
-const WIRESOCK_DRIVER_NAMES = ["ndiswg", "NDISRD"] as const;
+const WIRESOCK_DRIVER_NAMES = ["ndiswgc", "ndiswg", "NDISRD"] as const;
 const WIRESOCK_EXECUTABLE = "wiresock-client.exe";
 const MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 
@@ -583,14 +583,262 @@ function sha256(file: string): string {
     return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-function runElevatedInstaller(installer: string): Promise<void> {
-    const command = `try { $p=Start-Process -FilePath ${quotePowerShell(installer)} -ArgumentList @('/quiet','/norestart') -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop; if($null -eq $p){ exit 1223 }; exit [int]$p.ExitCode } catch { if($_.Exception.NativeErrorCode -eq 1223){ exit 1223 }; Write-Error $_; exit 1 }`;
+// Modos do setup oficial: `uninstall` e `repair` sao os proprios switches de manutencao
+// do instalador e sao o que resolve a instalacao que o /quiet sozinho deixa pela metade.
+const WIRESOCK_INSTALLER_ARGUMENTS = {
+    install: ["/quiet", "/norestart"],
+    uninstall: ["/uninstall", "/quiet", "/norestart"],
+    repair: ["/repair", "/quiet", "/norestart"],
+} as const;
+export type WireSockInstallerMode = keyof typeof WIRESOCK_INSTALLER_ARGUMENTS;
+
+export function wireSockInstallerArguments(mode: WireSockInstallerMode): string[] {
+    return [...WIRESOCK_INSTALLER_ARGUMENTS[mode]];
+}
+
+function runElevatedInstaller(installer: string, mode: WireSockInstallerMode, timeoutMs = WIRESOCK_INSTALLER_TIMEOUT_MS): Promise<void> {
+    const argumentsLiteral = wireSockInstallerArguments(mode).map(value => quotePowerShell(value)).join(",");
+    const command = `try { $p=Start-Process -FilePath ${quotePowerShell(installer)} -ArgumentList @(${argumentsLiteral}) -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop; if($null -eq $p){ exit 1223 }; exit [int]$p.ExitCode } catch { if($_.Exception.NativeErrorCode -eq 1223){ exit 1223 }; Write-Error $_; exit 1 }`;
     return new Promise((resolve, reject) => {
         const child = execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
             windowsHide: true,
-            timeout: 120_000,
-        }, error => error ? reject(error) : resolve());
+            timeout: timeoutMs,
+        }, error => {
+            if (!error) { resolve(); return; }
+            // No estouro a arvore inteira e morta: um setup vivo continuaria
+            // escrevendo no WireSock depois de o plugin desistir.
+            if ((error as { killed?: boolean }).killed) {
+                try { execFileSync("taskkill.exe", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true }); } catch {}
+                reject(new Error(`O instalador WireSock (modo ${mode}) não terminou em ${Math.round(timeoutMs / 1000)} s e foi encerrado.`));
+                return;
+            }
+            reject(error);
+        });
         child.once("error", reject);
+    });
+}
+
+// Tetos medidos no Windows 11 com o setup 3.4.8.1: desinstalar leva segundos e
+// instalar/reparar menos de um minuto.
+const WIRESOCK_INSTALLER_TIMEOUT_MS = 5 * 60_000;
+const WIRESOCK_UNINSTALL_TIMEOUT_MS = 3 * 60_000;
+const WIRESOCK_SETTLE_TIMEOUT_MS = 90_000;
+
+/**
+ * O setup pode sair antes da transacao do Windows Installer (medido: o `msiexec`
+ * continuou rodando depois do `/quiet` devolver). Verificar na hora daria falso
+ * negativo e a mensagem de "instalador terminou sem par compativel".
+ */
+async function waitForCompatibleWireSock(timeoutMs: number): Promise<string | null> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const found = findWireSockCandidate();
+        if (found) return found.executable;
+        if (Date.now() >= deadline) return null;
+        await wait(2000);
+    }
+}
+
+// 1605 = produto nao instalado, 1614 = produto desinstalado.
+const WIRESOCK_ABSENT_EXIT_CODES = new Set([0, 1605, 1614]);
+
+export type WireSockInstallState = "compatible" | "stale" | "none";
+
+export interface WireSockInstallStateProbe {
+    compatiblePair: boolean;
+    installDir: boolean;
+    registered: boolean;
+    driverService: boolean;
+}
+
+/**
+ * "stale" e o estado perigoso: sobrou registro do Windows (ou driver, ou pasta) sem um par
+ * cliente/booster utilizavel. Rodar o setup por cima disso cai em manutencao ("Modify Setup"),
+ * que em /quiet nao instala e pode deixar o driver pela metade — foi assim que maquinas
+ * ficaram sem internet depois de uma instalacao do plugin.
+ */
+export function classifyWireSockInstallState(probe: WireSockInstallStateProbe): WireSockInstallState {
+    if (probe.compatiblePair) return "compatible";
+    if (probe.installDir || probe.registered || probe.driverService) return "stale";
+    return "none";
+}
+
+export function parseWireSockUninstallEntries(raw: string): string[] {
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        return rows.flatMap(row => {
+            const name = (row as { name?: unknown })?.name;
+            return typeof name === "string" && name.trim() ? [name.trim()] : [];
+        });
+    } catch {
+        return [];
+    }
+}
+
+export interface WireSockNetworkRestoreResult {
+    ok: boolean;
+    executed: boolean;
+    networkLockReset: boolean;
+    dnsFlushed: boolean;
+    adapterRoutesCleared: boolean;
+    residual: string[];
+}
+
+/**
+ * Recuperacao de rede do fornecedor para a instalacao quebrada: `reset-network-lock` e o
+ * comando que a documentacao do WireSock indica quando o lock de driver fica ligado depois
+ * de uma saida anormal (enquanto ligado, nada sai). A rota default orfa do adaptador virtual e
+ * o DNS sao o resto do mesmo estado. O script recusa se houver `wiresock-client` em execucao:
+ * resetar o lock derrubaria a sessao de outro controlador.
+ */
+export function wireSockNetworkRestoreScript(clients: string[], resultPath: string): string {
+    if (!resultPath || /["\r\n\0]/.test(resultPath)) throw new Error("Caminho WireSock inválido");
+    const literals = clients.map(value => {
+        if (!value || /["\r\n\0]/.test(value)) throw new Error("Caminho WireSock inválido");
+        return quotePowerShell(value);
+    });
+    return `$ErrorActionPreference = 'Continue'
+$resultPath = ${quotePowerShell(resultPath)}
+$result = [PSCustomObject]@{ ok=$false; networkLockReset=$false; dnsFlushed=$false; adapterRoutesCleared=$false; residual=@() }
+try {
+  $running = @(Get-CimInstance Win32_Process -Filter "Name='wiresock-client.exe'" -ErrorAction Stop)
+  if ($running.Count -gt 0) {
+    $result.residual += 'WIRESOCK_RUNNING: ha um WireSock em execucao; o lock de rede nao foi tocado para nao derrubar um tunel ativo'
+  } else {
+    $client = $null
+    foreach ($candidate in @(${literals.join(",")})) {
+      if (Test-Path -LiteralPath $candidate) { $client = $candidate; break }
+    }
+    if ($client) {
+      $null = & $client reset-network-lock
+      if ($LASTEXITCODE -eq 0) { $result.networkLockReset = $true }
+      else { $result.residual += "NETWORK_LOCK_FAILED: codigo=$LASTEXITCODE" }
+    } else {
+      $result.residual += 'WIRESOCK_CLIENT_MISSING: nenhum wiresock-client.exe conhecido; o lock de driver nao pode ser resetado'
+    }
+    foreach ($adapter in @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'ProTUN|WireSock|WireGuard' })) {
+      $null = & netsh.exe interface ipv4 delete route 0.0.0.0/0 $adapter.Name
+      $null = & netsh.exe interface ipv6 delete route ::/0 $adapter.Name
+      $result.adapterRoutesCleared = $true
+    }
+    $null = & ipconfig.exe /flushdns
+    $result.dnsFlushed = ($LASTEXITCODE -eq 0)
+  }
+  $result.ok = ($result.residual.Count -eq 0)
+} catch {
+  $result.residual += $_.Exception.Message
+  $result.ok = $false
+}
+[IO.File]::WriteAllText($resultPath, ($result | ConvertTo-Json -Compress -Depth 4), [Text.UTF8Encoding]::new($false))`;
+}
+
+/** Qualquer `wiresock-client.exe` conhecido, inclusive de versão antiga: só o reset do lock usa. */
+export function anyWireSockClientPath(env: NodeJS.ProcessEnv = process.env): string | null {
+    for (const root of wireSockSearchRoots(env)) {
+        for (const relative of [WIRESOCK_EXECUTABLE, path.join("sdk", WIRESOCK_EXECUTABLE)]) {
+            const candidate = path.join(root, relative);
+            try { if (fs.existsSync(candidate)) return candidate; } catch { /* raiz inacessível */ }
+        }
+    }
+    return null;
+}
+
+export function wireSockResidueNeedsRestore(snapshot: { clientInstalled: boolean; driverService: boolean; adapterDefaultRoute: boolean }): boolean {
+    return snapshot.adapterDefaultRoute || (snapshot.driverService && !snapshot.clientInstalled);
+}
+
+export function parseWireSockOrphanDefaultRoutes(output: string): boolean {
+    return output.split(/\r?\n/).some(line =>
+        /0\.0\.0\.0\/0/.test(line) && /(?:^|[\s|])(?:protun|wiresock|wireguard)(?:[\s|]|$)/i.test(line));
+}
+
+const EMPTY_NETWORK_RESTORE: WireSockNetworkRestoreResult = {
+    ok: true, executed: false, networkLockReset: false, dnsFlushed: false, adapterRoutesCleared: false, residual: [],
+};
+
+/**
+ * Rede de segurança da instalacao: se o setup falhar, a maquina nao pode ficar sem saida.
+ * Roda o comando de recuperacao do fornecedor e limpa rota/DNS do adaptador virtual.
+ */
+export async function restoreWireSockNetwork(log: WireSockLogger, options: { force?: boolean } = {}): Promise<WireSockNetworkRestoreResult> {
+    if (!isWindows()) return EMPTY_NETWORK_RESTORE;
+    const client = anyWireSockClientPath();
+    let driverService = false;
+    let adapterDefaultRoute = false;
+    try {
+        driverService = isWireSockPacketFilterDriverInstalled();
+        adapterDefaultRoute = parseWireSockOrphanDefaultRoutes(execFileSync("netsh", ["interface", "ipv4", "show", "route"], {
+            encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true, timeout: 10_000,
+        }));
+    } catch { /* leitura sem privilégio: segue sem resíduo comprovado */ }
+    if (!options.force && !wireSockResidueNeedsRestore({ clientInstalled: Boolean(client), driverService, adapterDefaultRoute })) {
+        log("info", "recuperacao de rede nao necessaria", { driverService, adapterDefaultRoute });
+        return EMPTY_NETWORK_RESTORE;
+    }
+    const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "golive-plugin-restore-"));
+    const resultPath = path.join(directory, "restore.json");
+    try {
+        const script = wireSockNetworkRestoreScript(client ? [client] : [], resultPath);
+        await new Promise<void>((resolve, reject) => {
+            const child = execFile("powershell.exe", elevatedPowerShellArgs(script), { windowsHide: false, timeout: 120_000 },
+                error => error ? reject(error) : resolve());
+            child.once("error", reject);
+        });
+        const parsed = JSON.parse(await fs.promises.readFile(resultPath, "utf8")) as Record<string, unknown>;
+        const result: WireSockNetworkRestoreResult = {
+            ok: parsed.ok === true,
+            executed: true,
+            networkLockReset: parsed.networkLockReset === true,
+            dnsFlushed: parsed.dnsFlushed === true,
+            adapterRoutesCleared: parsed.adapterRoutesCleared === true,
+            residual: Array.isArray(parsed.residual) ? parsed.residual.filter((value): value is string => typeof value === "string") : [],
+        };
+        log(result.ok ? "info" : "warn", "recuperacao de rede apos a instalacao", { ...result });
+        return result;
+    } catch (error) {
+        const residual = [logError(error)];
+        log("warn", "recuperacao de rede nao confirmada", { residual });
+        return { ...EMPTY_NETWORK_RESTORE, ok: false, executed: true, residual };
+    } finally {
+        await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
+/** Mensagem honesta: o script dizer que deu certo nao prova que o Windows navega. */
+export function wireSockInstallFailureHint(restore: WireSockNetworkRestoreResult): string {
+    if (!restore.executed) return "";
+    if (restore.ok && restore.networkLockReset) return "A rede do Windows foi restaurada depois da falha da instalação.";
+    if (restore.networkLockReset) return `O bloqueio de rede do driver foi removido, mas a recuperação ficou inconclusiva (${restore.residual.join("; ") || "sem detalhes"}).`;
+    return `A instalação falhou e não foi possível confirmar a rede (${restore.residual.join("; ") || "sem detalhes"}). Use "Restaurar rede" do painel do plugin; se persistir, repita Reparo em Programas e Recursos do "WireSock Secure Connect".`;
+}
+
+async function hasWireSockUninstallRegistration(): Promise<{ registered: boolean; entries: string[] }> {
+    const script = "$roots=@('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'); $found=@(); foreach($root in $roots){ try { Get-ItemProperty -Path $root -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -and $_.DisplayName -match '(?i)wire\\s?sock|wglaunch' } | ForEach-Object { $found += [PSCustomObject]@{ name=[string]$_.DisplayName } } } catch {} }; ConvertTo-Json -Compress $found";
+    try {
+        const output = await new Promise<string>((resolve, reject) => {
+            const child = execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+                encoding: "utf8", windowsHide: true, timeout: 8000,
+            }, (error, stdout) => error ? reject(error) : resolve(stdout));
+            child.once("error", reject);
+        });
+        const entries = parseWireSockUninstallEntries(output);
+        return { registered: entries.length > 0, entries };
+    } catch {
+        return { registered: false, entries: [] };
+    }
+}
+
+async function detectWireSockInstallState(): Promise<WireSockInstallState> {
+    const installDir = wireSockSearchRoots().some(root => {
+        try { return fs.existsSync(root) || fs.existsSync(path.join(root, "sdk")); } catch { return false; }
+    });
+    const registration = await hasWireSockUninstallRegistration();
+    return classifyWireSockInstallState({
+        compatiblePair: false,
+        installDir,
+        registered: registration.registered,
+        driverService: isWireSockPacketFilterDriverInstalled(),
     });
 }
 
@@ -617,15 +865,44 @@ async function ensureWireSockInstalledOnce(log: WireSockLogger): Promise<string>
         await downloadInstaller(installer);
         if (sha256(installer).toLowerCase() !== WIRESOCK_INSTALLER_SHA256)
             throw new Error("Hash do instalador WireSock não corresponde ao release oficial fixado.");
+        const state = await detectWireSockInstallState();
+        if (state === "stale") {
+            log("warn", "instalacao anterior do WireSock esta pela metade; removendo antes de instalar", { state });
+            try {
+                await runElevatedInstaller(installer, "uninstall", WIRESOCK_UNINSTALL_TIMEOUT_MS);
+            } catch (error) {
+                const code = Number((error as { code?: unknown })?.code);
+                if (code === 1223) throw new Error("A instalação do WireSock foi cancelada pelo usuário.");
+                if (!WIRESOCK_ABSENT_EXIT_CODES.has(code)) log("warn", "desinstalacao anterior nao confirmada", { codigo: code, erro: logError(error) });
+            }
+        }
         log("info", "instalando WireSock com elevação do Windows");
-        await runElevatedInstaller(installer);
-        const installed = findWireSockCandidate();
+        await runElevatedInstaller(installer, "install");
+        let installed = await waitForCompatibleWireSock(WIRESOCK_SETTLE_TIMEOUT_MS);
+        if (!installed) {
+            // O setup entrou em manutencao e nao instalou (medido: /quiet devolve 0
+            // em 3 s sobre uma instalacao registrada e nao escreve nada). O reparo e
+            // o caminho que restaura o driver e o par no lugar.
+            log("warn", "instalador terminou sem par compatível; tentando reparo", {});
+            try {
+                await runElevatedInstaller(installer, "repair");
+            } catch (error) {
+                const code = Number((error as { code?: unknown })?.code);
+                if (code === 1223) throw new Error("A instalação do WireSock foi cancelada pelo usuário.");
+                log("warn", "reparo do WireSock nao confirmado", { erro: logError(error) });
+            }
+            installed = await waitForCompatibleWireSock(WIRESOCK_SETTLE_TIMEOUT_MS);
+        }
         if (!installed) throw new Error("O instalador WireSock terminou, mas não deixou uma instalação SDK compatível.");
-        return installed.executable;
+        return installed;
     } catch (error) {
         const code = Number((error as { code?: unknown })?.code);
         if (code === 1223) throw new Error("A instalação do WireSock foi cancelada pelo usuário.");
-        throw new Error(`Não foi possível preparar o WireSock: ${logError(error)}`);
+        // O setup ja tocou o driver: a maquina nao pode ficar sem saida por causa disso.
+        const restore = await restoreWireSockNetwork(log, { force: true });
+        log("error", "instalacao do WireSock falhou", { erro: logError(error), restore: { ...restore } });
+        const hint = wireSockInstallFailureHint(restore);
+        throw new Error(`Não foi possível preparar o WireSock: ${logError(error)}${hint ? ` ${hint}` : ""}`);
     } finally {
         await fs.promises.rm(temporary, { recursive: true, force: true }).catch(() => {});
     }

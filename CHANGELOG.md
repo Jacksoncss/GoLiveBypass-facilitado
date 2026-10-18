@@ -6,6 +6,8 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [2.0.12] - 2026-10-18
+
 ### Corrigido
 
 - **Instalar o WireSock por cima de uma instalação pela metade não deixa mais a máquina sem internet.** Com um WireSock antigo ou quebrado registrado no Windows (a entrada em Programas e Recursos existe, mas não há `wiresock-client.exe` + `wgbooster.dll` utilizáveis), o setup fixado rodava com `/quiet` e não instalava nada. O sintoma era duplo: o app reclamava "O instalador oficial terminou, mas não deixou um par WireSock SDK compatível" e o Windows ficava sem saída, exatamente o estado que o *Reparo* manual desfez apontando o driver em `C:\Program Files\WireSock Secure Connect\drivers`.

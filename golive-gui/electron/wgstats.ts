@@ -17,6 +17,7 @@
 
 import { execFile, execSync } from "child_process";
 import * as logger from "./logger";
+import { avaliarSaudeWireSock, caminhoLogWireSock, lerResumoLogWireSock } from "./wiresock-log";
 
 export interface WgTunnelStats {
   ok: boolean;
@@ -175,6 +176,35 @@ export const WG_STATS_INTERVAL_MS = 45_000;
 // keepalive persistente e 25s, entao o dobro do dobro ja e folga generosa para jitter de rede.
 export const WG_STALE_HANDSHAKE_S = 180;
 
+// Saude saudavel vira linha de log so de tempos em tempos; um problema entra em toda leitura.
+export const WG_SAUDE_INFO_MS = 5 * 60_000;
+// Sem nenhuma fonte de estatistica, "indisponivel" nao muda a cada leitura: repetir so enche o log.
+export const WG_INDISPONIVEL_MS = 10 * 60_000;
+let ultimaSaudeInfoMs = Number.NEGATIVE_INFINITY;
+let ultimoIndisponivelMs = Number.NEGATIVE_INFINITY;
+
+/**
+ * Sem `wg.exe` (o normal com o WireSock direto) a saude do tunel vem do log do proprio
+ * wiresock-client. Devolve false quando nao ha log legivel, para o chamador cair no aviso antigo.
+ */
+function registrarSaudePeloLogWireSock(): boolean {
+  const caminho = caminhoLogWireSock();
+  if (!caminho) return false;
+  const resumo = lerResumoLogWireSock(caminho);
+  if (!resumo.ok) return false;
+  const saude = avaliarSaudeWireSock(resumo, { handshakeVelhoS: WG_STALE_HANDSHAKE_S });
+  if (saude.nivel === "warn") {
+    logger.warn("wg", saude.evento, saude.dados);
+    return true;
+  }
+  const agora = Date.now();
+  if (agora - ultimaSaudeInfoMs >= WG_SAUDE_INFO_MS) {
+    ultimaSaudeInfoMs = agora;
+    logger.info("wg", saude.evento, saude.dados);
+  }
+  return true;
+}
+
 export type WgStatsProvider = () => Promise<WgTunnelStats> | WgTunnelStats;
 
 // No Linux, ler o netns exige setns() (CAP_SYS_ADMIN) que a GUI desprivilegiada nao tem — quem
@@ -185,6 +215,8 @@ export function iniciarWgStatsWatchdog(provider: WgStatsProvider = getWgStats) {
   const generation = ++watchdogGeneration;
   ultimoRx = null;
   ultimoTx = null;
+  ultimaSaudeInfoMs = Number.NEGATIVE_INFINITY;
+  ultimoIndisponivelMs = Number.NEGATIVE_INFINITY;
   timer = setInterval(() => {
     // O provider Linux pode envolver um processo elevado e, em uma máquina
     // congestionada, durar mais que o intervalo. Nunca sobreponha leituras:
@@ -199,7 +231,12 @@ export function iniciarWgStatsWatchdog(provider: WgStatsProvider = getWgStats) {
         // publicar diagnóstico nem atualizar contadores da sessão nova.
         if (generation !== watchdogGeneration || timer === null) return;
         if (!s.ok) {
-          logger.warn("wg", "stats.indisponivel", { erro: s.error ?? "?" });
+          if (registrarSaudePeloLogWireSock()) return;
+          const agora = Date.now();
+          if (agora - ultimoIndisponivelMs >= WG_INDISPONIVEL_MS) {
+            ultimoIndisponivelMs = agora;
+            logger.warn("wg", "stats.indisponivel", { erro: s.error ?? "?" });
+          }
           return;
         }
         const dadosCampo: Record<string, unknown> = {

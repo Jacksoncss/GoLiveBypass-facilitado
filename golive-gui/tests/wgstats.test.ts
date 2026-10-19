@@ -1,4 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import * as logger from "../electron/logger";
+import { registrarLogWireSock } from "../electron/wiresock-log";
 import { classifyWgReadiness, iniciarWgStatsWatchdog, parseWgDump, pararWgStatsWatchdog, WG_STATS_INTERVAL_MS } from "../electron/wgstats";
 
 // `wg show <iface> dump` real (campos tab-separated, ver electron/wgstats.ts).
@@ -133,5 +138,93 @@ describe("watchdog WireGuard", () => {
       pararWgStatsWatchdog();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("watchdog sem wg.exe: saude lida do log do WireSock", () => {
+  const AGORA = new Date(2026, 9, 19, 20, 0, 0).getTime();
+  const KEEPALIVE = "[TUN]: keep_alive_thread: Sending Keepalive packet to WireGuard Server success";
+  const ENVIO = "[TUN]: keep_alive_thread: Handshake initiation sent to WireGuard server";
+  const RESPOSTA = "[TUN]: Handshake response received from 84.20.27.49 : 51820";
+  const semWg = () => Promise.resolve({ ok: false, handshakeAgoS: null, rxBytes: null, txBytes: null, endpoint: null, error: "wg.exe indisponivel ou sem interface: spawn wg ENOENT" });
+  let dir: string;
+  let arquivo: string;
+
+  const dois = (n: number) => String(n).padStart(2, "0");
+  const linha = (msAtras: number, mensagem: string) => {
+    const d = new Date(AGORA - msAtras);
+    const quando = `${d.getFullYear()}-${dois(d.getMonth() + 1)}-${dois(d.getDate())} ${dois(d.getHours())}:${dois(d.getMinutes())}:${dois(d.getSeconds())}`;
+    return `${quando} ${JSON.stringify({ log_level: "info", message: mensagem })}`;
+  };
+  // O watchdog le o arquivo um intervalo depois de AGORA (relogio falso): as linhas sao
+  // relativas ao instante da leitura, nao ao de criacao.
+  const escreverLog = (idadeUltimaLinhaS: number) => {
+    const base = idadeUltimaLinhaS * 1000;
+    const linhas: string[] = [];
+    for (let s = 300; s >= 0; s -= 10) linhas.push(linha(base + s * 1000 - WG_STATS_INTERVAL_MS, KEEPALIVE));
+    linhas.push(linha(base + 120_000 - WG_STATS_INTERVAL_MS, ENVIO), linha(base + 119_000 - WG_STATS_INTERVAL_MS, RESPOSTA));
+    fs.writeFileSync(arquivo, linhas.join("\n") + "\n");
+  };
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "golive-wgstats-"));
+    arquivo = path.join(dir, "direct-result.txt.stdout");
+    logger._resetForTests();
+    vi.useFakeTimers();
+    vi.setSystemTime(AGORA);
+    registrarLogWireSock(null);
+  });
+  afterEach(() => {
+    pararWgStatsWatchdog();
+    registrarLogWireSock(null);
+    vi.useRealTimers();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("tunel saudavel registra tunel.saude em vez de stats.indisponivel", async () => {
+    escreverLog(5);
+    registrarLogWireSock(arquivo);
+    iniciarWgStatsWatchdog(semWg);
+    await vi.advanceTimersByTimeAsync(WG_STATS_INTERVAL_MS);
+
+    const recent = logger.getRecent();
+    expect(recent).toContain("tunel.saude");
+    expect(recent).not.toContain("stats.indisponivel");
+    expect(recent).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+  });
+
+  it("saude saudavel e registrada no maximo a cada 5 minutos", async () => {
+    escreverLog(5);
+    registrarLogWireSock(arquivo);
+    iniciarWgStatsWatchdog(semWg);
+    await vi.advanceTimersByTimeAsync(WG_STATS_INTERVAL_MS * 4);
+
+    expect(logger.getRecent().split("tunel.saude").length - 1).toBe(1);
+  });
+
+  it("log parado vira aviso a cada leitura", async () => {
+    escreverLog(200);
+    registrarLogWireSock(arquivo);
+    iniciarWgStatsWatchdog(semWg);
+    await vi.advanceTimersByTimeAsync(WG_STATS_INTERVAL_MS * 2);
+
+    const recent = logger.getRecent();
+    expect(recent).toContain("[warn][wg] wiresock.log_parado");
+    expect(recent).not.toContain("tunel.saude");
+  });
+
+  it("sem log registrado, stats.indisponivel aparece uma vez em vez de a cada leitura", async () => {
+    iniciarWgStatsWatchdog(semWg);
+    await vi.advanceTimersByTimeAsync(WG_STATS_INTERVAL_MS * 5);
+
+    expect(logger.getRecent().split("stats.indisponivel").length - 1).toBe(1);
+  });
+
+  it("log registrado mas ilegivel cai de volta em stats.indisponivel", async () => {
+    registrarLogWireSock(path.join(dir, "nao-existe.stdout"));
+    iniciarWgStatsWatchdog(semWg);
+    await vi.advanceTimersByTimeAsync(WG_STATS_INTERVAL_MS);
+
+    expect(logger.getRecent()).toContain("stats.indisponivel");
   });
 });

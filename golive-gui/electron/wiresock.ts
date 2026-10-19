@@ -10,6 +10,7 @@ import * as logger from "./logger";
 import { elevatedPowerShellFileArgs, wireSockCleanupScript, wireSockDirectScript, wireSockNetworkRestoreScript, wireSockServiceScript } from "./wiresock-service";
 import { inspectGuiWireSockOwnership, wireSockOwnershipSnapshotScript, type GuiWireSockInspection } from "./wiresock-ownership";
 import { enumerateWireSockCandidatesAsync, selectSupportedWireSock } from "./wiresock-preflight";
+import { registrarLogWireSock } from "./wiresock-log";
 
 const EMBEDDED_WG_CONF = `[Interface]
 PrivateKey = sLPBSsrhzoqZSOY/XxAzGAy5F+sQKQIIE3WoxG8buWM=
@@ -1321,6 +1322,7 @@ async function applyWireSockProfile(installDir: string, rawConf: string, allowed
         throw new Error(failure.message + " [" + failure.code + "]");
       }
       activationMode = "service";
+      registrarLogWireSock(null);
       logger.logEvent("info", "wiresock", "activation.accepted", {
         operation_id: operationId,
         attempt_id: serviceAttemptId,
@@ -1332,6 +1334,10 @@ async function applyWireSockProfile(installDir: string, rawConf: string, allowed
         wrapperError: serviceError ? detalheErro(serviceError) : null,
       });
     } else {
+      // O wiresock-client escreve handshake e keepalive neste arquivo enquanto o tunel vive. O
+      // tempDir nao some ao fim da ativacao (o arquivo aberto impede a remocao), entao o caminho
+      // segue valido para o watchdog e para o relatorio de bug lerem.
+      registrarLogWireSock(directResultPath + ".stdout");
       logger.logEvent("info", "wiresock", "activation.accepted", {
         operation_id: operationId,
         attempt_id: directAttemptId,

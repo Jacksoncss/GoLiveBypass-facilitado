@@ -6,6 +6,10 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Alterado
+
+- **Menos ruído no log, para o relatório não ser cortado no meio.** A varredura de pastas do Discord (`scan.inicio`, `scan.raiz`, `scan.candidato`, `scan.install`, `scan.resultado`) e o `running.tasklist` repetiam a mesma foto do disco a cada leitura de status: no relatório #370, 481 das 571 linhas (84%) eram isso, o limite de tamanho cortou o miolo da sessão (a troca de rota) e o aviso de `wg.exe` indisponível aparecia a cada 45 s. Cada linha idêntica agora só é registrada de novo depois de 10 minutos (o que mantém uma varredura recente em todo relatório), e o aviso de estatística indisponível sai no máximo a cada 10 minutos. Se algo muda (um install novo, outro total), a linha nova entra na hora.
+
 ## [2.0.12] - 2026-10-18
 
 ### Corrigido

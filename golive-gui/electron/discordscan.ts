@@ -27,8 +27,33 @@ const DISCOVERY_ENV_PLACEHOLDERS: ReadonlyArray<readonly [string, string]> = [
 ];
 // Raizes fixas que nao identificam o usuario e podem aparecer como estao (mac).
 const DISCOVERY_FIXED_ROOTS: readonly string[] = ["/Applications"];
-const DISCOVERY_ROOT_DEDUPE_MS = 4_000;
-const recentDiscoveryRoots = new Map<string, number>();
+// A varredura roda a cada leitura de status e, sem controle, enche o ring buffer (e o relatorio
+// de bug, que tem teto de tamanho) com a mesma foto do disco: no relatorio #370, 84% das linhas
+// eram isso e o miolo da sessao foi cortado. Cada linha identica so e registrada de novo depois
+// desta janela, o que mantem uma varredura recente em todo relatorio; se algo muda (um install
+// novo, outro total), a linha nova tem outro conteudo e entra na hora.
+const DISCOVERY_LOG_DEDUPE_MS = 10 * 60_000;
+const DISCOVERY_LOG_DEDUPE_MAX = 500;
+const recentDiscoveryLines = new Map<string, number>();
+
+function logDiscoveryOnce(msg: string, data: Record<string, unknown>): void {
+  const key = `${msg}|${JSON.stringify(data)}`;
+  const now = Date.now();
+  const previous = recentDiscoveryLines.get(key);
+  if (previous !== undefined && now >= previous && now - previous < DISCOVERY_LOG_DEDUPE_MS) return;
+  if (recentDiscoveryLines.size >= DISCOVERY_LOG_DEDUPE_MAX) {
+    for (const [oldKey, at] of recentDiscoveryLines) {
+      if (now < at || now - at >= DISCOVERY_LOG_DEDUPE_MS) recentDiscoveryLines.delete(oldKey);
+    }
+    if (recentDiscoveryLines.size >= DISCOVERY_LOG_DEDUPE_MAX) recentDiscoveryLines.clear();
+  }
+  recentDiscoveryLines.set(key, now);
+  logger.info("discord", msg, data);
+}
+
+export function _resetDiscoveryLogDedupe(): void {
+  recentDiscoveryLines.clear();
+}
 
 function clipDiscoveryValue(value: string, max = DISCOVERY_PATH_MAX): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
@@ -90,46 +115,40 @@ export function sanitizeDiscoveryPath(value: string | undefined): string {
 export function scanInicio(plataforma: string, localAppData?: string) {
   const data: Record<string, unknown> = { plataforma };
   if (plataforma === "win32") data.localappdata = sanitizeDiscoveryPath(localAppData);
-  logger.info("discord", "scan.inicio", data);
+  logDiscoveryOnce("scan.inicio", data);
 }
 
 // Cada raiz/flavour testado: raiz + resultado do existsSync. A raiz entra
 // sanitizada (placeholder/hash), nunca o caminho cru.
 export function scanRaiz(raiz: string, existe: boolean, flavour?: string) {
-  const sanitizedRoot = sanitizeDiscoveryPath(raiz);
-  const key = `${sanitizedRoot}|${existe ? "sim" : "nao"}|${flavour ?? ""}`;
-  const now = Date.now();
-  const previous = recentDiscoveryRoots.get(key);
-  if (previous !== undefined && now >= previous && now - previous < DISCOVERY_ROOT_DEDUPE_MS) return;
-  recentDiscoveryRoots.set(key, now);
   const data: Record<string, unknown> = {
-    raiz: sanitizedRoot,
+    raiz: sanitizeDiscoveryPath(raiz),
     existe: existe ? "sim" : "nao",
   };
   if (flavour) data.flavour = flavour;
-  logger.info("discord", "scan.raiz", data);
+  logDiscoveryOnce("scan.raiz", data);
 }
 
 // Um install valido (app.asar ou _app.asar presentes). O resources entra
 // sanitizado (placeholder/hash), nunca o caminho cru.
 export function scanInstall(resources: string, flavour: string) {
-  logger.info("discord", "scan.install", { resources: sanitizeDiscoveryPath(resources), flavour });
+  logDiscoveryOnce("scan.install", { resources: sanitizeDiscoveryPath(resources), flavour });
 }
 
 export function scanResultado(total: number) {
-  logger.info("discord", "scan.resultado", { total });
+  logDiscoveryOnce("scan.resultado", { total });
 }
 
 export function runningPgrep(processo: string, ok: boolean, erro?: string) {
   const data: Record<string, unknown> = { processo, ok: ok ? "sim" : "nao" };
   if (erro) data.erro = erro;
-  logger.info("discord", "running.pgrep", data);
+  logDiscoveryOnce("running.pgrep", data);
 }
 
 export function runningTasklist(imagem: string, ok: boolean, erro?: string) {
   const data: Record<string, unknown> = { imagem, ok: ok ? "sim" : "nao" };
   if (erro) data.erro = erro;
-  logger.info("discord", "running.tasklist", data);
+  logDiscoveryOnce("running.tasklist", data);
 }
 
 // Resultado do script Linux --status --json: code + se o JSON parseou.
@@ -194,5 +213,5 @@ export function scanFonte(
 // Candidato aceito, sem path. detected_by e a origem de maior precedencia que
 // venceu a deduplicacao para este flavour.
 export function scanCandidato(flavour: string, detectedBy: DiscoveryScanSource) {
-  logger.info("discord", "scan.candidato", { flavour, detected_by: detectedBy });
+  logDiscoveryOnce("scan.candidato", { flavour, detected_by: detectedBy });
 }

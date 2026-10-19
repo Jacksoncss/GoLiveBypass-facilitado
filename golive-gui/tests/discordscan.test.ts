@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
 
 import * as logger from "../electron/logger";
 import {
+  _resetDiscoveryLogDedupe,
+  runningTasklist,
   sanitizeDiscoveryPath,
+  scanCandidato,
   scanInicio,
   scanInstall,
   scanRaiz,
@@ -34,6 +37,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "golive-discordscan-"));
   logger._resetForTests();
   logger.initLogger(dir);
+  _resetDiscoveryLogDedupe();
   for (const key of MANAGED_ENV) savedEnv[key] = process.env[key];
   process.env.LOCALAPPDATA = LOCAL_APPDATA;
   process.env.APPDATA = `C:\\Users\\${USER}\\AppData\\Roaming`;
@@ -127,5 +131,66 @@ describe("discordscan — contratos de segurança do diagnóstico", () => {
 
     const recent = logger.getRecent();
     expect((recent.match(/scan\.raiz/g) ?? []).length).toBe(1);
+  });
+});
+
+const contar = (texto: string, trecho: string) => texto.split(trecho).length - 1;
+
+function varreduraCompleta(total: number) {
+  scanInicio("win32", LOCAL_APPDATA);
+  scanRaiz(`${LOCAL_APPDATA}\\Discord`, true, "Discord");
+  scanCandidato("Discord", "root");
+  scanInstall(`${LOCAL_APPDATA}\\Discord\\app-1.0.10\\resources`, "Discord");
+  scanResultado(total);
+}
+
+describe("discordscan — varredura repetida não inunda o relatório", () => {
+  it("uma varredura inalterada é registrada uma vez só", () => {
+    varreduraCompleta(1);
+    logger.info("discord", "teste.marcador", {});
+    varreduraCompleta(1);
+
+    const recent = logger.getRecent();
+    for (const tipo of ["scan.inicio", "scan.raiz", "scan.candidato", "scan.install", "scan.resultado"]) {
+      expect(contar(recent, tipo), tipo).toBe(1);
+    }
+  });
+
+  it("volta a registrar quando o resultado muda", () => {
+    varreduraCompleta(1);
+    logger.info("discord", "teste.marcador", {});
+    scanResultado(0);
+
+    const recent = logger.getRecent();
+    expect(recent).toContain("total=1");
+    expect(recent).toContain("total=0");
+  });
+
+  it("registra de novo depois da janela, para o relatório ter sempre uma varredura recente", () => {
+    const agora = Date.now();
+    const spy = vi.spyOn(Date, "now");
+    try {
+      spy.mockReturnValue(agora);
+      varreduraCompleta(1);
+      logger.info("discord", "teste.marcador", {});
+      spy.mockReturnValue(agora + 11 * 60_000);
+      varreduraCompleta(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(contar(logger.getRecent(), "scan.resultado")).toBe(2);
+  });
+
+  it("running.tasklist só repete quando o estado muda", () => {
+    runningTasklist("Discord", true);
+    logger.info("discord", "teste.marcador", {});
+    runningTasklist("Discord", true);
+    logger.info("discord", "teste.marcador", {});
+    runningTasklist("Discord", false);
+
+    const recent = logger.getRecent();
+    expect(recent).toContain("ok=sim");
+    expect(contar(recent, "running.tasklist")).toBe(2);
   });
 });

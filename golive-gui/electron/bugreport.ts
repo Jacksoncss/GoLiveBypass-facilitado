@@ -10,6 +10,7 @@ import { app } from "electron";
 import fs from "fs";
 import path from "path";
 import * as logger from "./logger";
+import { descreverQuicDoDiscord } from "./discord-args";
 import { caminhoLogWireSock, ipv6NoPerfil, metaDoLogWireSock } from "./wiresock-log";
 import * as logsDir from "./logsDir";
 import type { WgTunnelStats } from "./wgstats";
@@ -173,6 +174,17 @@ function lerPerfilWireSock(): string | null {
   }
 }
 
+// Preferencias da GUI (settings.json). Usado so para campos fixos do relatorio; nada do conteudo
+// (que pode ter a conta Proton) e copiado.
+function lerSettingsDoApp(): Record<string, unknown> {
+  try {
+    const dados = JSON.parse(fs.readFileSync(path.join(settingsDir(app.getPath("home")), "settings.json"), "utf8"));
+    return dados && typeof dados === "object" && !Array.isArray(dados) ? dados : {};
+  } catch {
+    return {};
+  }
+}
+
 // Metadados tecnicos: diagnostico sem identificar a pessoa nem expor a saida escolhida.
 export function montarMeta(statusBypass: string, wgTunel?: WgTunnelStats): Record<string, string> {
   return {
@@ -201,6 +213,8 @@ export function montarMeta(statusBypass: string, wgTunel?: WgTunnelStats): Recor
     // atraso de keepalive. Servidor lento mas respondendo parece saudavel aqui (ver wiresock-log.ts).
     ...metaDoLogWireSock(caminhoLogWireSock(), process.platform === "win32"),
     ...(process.platform === "win32" ? { wiresock_perfil_ipv6: ipv6NoPerfil(lerPerfilWireSock()) } : {}),
+    // Em que condicao o Discord foi aberto: "desativado_experimental" = com --disable-quic.
+    ...(process.platform === "win32" ? { discord_quic: descreverQuicDoDiscord(lerSettingsDoApp()) } : {}),
     uptime_s: String(Math.round(process.uptime())),
     installs: String(installsDaSessao(settingsDir(app.getPath("home"))).length),
     // Diagnostico da deteccao do Discord — sem caminhos completos do usuario.

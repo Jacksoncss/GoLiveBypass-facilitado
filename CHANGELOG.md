@@ -6,6 +6,8 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+## [2.0.13] - 2026-10-19
+
 ### Alterado
 
 - **Relatório de bug: a saúde do túnel agora vem do log do próprio WireSock (GUI Windows, modo direto).** Sem o `wg.exe` (o normal nesse modo), todo relatório trazia "handshake: indisponível" e uma queda do túnel passava invisível. O `wiresock-client` já grava no arquivo da ativação (`direct-result.txt.stdout`) cada resposta de handshake (a cada ~2 min) e cada keepalive (a cada 10 s), e a GUI só o lia nos 3 primeiros segundos. Agora o watchdog lê o trecho recente a cada 45 s e registra `tunel.saude` (a cada 5 min) ou um aviso: `wiresock.log_parado` (sem linha nova há mais de 60 s), `handshake.velho` (resposta há mais de 180 s), `handshake.sem_resposta` (dois ou mais handshakes enviados sem resposta, sinal de perda até o servidor), `keepalive.intervalo` (mais de 30 s entre keepalives) e `wiresock.avisos`. O relatório ganha `wiresock_tunel_ativo_ha_s`, `wiresock_handshake_ha_s`, `wiresock_handshakes_10min` (enviados/respondidos), `wiresock_sem_resposta`, `wiresock_keepalive_maior_intervalo_s`, `wiresock_ultima_linha_ha_s` e `wiresock_perfil_ipv6` (o perfil ativo tem endereço IPv6?, só sim/não). Nenhum IP, chave ou caminho sai nesses campos.

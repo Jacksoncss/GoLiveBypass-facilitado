@@ -6,6 +6,13 @@ segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Alterado
+
+- **Relatório de bug: a saúde do túnel agora vem do log do próprio WireSock (GUI Windows, modo direto).** Sem o `wg.exe` (o normal nesse modo), todo relatório trazia "handshake: indisponível" e uma queda do túnel passava invisível. O `wiresock-client` já grava no arquivo da ativação (`direct-result.txt.stdout`) cada resposta de handshake (a cada ~2 min) e cada keepalive (a cada 10 s), e a GUI só o lia nos 3 primeiros segundos. Agora o watchdog lê o trecho recente a cada 45 s e registra `tunel.saude` (a cada 5 min) ou um aviso: `wiresock.log_parado` (sem linha nova há mais de 60 s), `handshake.velho` (resposta há mais de 180 s), `handshake.sem_resposta` (dois ou mais handshakes enviados sem resposta, sinal de perda até o servidor), `keepalive.intervalo` (mais de 30 s entre keepalives) e `wiresock.avisos`. O relatório ganha `wiresock_tunel_ativo_ha_s`, `wiresock_handshake_ha_s`, `wiresock_handshakes_10min` (enviados/respondidos), `wiresock_sem_resposta`, `wiresock_keepalive_maior_intervalo_s`, `wiresock_ultima_linha_ha_s` e `wiresock_perfil_ipv6` (o perfil ativo tem endereço IPv6?, só sim/não). Nenhum IP, chave ou caminho sai nesses campos.
+
+  **O que isso mostra e o que não mostra:** separa "túnel vivo" de "túnel morto ou perdendo pacotes". Um servidor que fica lento mas continua respondendo keepalive parece saudável nesses dados, e o "success" do keepalive só diz que o envio local funcionou. Não é prova de que o Discord esteja transferindo bem. Linux, plugin e macOS não ganham esses campos (o Linux já lê o handshake pelo `wg`, e os outros têm motor próprio); só o aviso "indisponível" repetido passa a sair no máximo a cada 10 minutos em qualquer plataforma.
+- **Menos ruído no log, para o relatório não ser cortado no meio.** A varredura de pastas do Discord (`scan.inicio`, `scan.raiz`, `scan.candidato`, `scan.install`, `scan.resultado`) e o `running.tasklist` repetiam a mesma foto do disco a cada leitura de status: no relatório #370, 481 das 571 linhas (84%) eram isso, o limite de tamanho cortou o miolo da sessão (a troca de rota) e o aviso de `wg.exe` indisponível aparecia a cada 45 s. Cada linha idêntica agora só é registrada de novo depois de 10 minutos (o que mantém uma varredura recente em todo relatório), e o aviso de estatística indisponível sai no máximo a cada 10 minutos. Se algo muda (um install novo, outro total), a linha nova entra na hora.
+
 ## [2.0.12] - 2026-10-18
 
 ### Corrigido

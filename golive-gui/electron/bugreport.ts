@@ -10,6 +10,7 @@ import { app } from "electron";
 import fs from "fs";
 import path from "path";
 import * as logger from "./logger";
+import { caminhoLogWireSock, ipv6NoPerfil, metaDoLogWireSock } from "./wiresock-log";
 import * as logsDir from "./logsDir";
 import type { WgTunnelStats } from "./wgstats";
 import {
@@ -162,6 +163,16 @@ export function montarLog(
   return redigir(partes.join("\n"), segredos, tokenApi);
 }
 
+// O perfil WireSock ativo, lido so para saber se o tunel tem endereco IPv6. O conteudo (que tem a
+// chave privada) nunca sai desta funcao: quem chama recebe apenas "sim"/"nao"/"indisponivel".
+function lerPerfilWireSock(): string | null {
+  try {
+    return fs.readFileSync(path.join(settingsDir(app.getPath("home")), "wiresock-discord.conf"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
 // Metadados tecnicos: diagnostico sem identificar a pessoa nem expor a saida escolhida.
 export function montarMeta(statusBypass: string, wgTunel?: WgTunnelStats): Record<string, string> {
   return {
@@ -185,6 +196,11 @@ export function montarMeta(statusBypass: string, wgTunel?: WgTunnelStats): Recor
     wg_rx_kb: wgTunel?.ok && wgTunel.rxBytes !== null ? String(Math.round(wgTunel.rxBytes / 1024)) : "indisponivel",
     wg_tx_kb: wgTunel?.ok && wgTunel.txBytes !== null ? String(Math.round(wgTunel.txBytes / 1024)) : "indisponivel",
     wg_erro: !wgTunel?.ok ? (wgTunel?.error ?? "?") : "",
+    // Sem `wg.exe` (o normal com o WireSock direto) os campos wg_* acima ficam "indisponivel";
+    // estes vem do log do proprio wiresock-client: tunel vivo, handshake respondido, perda e
+    // atraso de keepalive. Servidor lento mas respondendo parece saudavel aqui (ver wiresock-log.ts).
+    ...metaDoLogWireSock(caminhoLogWireSock(), process.platform === "win32"),
+    ...(process.platform === "win32" ? { wiresock_perfil_ipv6: ipv6NoPerfil(lerPerfilWireSock()) } : {}),
     uptime_s: String(Math.round(process.uptime())),
     installs: String(installsDaSessao(settingsDir(app.getPath("home"))).length),
     // Diagnostico da deteccao do Discord — sem caminhos completos do usuario.

@@ -139,10 +139,10 @@ export function hasV6Rejects(netstatInet6: string): boolean {
  * Sem túnel ativo, remove rejeições IPv6 que sobraram de um crash. Só pelo
  * sudo sem senha: na abertura do app não cabe um pedido de senha.
  */
-export async function cleanupStaleV6Rejects(binDir: string): Promise<boolean> {
+export async function cleanupStaleV6Rejects(): Promise<boolean> {
   const routes = await execCmd('/usr/sbin/netstat', ['-rn', '-f', 'inet6']);
-  if (!hasV6Rejects(routes.stdout) || !helperReady(binDir)) return false;
-  return (await execCmd('/usr/bin/sudo', ['-n', HELPER_PATH, 'down'])).code === 0;
+  if (!hasV6Rejects(routes.stdout)) return false;
+  return downWithInstalledHelper();
 }
 
 /** Vale para qualquer administrador; o helper acha o conf de cada um pelo SUDO_USER. */
@@ -154,6 +154,24 @@ export function sudoersContent(): string {
 }
 
 /** Pronto = sudoers presente e helper root-owned com o conteúdo desta versão e destes binários. */
+/** Helper e sudoers de alguma versão, root-owned; não confere se batem com este app. */
+export function helperInstalled(): boolean {
+  try {
+    if (!fs.existsSync(SUDOERS_PATH)) return false;
+    const st = fs.statSync(HELPER_PATH);
+    return st.uid === 0 && (st.mode & 0o022) === 0;
+  } catch { return false; }
+}
+
+/**
+ * Desligar não usa os binários do app: o helper instalado, mesmo de outra
+ * versão, derruba o túnel com os binários da pasta root dele. Nunca pede senha.
+ */
+export async function downWithInstalledHelper(): Promise<boolean> {
+  if (!helperInstalled()) return false;
+  return (await execCmd('/usr/bin/sudo', ['-n', HELPER_PATH, 'down'])).code === 0;
+}
+
 export function helperReady(binDir: string): boolean {
   try {
     if (!fs.existsSync(SUDOERS_PATH)) return false;

@@ -92,9 +92,10 @@ function currentUiState(): TunnelUiState {
   return deferredOff.pending ? 'pending' : 'active';
 }
 
-function pushState(state?: TunnelUiState) {
+/** `error` revela o Restaurar internet quando a falha não veio de um clique. */
+function pushState(state?: TunnelUiState, error?: string) {
   const s = state ?? currentUiState();
-  sendToWindow('tunnel:state', { state: s });
+  sendToWindow('tunnel:state', error ? { state: s, error } : { state: s });
   syncMonitors(s);
 }
 
@@ -168,14 +169,16 @@ const deferredOff = new DeferredDeactivation({
     const r = await exclusive(async () => {
       pushState('deactivating');
       const d = await runDeactivation(await activationOpts());
+      let failure: string | undefined;
       if (d.ok) {
         tunnelActive = false;
         sendToWindow('log', 'Discord fechado: túnel desligado e rede restaurada.');
       } else {
-        sendToWindow('log', `Falha ao desligar o túnel depois de o Discord fechar: ${d.error}${d.detail ? ` — ${d.detail}` : ''}`);
+        failure = `Falha ao desligar o túnel depois de o Discord fechar: ${d.error}${d.detail ? ` — ${d.detail}` : ''}`;
+        sendToWindow('log', failure);
       }
       updateTray();
-      pushState();
+      pushState(undefined, failure);
     });
     // Outra operação no meio: tenta de novo na próxima volta
     if (r && typeof r === 'object' && 'error' in r && r.error === 'busy' && tunnelActive) deferredOff.start();
@@ -223,6 +226,10 @@ async function shutdown(): Promise<void> {
     if (await withDeadline(deactivateBeforeQuit()) === 'timeout') console.error('Limpeza do Sair passou do prazo; encerrando mesmo assim.');
   } finally { app.exit(0); }
 }
+
+/** Qualquer resposta HTTP do Discord prova que os ranges dele voltaram a sair direto. */
+const discordReachable = () =>
+  net.fetch('https://discord.com/api/v9/gateway', { signal: AbortSignal.timeout(8000) }).then(() => true, () => false);
 
 async function waitForNetwork(timeoutMs: number): Promise<void> {
   const until = Date.now() + timeoutMs;
@@ -507,17 +514,19 @@ const handlers = {
       deferredOff.cancel();
       pushState('deactivating');
       const r = await runDeactivation(await activationOpts());
+      let online = false;
       if (r.ok) {
         tunnelActive = false;
         resumeTunnel = false;
         saveSettings({ lastTunnelState: 'inactive' });
-        sendToWindow('log', 'Rede restaurada.');
+        online = await discordReachable();
+        sendToWindow('log', online ? 'Rede restaurada: o Discord responde direto.' : 'Túnel limpo, mas o Discord ainda não responde.');
       } else {
         sendToWindow('log', `Falha ao restaurar a rede: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`);
       }
       updateTray();
       pushState();
-      return r.ok ? { ok: true } : { ok: false, error: r.error, detail: r.detail };
+      return r.ok ? { ok: true, online } : { ok: false, error: r.error, detail: r.detail };
     });
   },
 
@@ -714,8 +723,30 @@ app.whenReady().then(async () => {
     // Dentro do exclusive: um Ativar no meio receberia 'busy' em vez de ter o túnel novo derrubado
     void exclusive(async () => {
       try {
-        if (deriveStateFromRoute(await readDefaultRoute()) === 'active') return;
-        if (await cleanupStaleV6Rejects(binDir)) sendToWindow('log', 'Rotas IPv6 de uma sessão anterior removidas.');
+        if (deriveStateFromRoute(await readDefaultRoute()) === 'active') {
+          if (lastTunnelState === 'active') return;
+          // Túnel ativo com preferência inativa: o app morreu com a desativação pendente.
+          tunnelActive = true;
+          if (await isDiscordRunning()) {
+            deferredOff.start();
+            sendToWindow('log', 'Desativação pendente retomada: o túnel desliga quando você fechar o Discord.');
+          } else {
+            const d = await runDeactivation(await activationOpts());
+            if (d.ok) {
+              tunnelActive = false;
+              sendToWindow('log', 'Túnel de uma sessão anterior desligado.');
+            } else {
+              const failure = `Falha ao desligar o túnel de uma sessão anterior: ${d.error}${d.detail ? ` — ${d.detail}` : ''}`;
+              sendToWindow('log', failure);
+              updateTray();
+              pushState(undefined, failure);
+              return;
+            }
+          }
+          updateTray();
+          return;
+        }
+        if (await cleanupStaleV6Rejects()) sendToWindow('log', 'Rotas IPv6 de uma sessão anterior removidas.');
       } finally {
         // O renderer que carregou no meio da limpeza recebeu busy=true e não tem
         // como sair: só um tunnel:state devolve o botão Ativar.

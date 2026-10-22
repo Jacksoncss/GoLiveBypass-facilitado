@@ -78,3 +78,54 @@ describe('saídas do proton-confgen', () => {
     expect(normalizePlan({ success: false, maxTier: 0 })).toBeNull();
   });
 });
+
+describe('ProtonFetcher.fetch com binário falso', () => {
+  // Monta binDir/../extra/proton-confgen com um script e o manifesto do seu hash.
+  const fake = (json: object, writeConf = true) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'glb-fake-'));
+    const dir = path.join(root, 'extra', 'proton-confgen');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.join(root, 'bin'));
+    const script = [
+      '#!/bin/sh',
+      `echo "$@" > "${path.join(root, 'args')}"`,
+      writeConf ? 'while [ $# -gt 0 ]; do [ "$1" = "-output" ] && echo "[Interface]" > "$2"; shift; done' : '',
+      `echo '${JSON.stringify(json)}'`,
+    ].join('\n');
+    const bin = path.join(dir, 'proton-confgen');
+    fs.writeFileSync(bin, script, { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'proton-confgen-manifest.json'),
+      JSON.stringify({ universal: { sha256: crypto.createHash('sha256').update(script).digest('hex') } }));
+    return {
+      args: () => fs.readFileSync(path.join(root, 'args'), 'utf8'),
+      opts: { username: 'u', binDir: path.join(root, 'bin'), sessDir: path.join(root, 'sess'), confOut: path.join(root, 'out.conf') },
+    };
+  };
+  const run = (f: ProtonFetcher, opts: object) =>
+    new Promise<any>(res => { f.once('done', res); void f.fetch(opts as any); });
+
+  it('manual valida o servidor escolhido com -manual-probe', async () => {
+    const f = fake({ success: true, server: 'MX-FREE#16', country: 'MX', city: 'Queretaro', pingMs: 140 });
+    const r = await run(new ProtonFetcher(), { ...f.opts, mode: 'manual', server: 'MX-FREE#16' });
+    expect(r).toMatchObject({ ok: true, chosen: { server: 'MX-FREE#16', pingMs: 140 } });
+    expect(f.args()).toMatch(/-server MX-FREE#16 -manual-probe/);
+  });
+
+  it('manual sem servidor nem chega a rodar o binário', async () => {
+    const f = fake({ success: true });
+    const r = await run(new ProtonFetcher(), { ...f.opts, mode: 'manual' });
+    expect(r).toMatchObject({ ok: false, error: 'unknown' });
+  });
+
+  it('speed aceita só com download e upload medidos', async () => {
+    const ok = fake({ success: true, server: 'US-FREE#7', country: 'US', city: 'NY', downloadMbps: 22.7, uploadMbps: 8.7 });
+    expect(await run(new ProtonFetcher(), { ...ok.opts, mode: 'speed', exclude: ['US-FREE#1'] }))
+      .toMatchObject({ ok: true, chosen: { server: 'US-FREE#7', downloadMbps: 22.7 } });
+    expect(ok.args()).toMatch(/-speed-test -exclude-servers US-FREE#1/);
+    expect(ok.args()).not.toMatch(/-require-discord/);
+
+    const semMedida = fake({ success: true, server: 'US-FREE#7', country: 'US', city: 'NY' });
+    expect(await run(new ProtonFetcher(), { ...semMedida.opts, mode: 'speed' }))
+      .toEqual({ ok: false, error: 'unknown', detail: 'A medição não retornou velocidades válidas de download e upload.' });
+  });
+});

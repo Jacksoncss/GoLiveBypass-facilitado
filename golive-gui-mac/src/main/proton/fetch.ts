@@ -227,6 +227,9 @@ export class ProtonFetcher extends EventEmitter {
         this.emit('progress', 'Configuração obtida com sucesso!');
         return done({ ok: true, confPath: opts.confOut, chosen });
       }
+      if (r.code === 0 && chosen && !measured) {
+        return done({ ok: false, error: 'unknown', detail: 'A medição não retornou velocidades válidas de download e upload.' });
+      }
       return done(classifyFailure(r.out + r.err));
     }
 

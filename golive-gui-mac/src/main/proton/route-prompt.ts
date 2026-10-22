@@ -9,5 +9,10 @@ export function shouldAskRoutePreference(s: AppSettings): boolean {
   if (s.protonRoutePreferencePrompted === true) return false;
   if ((s.connectionMode ?? 'proton') !== 'proton') return false;
   if (s.protonRoutePreference === 'auto' || s.protonRoutePreference === 'manual') return false;
-  return !s.protonServer;
+  return !hasUsedRoute(s.protonServer);
+}
+
+// Mesma regra da GUI: objeto vazio não é rota lembrada.
+function hasUsedRoute(v: unknown): boolean {
+  return typeof v === 'object' && v !== null && Object.keys(v).length > 0;
 }

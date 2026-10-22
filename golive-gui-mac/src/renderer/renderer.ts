@@ -26,6 +26,14 @@ const pendingHint = document.getElementById('pending-hint')!;
 const restartBtn  = document.getElementById('restart-btn') as HTMLButtonElement;
 const offNowBtn   = document.getElementById('off-now-btn') as HTMLButtonElement;
 const restoreBtn  = document.getElementById('restore-btn') as HTMLButtonElement;
+const errorHint   = document.getElementById('error-hint')!;
+
+function showRestore(msg: string) {
+  errorHint.textContent = msg;
+  errorHint.classList.remove('ok');
+  errorHint.hidden = restoreBtn.hidden = false;
+}
+function hideRestore() { errorHint.hidden = restoreBtn.hidden = true; errorHint.classList.remove('ok'); }
 const updateBanner  = document.getElementById('update-banner')!;
 const updateMsg     = document.getElementById('update-msg')!;
 const updateBtn     = document.getElementById('update-btn') as HTMLButtonElement;
@@ -78,7 +86,7 @@ function setState(s: UiState) {
     (document.getElementById('traffic') as HTMLElement).hidden = true;
   }
   offNowBtn.hidden = pendingHint.hidden = s !== 'pending';
-  if (s === 'busy') restoreBtn.hidden = true;
+  if (s === 'busy') hideRestore();
   if (s === 'pending') {
     stateLabel.textContent = 'Desliga ao fechar o Discord';
     toggle.setAttribute('aria-label', 'Manter ativo');
@@ -128,7 +136,13 @@ async function refresh() {
   }
 }
 
-golive.onTunnelState?.((p: { state: string }) => applyTunnelState(p.state));
+golive.onTunnelState?.((p: { state: string; error?: string }) => {
+  applyTunnelState(p.state);
+  if (p.error) {
+    log(`Erro: ${p.error}`, true);
+    showRestore('Não deu para desligar o túnel. Use Restaurar internet.');
+  }
+});
 
 // ── Toggle ────────────────────────────────────────────────────────────────────
 
@@ -152,11 +166,11 @@ toggle.addEventListener('click', async () => {
     log(`Erro: ${msg}${r.detail ? ` — ${r.detail}` : ''}`, true);
     await refresh();
     ipLabel.textContent = `Erro: ${msg}`;
-    if (r.error !== 'busy' && r.error !== 'user_cancelled') restoreBtn.hidden = false;
+    if (r.error !== 'busy' && r.error !== 'user_cancelled') showRestore('Se a internet ficou presa, use Restaurar internet.');
     return;
   }
 
-  restoreBtn.hidden = true;
+  hideRestore();
   applyTunnelState(r?.state ?? (deactivating ? 'inactive' : 'active'));
 });
 
@@ -168,9 +182,16 @@ async function runSecondary(btn: HTMLButtonElement, label: string, call: () => P
     const r = await call();
     if (r?.error) {
       log(`Erro: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`, true);
-      if (r.error !== 'busy' && r.error !== 'user_cancelled') restoreBtn.hidden = false;
+      if (r.error !== 'busy' && r.error !== 'user_cancelled') showRestore('Se a internet ficou presa, use Restaurar internet.');
     } else if (btn === restoreBtn) {
-      restoreBtn.hidden = true;
+      if (r?.online === false) {
+        showRestore('O túnel foi limpo, mas o Discord ainda não responde. Confira o Wi-Fi e tente de novo.');
+      } else {
+        hideRestore();
+        errorHint.textContent = 'Internet restaurada.';
+        errorHint.classList.add('ok');
+        errorHint.hidden = false;
+      }
     }
   } finally {
     btn.disabled = false;
@@ -260,7 +281,7 @@ const errMsgs: Record<string, string> = {
   binary_missing: 'proton-confgen não encontrado nos recursos.',
   binary_integrity: 'proton-confgen não confere com o manifesto do app; reinstale o GoLiveBypass.',
   timeout:        'O Proton demorou demais para responder. Tente de novo.',
-  unknown:       'Erro desconhecido — veja o log.',
+  unknown:       'Erro desconhecido. Para ver o log, ligue o Modo desenvolvedor em Configurações.',
 };
 
 async function runProton(mode: 'auto' | 'manual' | 'speed' | 'catalog', opts: { password?: string; server?: string; btn?: HTMLButtonElement } = {}) {
@@ -429,7 +450,7 @@ async function retryVencord(manual: boolean) {
     } else {
       permStatus.textContent = outcome === 'needs_permission'
         ? 'O macOS ainda bloqueou. Feche e reabra o GoLiveBypass e tente de novo.'
-        : 'Não deu certo — veja o log abaixo.';
+        : 'Não deu certo. Para ver o log, ligue o Modo desenvolvedor em Configurações.';
     }
   } finally {
     permRetry.disabled = permOpen.disabled = false;
@@ -489,7 +510,10 @@ updateBtn.addEventListener('click', async () => {
 
 const checkUpdateBtn = document.getElementById('check-update') as HTMLButtonElement;
 checkUpdateBtn.addEventListener('click', async () => {
-  if (checkUpdateBtn.classList.contains('spinning')) return;
+  if (checkUpdateBtn.classList.contains('spinning')) {
+    checkUpdateBtn.title = 'Já está procurando, aguarde…';
+    return;
+  }
   checkUpdateBtn.classList.add('spinning');
   try {
     const info = await golive.checkUpdate();

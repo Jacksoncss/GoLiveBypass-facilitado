@@ -27,6 +27,11 @@ describe('shouldAskRoutePreference', () => {
   it('pergunta para quem ainda não decidiu nada', () => {
     expect(shouldAskRoutePreference({})).toBe(true);
   });
+  it('rota salva vazia ou inválida não conta como rota usada', () => {
+    expect(shouldAskRoutePreference({ protonServer: {} as any })).toBe(true);
+    expect(shouldAskRoutePreference({ protonServer: null as any })).toBe(true);
+    expect(shouldAskRoutePreference({ protonServer: '' as any })).toBe(true);
+  });
   it('não pergunta depois de responder, com preferência, com rota ou no modo .conf', () => {
     expect(shouldAskRoutePreference({ protonRoutePreferencePrompted: true })).toBe(false);
     expect(shouldAskRoutePreference({ protonRoutePreference: 'auto' })).toBe(false);

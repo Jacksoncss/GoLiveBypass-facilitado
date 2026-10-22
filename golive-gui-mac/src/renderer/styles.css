@@ -344,6 +344,8 @@ body[data-state="busy"]     .state-label { color: var(--accent); }
   line-height: 1.5;
 }
 .hint.warn { color: var(--warn); }
+#error-hint { color: var(--danger); }
+#error-hint.ok { color: var(--ok); }
 .hint[hidden] { display: none; }
 
 /* ── Log ──────────────────────────────────────────────────────────── */
@@ -526,6 +528,7 @@ body[data-state="pending"] button.power svg { stroke: var(--warn); }
 .login-box .pill-btn { align-self: flex-start; }
 .plan-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--ok); }
 .step-label { font-size: 12px; font-weight: 600; }
+.route-wrap { container-type: inline-size; }
 .route-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .route-row select {
   flex: 1 1 180px; min-width: 0;
@@ -536,6 +539,11 @@ body[data-state="pending"] button.power svg { stroke: var(--warn); }
 .route-row .pill-btn { display: inline-flex; align-items: center; gap: 6px; }
 .route-row .pill-btn svg { width: 13px; height: 13px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; }
 .route-row .pill-btn.spinning svg { animation: spin 0.9s linear infinite; }
+/* Linha estreita: o rótulo rouba a largura da rota, que é o que se precisa ler. Fica o ícone, que gira na medição. */
+@container (max-width: 440px) {
+  .route-row #optimize-btn { width: 32px; padding: 0; justify-content: center; flex: 0 0 32px; }
+  .route-row #optimize-btn .btn-label { display: none; }
+}
 .status-line {
   font-size: 12px; line-height: 1.45; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--border); color: var(--text);

@@ -1,5 +1,5 @@
 import type { PrivilegedError } from '../../shared/types';
-import { runViaHelper, installHelper, helperReady, type HelperAction } from '../privileged/helper';
+import { runViaHelper, installHelper, helperReady, downWithInstalledHelper, type HelperAction } from '../privileged/helper';
 
 export interface ActivationOpts {
   home: string;
@@ -26,6 +26,8 @@ async function ensureHelper(opts: ActivationOpts): Promise<ActivationResult> {
 }
 
 async function run(action: HelperAction, opts: ActivationOpts): Promise<ActivationResult> {
+  // Helper desatualizado não pode impedir de restaurar a rede nem exigir senha para isso
+  if (action === 'down' && !helperReady(opts.binDir) && await downWithInstalledHelper()) return { ok: true };
   const install = await ensureHelper(opts);
   if (!install.ok) return install;
   const r = await runViaHelper(action, opts.user);

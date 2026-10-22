@@ -40,6 +40,7 @@ import { restoreBypassOnStartup, type StartupOptimizationResult } from "./startu
 import { findWindowsDiscordInstall } from "./windows-discord-install";
 import { assembleWindowsDiscoverySnapshotFromRaw, collectWindowsDiscoveryPowerShell, collectWindowsDiscoveryPowerShellAsync, collectWindowsDiscoverySnapshot, createWindowsDiscoveryCache, failedWindowsDiscoveryRawFor, rootsForEnvironment, toPublicWindowsDiscoveryInstall, type WindowsDiscoveryEnvironment, type WindowsDiscoveryRaw, type WindowsDiscoverySnapshot, type WindowsDiscoverySnapshotCollectors } from "./windows-discord-discovery";
 import { shouldAskRoutePreference } from "./route-preference-prompt";
+import { argsExperimentaisDoDiscord } from "./discord-args";
 import { settlesWithin, trafficMonitorPlan, runningImageNames, waitForProcessRunning, waitForProcessStopped, whenProcessStops, type ProcessProbeState } from "./wait-condition";
 import { TUNNEL_STARTUP_SETTLE_MS, waitForTunnelStartupSettle } from "./tunnel-startup";
 import { linuxPreflightRepairable, parseLinuxPreflight, linuxPreflightMessage, type LinuxPreflight } from "./linux-preflight";
@@ -1217,7 +1218,13 @@ function startDiscord(install: DiscordInstall) {
     if (isMac && install.bundlePath) {
       spawn("open", [install.bundlePath], { stdio: "ignore" }).unref();
     } else if (install.exePath) {
-      const child = spawn(install.exePath, [], { stdio: "ignore", windowsHide: true });
+      // Vazio por padrao. Com `experimentalDesativarQuic: true` no settings.json entra o
+      // --disable-quic, para separar a hipotese de QUIC no envio de arquivo (ver discord-args.ts).
+      const args = argsExperimentaisDoDiscord(readSharedSettings());
+      if (args.length > 0) {
+        logger.info("discord", "inicio.com_args_experimentais", { flavour: install.flavour, args: args.join(" ") });
+      }
+      const child = spawn(install.exePath, args, { stdio: "ignore", windowsHide: true });
       // spawn pode falhar depois de retornar (exe removido pelo updater/antivirus).
       // Sem listener, o EventEmitter gera excecao nao tratada e derruba a GUI.
       child.once("error", (error) => {

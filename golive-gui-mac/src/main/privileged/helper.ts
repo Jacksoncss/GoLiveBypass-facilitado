@@ -153,7 +153,6 @@ export function sudoersContent(): string {
   );
 }
 
-/** Pronto = sudoers presente e helper root-owned com o conteúdo desta versão e destes binários. */
 /** Helper e sudoers de alguma versão, root-owned; não confere se batem com este app. */
 export function helperInstalled(): boolean {
   try {
@@ -172,6 +171,7 @@ export async function downWithInstalledHelper(): Promise<boolean> {
   return (await execCmd('/usr/bin/sudo', ['-n', HELPER_PATH, 'down'])).code === 0;
 }
 
+/** Pronto = sudoers presente e helper root-owned com o conteúdo desta versão e destes binários. */
 export function helperReady(binDir: string): boolean {
   try {
     if (!fs.existsSync(SUDOERS_PATH)) return false;

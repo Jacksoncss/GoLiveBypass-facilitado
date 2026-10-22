@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld('golive', {
   deactivate:     (now = false) => ipcRenderer.invoke('golive', 'tunnel:deactivate', { now }),
   restart:        () => ipcRenderer.invoke('golive', 'tunnel:restart'),
   restoreNetwork: () => ipcRenderer.invoke('golive', 'tunnel:restoreNetwork'),
+  phoneStatus: () => ipcRenderer.invoke('golive', 'phone:status'),
+  phoneGenerate: (delivery: 'qr' | 'file') => ipcRenderer.invoke('golive', 'phone:generate', { delivery }),
+  phoneSave: () => ipcRenderer.invoke('golive', 'phone:save'),
+  phoneDeleteSaved: () => ipcRenderer.invoke('golive', 'phone:deleteSaved'),
+  phoneClear: () => ipcRenderer.invoke('golive', 'phone:clear'),
   status:         () => ipcRenderer.invoke('golive', 'tunnel:status'),
   fetchProton:    (username: string, password?: string, mode?: string, server?: string) =>
                     ipcRenderer.invoke('golive', 'proton:fetch', { username, password, mode, server }),

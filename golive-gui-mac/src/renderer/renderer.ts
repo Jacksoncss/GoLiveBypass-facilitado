@@ -30,10 +30,10 @@ const errorHint   = document.getElementById('error-hint')!;
 
 function showRestore(msg: string) {
   errorHint.textContent = msg;
-  errorHint.classList.remove('ok');
+  errorHint.classList.remove('ok', 'info');
   errorHint.hidden = restoreBtn.hidden = false;
 }
-function hideRestore() { errorHint.hidden = restoreBtn.hidden = true; errorHint.classList.remove('ok'); }
+function hideRestore() { errorHint.hidden = restoreBtn.hidden = true; errorHint.classList.remove('ok', 'info'); }
 const updateBanner  = document.getElementById('update-banner')!;
 const updateMsg     = document.getElementById('update-msg')!;
 const updateBtn     = document.getElementById('update-btn') as HTMLButtonElement;
@@ -539,6 +539,7 @@ function openPanel(panel: HTMLElement) {
 
 function closePanel(panel: HTMLElement) {
   if (panel.hidden || panel.classList.contains('closing')) return;
+  panel.dispatchEvent(new Event('panelclose'));
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (reduced) { panel.hidden = true; return; }
   panel.classList.add('closing');
@@ -554,6 +555,155 @@ document.addEventListener('keydown', (e) => {
 });
 document.getElementById('open-help')!.addEventListener('click', () => openPanel(document.getElementById('help-panel')!));
 document.getElementById('open-settings')!.addEventListener('click', () => openPanel(document.getElementById('settings-panel')!));
+
+// ── Usar no celular ───────────────────────────────────────────────────────────
+
+const phonePanel   = document.getElementById('phone-panel')!;
+const phoneForm    = document.getElementById('phone-form')!;
+const phoneInelig  = document.getElementById('phone-ineligible')!;
+const phoneGenBtn  = document.getElementById('phone-generate') as HTMLButtonElement;
+const phoneRegen   = document.getElementById('phone-regen-hint')!;
+const phoneMeta    = document.getElementById('phone-meta')!;
+const phoneStatus  = document.getElementById('phone-status')!;
+const phoneQrBox   = document.getElementById('phone-qr-box')!;
+const phoneQr      = document.getElementById('phone-qr') as HTMLImageElement;
+const phoneFileBox = document.getElementById('phone-file-box')!;
+const phoneSaveBtn = document.getElementById('phone-save') as HTMLButtonElement;
+const phoneDelBtn  = document.getElementById('phone-delete') as HTMLButtonElement;
+const phoneFileMsg = document.getElementById('phone-file-status')!;
+const phoneDeliveryHint = document.getElementById('phone-delivery-hint')!;
+const PHONE_TTL_MS = 300_000;
+let phoneTtl: ReturnType<typeof setTimeout> | null = null;
+let phoneSavedPaths: string[] = [];
+
+const phoneErrMsgs: Record<string, string> = {
+  not_eligible: 'Entre na sua conta Proton em Proton Otimizado para gerar a conf do celular.',
+  busy:         'Espere a busca de rota atual terminar.',
+  no_routes:    'Nenhum servidor respondeu ao ping agora. Tente de novo em instantes.',
+  probe_failed: 'O servidor escolhido não passou no teste. Tente gerar de novo.',
+  auth_failed:  'A sessão Proton expirou. Entre de novo em Proton Otimizado.',
+  timeout:      errMsgs.timeout,
+  invalid_conf: 'A conf gerada veio incompleta. Tente de novo.',
+  unknown:      'Não deu para gerar a conf. Tente de novo.',
+};
+
+const phonePick = (name: string) => (document.querySelector(`input[name="${name}"]:checked`) as HTMLInputElement).value as any;
+
+function phoneSetStatus(msg: string, kind: 'err' | 'info' = 'info') {
+  phoneStatus.textContent = msg;
+  phoneStatus.classList.toggle('err', kind === 'err');
+  phoneStatus.hidden = !msg;
+}
+
+function renderPhoneMeta(m: any) {
+  phoneMeta.hidden = phoneRegen.hidden = !m;
+  if (!m) return;
+  const until = m.expiresAt ? ` · vale até ${new Date(m.expiresAt * 1000).toLocaleDateString('pt-BR')}` : '';
+  phoneMeta.textContent = `Última conf: ${m.server} (${m.city})${until}`;
+}
+
+function showPhoneSteps(delivery?: string) {
+  for (const d of ['qr', 'file']) document.getElementById(`phone-steps-${d}`)!.hidden = d !== delivery;
+}
+
+/** Tira a conf da tela e da memória do main. */
+function hidePhoneResult() {
+  if (phoneTtl) clearTimeout(phoneTtl);
+  phoneTtl = null;
+  phoneQr.removeAttribute('src');
+  phoneQrBox.hidden = phoneFileBox.hidden = true;
+  showPhoneSteps();
+  void golive.phoneClear();
+}
+
+async function openPhonePanel() {
+  hidePhoneResult();
+  phoneSetStatus('');
+  phoneFileMsg.hidden = true;
+  const st = await golive.phoneStatus();
+  phoneInelig.hidden = st.eligible;
+  phoneForm.hidden = !st.eligible;
+  renderPhoneMeta(st.meta);
+  openPanel(phonePanel);
+}
+
+document.querySelectorAll('input[name="phone-delivery"]').forEach(el => el.addEventListener('change', () => {
+  phoneDeliveryHint.textContent = phonePick('phone-delivery') === 'file'
+    ? 'Arquivo: mais seguro, porque a conf nunca aparece na tela, e menos prático.'
+    : 'QR code: o jeito mais prático.';
+}));
+
+phoneGenBtn.addEventListener('click', async () => {
+  const delivery = phonePick('phone-delivery');
+  hidePhoneResult();
+  phoneGenBtn.disabled = true;
+  phoneSetStatus('Gerando a conf do celular… (até 2 min)');
+  try {
+    const r = await golive.phoneGenerate(delivery);
+    if (!r?.ok) { phoneSetStatus(phoneErrMsgs[r?.error] ?? phoneErrMsgs.unknown, 'err'); return; }
+    phoneSetStatus('');
+    renderPhoneMeta(r.meta);
+    if (delivery === 'qr') {
+      phoneQr.src = r.qr;
+      phoneQrBox.hidden = false;
+    } else {
+      phoneFileBox.hidden = false;
+      phoneDelBtn.hidden = true;
+    }
+    showPhoneSteps(delivery);
+    phoneTtl = setTimeout(() => {
+      hidePhoneResult();
+      phoneSetStatus('A conf saiu da tela depois de 5 minutos. Gere de novo se precisar.');
+    }, PHONE_TTL_MS);
+  } finally {
+    phoneGenBtn.disabled = false;
+  }
+});
+
+phoneSaveBtn.addEventListener('click', async () => {
+  const r = await golive.phoneSave();
+  if (r?.ok) {
+    if (!phoneSavedPaths.includes(r.path)) phoneSavedPaths.push(r.path);
+    phoneFileMsg.textContent = `Salvo em ${r.path}.`;
+    phoneDelBtn.hidden = false;
+  } else if (r?.error === 'cloud_folder') {
+    phoneFileMsg.textContent = 'Essa pasta é sincronizada pelo iCloud: a chave iria para a nuvem. Escolha outra, como Downloads.';
+  } else if (r?.error === 'no_conf') {
+    phoneFileMsg.textContent = 'A conf saiu da memória. Gere de novo.';
+  } else {
+    return;
+  }
+  phoneFileMsg.hidden = false;
+});
+
+phoneDelBtn.addEventListener('click', async () => {
+  await golive.phoneDeleteSaved();
+  phoneSavedPaths = [];
+  phoneDelBtn.hidden = true;
+  phoneFileMsg.textContent = 'Arquivo apagado do Mac.';
+  phoneFileMsg.hidden = false;
+});
+
+document.getElementById('phone-done')!.addEventListener('click', () => {
+  hidePhoneResult();
+  phoneSetStatus('Conf importada? Ligue o túnel no WireGuard antes de entrar em live.');
+});
+
+phonePanel.addEventListener('panelclose', () => {
+  hidePhoneResult();
+  void golive.phoneStatus().then((st: any) => {
+    phoneSavedPaths = st?.savedPaths ?? [];
+    if (!phoneSavedPaths.length) return;
+    errorHint.textContent = phoneSavedPaths.length === 1
+      ? `O arquivo ${phoneSavedPaths[0]} ainda está no Mac. Apague depois de importar.`
+      : `Ainda há ${phoneSavedPaths.length} arquivos .conf do celular no Mac: ${phoneSavedPaths.join(', ')}. Apague depois de importar.`;
+    errorHint.classList.remove('ok');
+    errorHint.classList.add('info');
+    errorHint.hidden = false;
+  });
+});
+
+document.getElementById('open-phone')!.addEventListener('click', () => void openPhonePanel());
 
 // ── Configurações ─────────────────────────────────────────────────────────────
 

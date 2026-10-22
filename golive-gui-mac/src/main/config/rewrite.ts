@@ -10,7 +10,7 @@ export const DISCORD_ALLOWED_IPS = '162.159.0.0/16, 104.16.0.0/12';
 /** Ranges IPv6 da Cloudflare rejeitados com o túnel ativo, para o Discord cair no IPv4 tunelado. */
 export const DISCORD_REJECT_V6 = ['2606:4700::/32', '2a06:98c0::/29'];
 
-const CANONICAL_KEYS: Record<string, string> = {
+export const CANONICAL_KEYS: Record<string, string> = {
   privatekey: 'PrivateKey', address: 'Address', listenport: 'ListenPort', mtu: 'MTU',
   publickey: 'PublicKey', presharedkey: 'PresharedKey', endpoint: 'Endpoint',
   persistentkeepalive: 'PersistentKeepalive',

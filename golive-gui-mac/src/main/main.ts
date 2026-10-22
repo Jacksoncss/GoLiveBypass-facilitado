@@ -25,6 +25,8 @@ import { pingThroughTunnel } from './tunnel/traffic';
 import { readSavedAccount, clearSavedAccount } from './proton/account';
 import { checkForUpdate, downloadAndInstall, type UpdateInfo, type PendingUpdate } from './updater';
 import type { AppSettings, UiSettings, ThemeChoice } from '../shared/types';
+import { PhoneConfService } from './phone/service';
+import { isCloudSyncedPath } from './phone/cloud';
 
 const home   = os.homedir();
 const user   = os.userInfo().username;
@@ -141,10 +143,17 @@ function syncMonitors(s: TunnelUiState) {
 async function switchRoute(): Promise<void> {
   const account = readSavedAccount(sessionDir(home));
   if (!account) return;
+  // Uma busca Proton por vez: a da janela e a do celular também gravam a sessão
+  if (protonFetching || phone.generating) return;
+  protonFetching = true;
+  try { await switchRouteInner(account.username); } finally { protonFetching = false; }
+}
+
+async function switchRouteInner(username: string): Promise<void> {
   const current = loadSettings().protonServer?.server;
   sendToWindow('log', `A rota ${current ?? 'atual'} parou de responder; procurando outra…`);
   await exclusive(async () => {
-    const r = await runFetch({ username: account.username, mode: 'auto', exclude: current ? [current] : [] });
+    const r = await runFetch({ username, mode: 'auto', exclude: current ? [current] : [] });
     if (!r.ok) { sendToWindow('log', `Troca de rota falhou: ${r.error}${r.detail ? ` — ${r.detail}` : ''}`); return; }
     pushState('activating');
     const opts = await activationOpts();
@@ -391,6 +400,36 @@ function runFetch(o: Omit<ProtonFetchOpts, 'binDir' | 'sessDir' | 'confOut'>, on
   });
 }
 
+/** Conf do celular: sessão Proton salva, sem tocar no golive.conf nem no túnel do Mac. */
+const phone = new PhoneConfService({
+  fetch: o => new Promise(resolve => {
+    const f = new ProtonFetcher();
+    f.once('done', resolve);
+    void f.fetch({ ...o, username: readSavedAccount(sessionDir(home))?.username ?? '', binDir, sessDir: sessionDir(home) });
+  }),
+  tmpPath: () => {
+    fs.mkdirSync(appDataDir(home), { recursive: true, mode: 0o700 });
+    return path.join(appDataDir(home), `phone-raw-${process.pid}-${Date.now()}.conf`);
+  },
+  readFile: p => fs.readFileSync(p, 'utf8'),
+  // writeFileSync só aplica o modo ao criar: o chmod cobre um arquivo que já existia
+  writeFile: (p, data, mode) => { fs.writeFileSync(p, data, { mode }); fs.chmodSync(p, mode); },
+  rm: p => fs.rmSync(p, { force: true }),
+  exists: p => fs.existsSync(p),
+  saveMeta: m => saveSettings({ phoneConf: m }),
+  now: () => new Date(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: h => clearTimeout(h as NodeJS.Timeout),
+  isBusy: () => protonFetching,
+  isCloudSynced: p => isCloudSyncedPath(p, {
+    home: os.homedir(),
+    desktopDocumentsSynced: () => fs.existsSync(path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Desktop')),
+    realDir: d => { try { return fs.realpathSync(d); } catch { return d; } },
+  }),
+});
+
+const phoneEligible = () => (loadSettings().connectionMode ?? 'proton') === 'proton' && !!readSavedAccount(sessionDir(home));
+
 const planFetcher = new ProtonFetcher();
 let planCache: { username: string; plan: ProtonPlan | null; at: number } | null = null;
 
@@ -531,7 +570,7 @@ const handlers = {
   },
 
   async fetchProton({ username, password, mode, server }: { username: string; password?: string; mode?: FetchMode; server?: string }) {
-    if (protonFetching) return { ok: false, error: 'busy' };
+    if (protonFetching || phone.generating) return { ok: false, error: 'busy' };
     protonFetching = true;
     try {
       const r = await runFetch({ username, password, mode, server }, m => sendToWindow('proton:progress', m));
@@ -540,6 +579,37 @@ const handlers = {
     } finally {
       protonFetching = false;
     }
+  },
+
+  async phoneStatus() {
+    return { eligible: phoneEligible(), meta: loadSettings().phoneConf ?? null, savedPaths: phone.savedPaths().filter(p => fs.existsSync(p)) };
+  },
+
+  async phoneGenerate({ delivery }: { delivery?: 'qr' | 'file' }) {
+    if (!delivery) return { ok: false, error: 'unknown' };
+    if (!phoneEligible()) return { ok: false, error: 'not_eligible' };
+    const r = await phone.generate(delivery);
+    sendToWindow('log', r.ok
+      ? `Conf do celular gerada: ${r.meta.server}`
+      : `Falha ao gerar a conf do celular: ${r.error}`);
+    return r;
+  },
+
+  async phoneSave() {
+    const opts = { defaultPath: path.join(os.homedir(), 'Downloads', 'GoLiveBypass.conf'), filters: [{ name: 'WireGuard', extensions: ['conf'] }] };
+    const pick = mainWindow ? await dialog.showSaveDialog(mainWindow, opts) : await dialog.showSaveDialog(opts);
+    if (pick.canceled || !pick.filePath) return { ok: false, error: 'cancelled' };
+    const r = phone.saveTo(pick.filePath);
+    return r.ok ? { ok: true, path: pick.filePath } : r;
+  },
+
+  async phoneDeleteSaved() {
+    return { ok: phone.deleteSaved() };
+  },
+
+  async phoneClear() {
+    phone.clear();
+    return { ok: true };
   },
 
   async protonRoutes() {

@@ -10,6 +10,9 @@
   <!-- Titlebar oculta: arrasta a janela; os ícones ficam à direita dos semáforos -->
   <header class="topbar">
     <div class="top-actions">
+      <button id="open-phone" class="icon-btn" title="Usar no celular" aria-label="Usar no celular">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5" /><path d="M11 18h2" /></svg>
+      </button>
       <button id="open-help" class="icon-btn" title="Como funciona" aria-label="Como funciona">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" /><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5" /></svg>
       </button>
@@ -146,6 +149,70 @@
   </main>
 
   <!-- Painel: Configurações -->
+  <div id="phone-panel" class="panel" hidden role="dialog" aria-modal="true" aria-labelledby="phone-title">
+    <div class="panel-backdrop" data-close></div>
+    <div class="panel-sheet">
+      <div class="panel-head">
+        <div>
+          <p class="panel-kicker">iPhone e Android</p>
+          <h2 id="phone-title">Usar no celular</h2>
+        </div>
+        <button class="icon-btn" data-close aria-label="Fechar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <div class="panel-body">
+        <p class="hint">O GoLiveBypass gera uma conf própria para o celular e você a usa no app oficial do <strong>WireGuard</strong>. Depois de importada, ela funciona sem o Mac.</p>
+        <p id="phone-ineligible" class="status-line" hidden>Entre na sua conta Proton em Proton Otimizado para gerar a conf do celular.</p>
+        <div id="phone-form">
+          <section class="settings-group">
+            <div class="theme-row">
+              <span>Como entregar</span>
+              <div class="segmented" role="radiogroup" aria-label="Como entregar">
+                <label><input type="radio" name="phone-delivery" value="qr" checked /><span>QR code</span></label>
+                <label><input type="radio" name="phone-delivery" value="file" /><span>Arquivo (sem câmera)</span></label>
+              </div>
+            </div>
+            <p id="phone-delivery-hint" class="hint">QR code: o jeito mais prático.</p>
+          </section>
+          <button id="phone-generate" class="pill-btn">Gerar conf para o celular</button>
+          <p id="phone-regen-hint" class="hint" hidden>Gerar de novo cria outra chave. A conf anterior continua válida até você revogá-la no painel do Proton VPN.</p>
+          <p id="phone-meta" class="hint" hidden></p>
+          <p id="phone-status" class="status-line" hidden></p>
+        </div>
+
+        <div id="phone-qr-box" class="phone-result" hidden>
+          <p class="hint warn">Este QR code contém a chave privada da conf. Não tire print nem mostre para ninguém. Se ele vazar, revogue a configuração GoLiveBypass-Celular no painel do Proton VPN.</p>
+          <img id="phone-qr" class="phone-qr" alt="QR code da conf" />
+          <button id="phone-done" class="pill-btn ghost mini">Pronto, escaneei</button>
+        </div>
+
+        <div id="phone-file-box" class="phone-result" hidden>
+          <p class="hint">A conf não aparece na tela: ela vai num arquivo, que você leva ao celular por um caminho local. Evite e-mail, WhatsApp, Telegram, iCloud Drive e Google Drive: ficam cópias da chave em servidores de terceiros.</p>
+          <div class="action-row">
+            <button id="phone-save" class="pill-btn">Salvar .conf</button>
+            <button id="phone-delete" class="pill-btn ghost mini" hidden>Apagar o arquivo do Mac</button>
+          </div>
+          <p id="phone-file-status" class="hint" hidden></p>
+        </div>
+
+        <ol id="phone-steps-qr" class="phone-steps" hidden>
+          <li>Instale o <strong>WireGuard</strong>: App Store no iPhone, Play Store no Android.</li>
+          <li>Toque em <strong>+</strong> e escaneie o código: <strong>Criar a partir de código QR</strong> no iPhone, <strong>Escanear código QR</strong> no Android.</li>
+          <li>Dê o nome <strong>GoLiveBypass</strong>.</li>
+          <li>Ligue o túnel antes de entrar em live no Discord.</li>
+        </ol>
+        <ol id="phone-steps-file" class="phone-steps" hidden>
+          <li>Instale o <strong>WireGuard</strong>: App Store no iPhone, Play Store no Android.</li>
+          <li><strong>iPhone:</strong> no Finder, clique com o botão direito no arquivo › <strong>Compartilhar</strong> › <strong>AirDrop</strong> › seu iPhone e abra com o WireGuard. O AirDrop é criptografado e vai de aparelho para aparelho, sem passar por nuvem.</li>
+          <li><strong>Android:</strong> conecte o celular por cabo USB no modo <strong>Transferência de arquivos</strong> (no macOS isso exige um app de MTP, como o OpenMTP ou o Android File Transfer), copie o arquivo para <strong>Downloads</strong> e, no WireGuard, toque em <strong>+</strong> › <strong>Importar de arquivo</strong>.</li>
+          <li>Apague o arquivo do Mac e, no Android, também do celular.</li>
+          <li>Ligue o túnel antes de entrar em live no Discord.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
   <div id="settings-panel" class="panel" hidden role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="panel-backdrop" data-close></div>
     <div class="panel-sheet">

@@ -86,6 +86,40 @@ Em janelas com até 640 px de largura o rótulo do botão tomava espaço do sele
 
 **Verificado:** medição em 9 larguras (360–720 px) sobre a folha de estilo do app e `npm test -- tests/proton-ui.test.ts`.
 
+## [macos-0.8.0] - 2026-10-21
+
+### Adicionado
+
+- **Usar no celular (iPhone e Android).** Um ícone novo no topo abre um painel que gera uma conf WireGuard só para o celular, com a sessão Proton já salva, para o app oficial do **WireGuard** (App Store e Play Store). Não há app próprio no celular. Depois de importada, a conf funciona sem o Mac.
+  - **Uma conf para iPhone e Android:** só os ranges do Discord vão pela VPN (`162.159.0.0/16`, `104.16.0.0/12`), como no Mac. Os ranges IPv6 da Cloudflare entram nos `AllowedIPs` como buraco negro (a conf Free não tem IPv6), para o Discord cair no IPv4 tunelado. Sem `DNS`: o celular mantém o dele.
+  - **Chave própria por geração:** cada geração cria um par de chaves novo e uma conf persistente no Proton (`GoLiveBypass-Celular`), revogável no painel do Proton VPN e válida por 365 dias. Antes de entregar, a chave nova passa pelo `-manual-probe`; se o servidor falhar, o app tenta o próximo por ping, até 3.
+  - **Duas entregas:** **QR code**, gerado localmente com `qrcode-generator` (a primeira dependência de runtime do app), e **Arquivo, sem câmera**, mais seguro: a conf nunca aparece na tela, o `.conf` é salvo com `0600` (destino sugerido em Downloads, que o iCloud não sincroniza), o app recusa pastas sincronizadas pelo iCloud (iCloud Drive, e Mesa/Documentos quando "Mesa e Documentos" está ligado, seguindo symlinks) e lembra de todos os arquivos salvos ao fechar o painel, com opção de apagar. Os passos indicam AirDrop para o iPhone e cabo USB para o Android, e desaconselham e-mail, apps de mensagem e nuvem.
+  - **A chave privada fica só em memória:** o QR some ao fechar o painel, depois de 5 minutos ou em "Pronto, escaneei". Ela nunca vai para o `golive.conf`, o log, as configurações ou a janela como texto. O Mac não muda: `golive.conf`, modo de conexão, servidor e túnel ficam como estavam.
+
+### Corrigido
+
+- **Uma busca Proton por vez.** A troca automática de servidor não respeitava o bloqueio da busca da janela, e as duas podiam gravar o `golive.conf` ao mesmo tempo. Agora busca da janela, troca automática e geração do celular usam o mesmo bloqueio.
+
+### Verificado neste Mac
+
+- Conf do iPhone gerada por QR (`US-FREE#51`, válida até 21/10/2027). O QR foi decodificado pelo leitor de QR do macOS (CoreImage) com os `AllowedIPs` esperados e sem `DNS`. A página não continha `PrivateKey` em nenhum momento, e fechar o painel limpou o QR.
+- Conf gerada por arquivo (`MX-FREE#12`) e salva com `-rw-------` em Downloads. Apagar pelo app removeu o arquivo; fechar o painel com o arquivo salvo mostrou o lembrete.
+- **Android real:** conf importada pelo QR no WireGuard, live no Discord com câmera funcionando.
+- **iPhone real:** testado por outra pessoa com o DMG universal 0.8.0, funcionando.
+- Uma das gerações de teste falhou de verdade no `-manual-probe` (preflight da Cloudflare estourou o prazo), o que levou à nova tentativa com o próximo servidor.
+- `golive.conf` com o mesmo SHA-256 antes e depois, e `protonServer` do Mac inalterado.
+
+### Falta validar com os aparelhos
+
+- Mac e celular conectados ao mesmo tempo no Proton Free.
+- O nome do dispositivo no painel do Proton.
+- A recusa ao iCloud Drive num Mac com iCloud Drive ligado.
+
+### Fora desta versão
+
+- Renovar a conf do celular sem escanear de novo. Exige `serialNumber` no JSON da geração e saída JSON no `-renew-serial` do `proton-confgen`.
+- Listar ou revogar as confs do celular pelo app, e a mesma função na GUI Windows/Linux.
+
 ## [macos-0.7.1] - 2026-10-17
 
 Ajustes da revisão da 0.7.0.

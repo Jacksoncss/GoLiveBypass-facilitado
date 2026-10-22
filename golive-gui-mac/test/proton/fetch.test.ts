@@ -117,6 +117,23 @@ describe('ProtonFetcher.fetch com binário falso', () => {
     expect(r).toMatchObject({ ok: false, error: 'unknown' });
   });
 
+  it('conf de outro dispositivo leva -device-name e devolve a validade', async () => {
+    const f = fake({ success: true, server: 'MX-FREE#16', country: 'MX', city: 'Queretaro', expiresAt: 1824000000 });
+    const r = await run(new ProtonFetcher(), { ...f.opts, mode: 'manual', server: 'MX-FREE#16', deviceName: 'GoLiveBypass-iPhone' });
+    expect(r).toMatchObject({ ok: true, expiresAt: 1824000000 });
+    expect(f.args()).toMatch(/-device-name GoLiveBypass-iPhone/);
+    expect(f.args()).toMatch(/-server MX-FREE#16 -manual-probe/);
+  });
+
+  it('catálogo nunca leva -device-name, e nome inválido é ignorado', async () => {
+    const cat = fake({ success: true, routes: [] });
+    await run(new ProtonFetcher(), { ...cat.opts, mode: 'catalog', deviceName: 'GoLiveBypass-iPhone' });
+    expect(cat.args()).not.toMatch(/-device-name/);
+    const bad = fake({ success: true, server: 'MX-FREE#16', country: 'MX', city: 'Q' });
+    await run(new ProtonFetcher(), { ...bad.opts, mode: 'manual', server: 'MX-FREE#16', deviceName: 'x; rm -rf' });
+    expect(bad.args()).not.toMatch(/-device-name/);
+  });
+
   it('speed aceita só com download e upload medidos', async () => {
     const ok = fake({ success: true, server: 'US-FREE#7', country: 'US', city: 'NY', downloadMbps: 22.7, uploadMbps: 8.7 });
     expect(await run(new ProtonFetcher(), { ...ok.opts, mode: 'speed', exclude: ['US-FREE#1'] }))

@@ -32,6 +32,17 @@ export interface AppSettings {
   protonServer?: SavedRoute;
   /** Troca de servidor quando a rota Proton cai (padrão: ligado). */
   autoFailover?: boolean;
+  /** Última conf gerada para o celular: só metadados, nunca a conf. */
+  phoneConf?: PhoneMeta;
+}
+
+export interface PhoneMeta {
+  server: string;
+  country: string;
+  city: string;
+  /** Unix, segundos. */
+  expiresAt?: number;
+  generatedAt: string;
 }
 
 export interface SavedRoute {

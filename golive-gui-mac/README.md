@@ -43,6 +43,7 @@ só para o tráfego do Discord. DMG **universal**: Apple Silicon e Intel.
   app injeta o Vencord no Discord (pede a permissão de **Gerenciamento de Apps**) e liga
   o FakeNitro só se você nunca o configurou; se você desligar o FakeNitro no Vencord, o
   app não liga de novo.
+- **Usar no celular** (ícone de celular): gera uma conf, com a sessão Proton salva, para o app oficial do **WireGuard** no iPhone ou no Android. Só os ranges do Discord vão pela VPN, como no Mac. A entrega é por **QR code** ou por **arquivo** (sem câmera, mais seguro: AirDrop para o iPhone, cabo USB para o Android). Cada geração tem chave própria (`GoLiveBypass-Celular`), revogável no painel do Proton VPN, válida por 365 dias.
 - **Como funciona** (livro) explica o passo a passo.
 - O app fica na barra de menu: fechar a janela não desliga o bypass. Para sair, **Sair**
   no ícone da barra de menu ou Cmd+Q.

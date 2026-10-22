@@ -24,6 +24,8 @@ export interface ProtonFetchOpts {
   server?: string;
   /** Servidores fora da escolha automática (troca de rota quando a atual cai). */
   exclude?: string[];
+  /** Nome da conf persistente no painel do Proton (conf de outro aparelho). */
+  deviceName?: string;
 }
 
 export interface ChosenServer {
@@ -41,6 +43,8 @@ export interface ProtonFetchResult {
   ok: boolean;
   error?: 'captcha' | 'auth_failed' | 'no_servers' | 'binary_missing' | 'binary_integrity' | 'timeout' | 'unknown';
   detail?: string;
+  /** Validade do certificado emitido (Unix, segundos). */
+  expiresAt?: number;
   captchaUrl?: string;
   confPath?: string;
   chosen?: ChosenServer;
@@ -202,6 +206,11 @@ export class ProtonFetcher extends EventEmitter {
     // Sem senha, o proton-confgen reutiliza a sessão salva em -session-file.
     const secrets = opts.password ? JSON.stringify({ password: opts.password }) : undefined;
     const exclude = (opts.exclude ?? []).filter(s => /^[\w#-]{1,40}$/.test(s));
+    const device = opts.deviceName && /^[\w-]{1,40}$/.test(opts.deviceName) ? ['-device-name', opts.deviceName] : [];
+    const expiresOf = (out: string) => {
+      const v = lastJson(out)?.expiresAt;
+      return Number.isInteger(v) && v > 0 ? { expiresAt: v as number } : {};
+    };
     const common = [
       '-username', opts.username,
       ...(secrets ? ['-stdin-secrets'] : []),
@@ -217,15 +226,15 @@ export class ProtonFetcher extends EventEmitter {
         ? `Validando ${opts.server}…`
         : 'Medindo download e upload das melhores rotas (até 3 min)…');
       const args = mode === 'manual'
-        ? [...common, '-server', opts.server!, '-manual-probe', '-output', opts.confOut]
-        : [...common, '-speed-test', ...(exclude.length ? ['-exclude-servers', exclude.join(',')] : []), '-output', opts.confOut];
+        ? [...common, ...device, '-server', opts.server!, '-manual-probe', '-output', opts.confOut]
+        : [...common, ...device, '-speed-test', ...(exclude.length ? ['-exclude-servers', exclude.join(',')] : []), '-output', opts.confOut];
       const r = await this.run(bin, args, secrets, mode === 'speed' ? SPEED_TIMEOUT_MS : this.timeoutMs);
       if (r.timedOut) return done({ ok: false, error: 'timeout' });
       const chosen = chosenFromJson(lastJson(r.out));
       const measured = mode === 'manual' || (chosen?.downloadMbps && chosen?.uploadMbps);
       if (r.code === 0 && chosen && measured && fs.existsSync(opts.confOut)) {
         this.emit('progress', 'Configuração obtida com sucesso!');
-        return done({ ok: true, confPath: opts.confOut, chosen });
+        return done({ ok: true, confPath: opts.confOut, chosen, ...expiresOf(r.out) });
       }
       if (r.code === 0 && chosen && !measured) {
         return done({ ok: false, error: 'unknown', detail: 'A medição não retornou velocidades válidas de download e upload.' });
@@ -251,6 +260,7 @@ export class ProtonFetcher extends EventEmitter {
     this.emit('progress', '[3/3] Gerando configuração WireGuard…');
     const gen = await this.run(bin, [
       ...common,
+      ...device,
       ...(chosen ? ['-server', chosen.server] : ['-auto-ping', ...(exclude.length ? ['-exclude-servers', exclude.join(',')] : [])]),
       '-output', opts.confOut,
     ], secrets);
@@ -260,7 +270,7 @@ export class ProtonFetcher extends EventEmitter {
       this.emit('progress', 'Configuração obtida com sucesso!');
       const generated = chosenFromJson(lastJson(gen.out));
       const final = chosen ?? generated;
-      return done({ ok: true, confPath: opts.confOut, routes, ...(final ? { chosen: final } : {}) });
+      return done({ ok: true, confPath: opts.confOut, routes, ...(final ? { chosen: final } : {}), ...expiresOf(gen.out) });
     }
     done(classifyFailure(gen.out + gen.err));
   }

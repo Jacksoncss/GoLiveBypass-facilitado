@@ -26,6 +26,33 @@ describe('makeRouter', () => {
     expect(fetchProton).toHaveBeenCalledWith({ username: 'a', password: undefined, mode: undefined, server: 'US-FREE#1' });
   });
 
+  it('phone:generate só aceita entrega conhecida', async () => {
+    const phoneGenerate = vi.fn(async (p: unknown) => p);
+    const router = makeRouter({ phoneGenerate } as any);
+    await router('phone:generate', { delivery: 'file', platform: 'ios' });
+    expect(phoneGenerate).toHaveBeenLastCalledWith({ delivery: 'file' });
+    await router('phone:generate', { delivery: 'email' });
+    expect(phoneGenerate).toHaveBeenLastCalledWith({ delivery: undefined });
+  });
+
+  it('phone:save ignora qualquer caminho vindo da janela', async () => {
+    const phoneSave = vi.fn(async (..._a: unknown[]) => ({ ok: true }));
+    const router = makeRouter({ phoneSave } as any);
+    await router('phone:save', { path: '/etc/passwd' });
+    expect(phoneSave).toHaveBeenCalledWith();
+  });
+
+  it('demais canais do celular', async () => {
+    const h = { phoneStatus: vi.fn(), phoneDeleteSaved: vi.fn(), phoneClear: vi.fn() };
+    const router = makeRouter(h as any);
+    await router('phone:status', undefined);
+    await router('phone:deleteSaved', undefined);
+    await router('phone:clear', undefined);
+    expect(h.phoneStatus).toHaveBeenCalled();
+    expect(h.phoneDeleteSaved).toHaveBeenCalled();
+    expect(h.phoneClear).toHaveBeenCalled();
+  });
+
   it('erro para canal desconhecido', async () => {
     const router = makeRouter({} as any);
     await expect(router('canal:invalido', undefined)).rejects.toThrow();
